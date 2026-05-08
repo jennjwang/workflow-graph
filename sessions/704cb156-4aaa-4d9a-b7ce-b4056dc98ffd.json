@@ -1,0 +1,120 @@
+{
+  "sessionId": "704cb156-4aaa-4d9a-b7ce-b4056dc98ffd",
+  "coreTask": "write a research paper",
+  "workflow": {
+    "nodes": [
+      {
+        "id": "start_task",
+        "type": "start",
+        "position": {
+          "x": 0,
+          "y": 0
+        },
+        "data": {
+          "label": "write a research paper",
+          "description": "Begin the process of writing a research paper.",
+          "nodeType": "start"
+        }
+      },
+      {
+        "id": "brainstorm_ideas",
+        "type": "task",
+        "position": {
+          "x": 0,
+          "y": 0
+        },
+        "data": {
+          "label": "brainstorm ideas",
+          "description": "Generate initial ideas for the research paper.",
+          "nodeType": "task"
+        }
+      },
+      {
+        "id": "workshop_ideas",
+        "type": "task",
+        "position": {
+          "x": 0,
+          "y": 0
+        },
+        "data": {
+          "label": "workshop ideas",
+          "description": "Discuss and refine brainstormed ideas.",
+          "nodeType": "task"
+        }
+      },
+      {
+        "id": "formulate_hypotheses",
+        "type": "task",
+        "position": {
+          "x": 0,
+          "y": 0
+        },
+        "data": {
+          "label": "formulate hypotheses",
+          "description": "Develop hypotheses based on workshopped ideas.",
+          "nodeType": "task"
+        }
+      },
+      {
+        "id": "write_code",
+        "type": "task",
+        "position": {
+          "x": 0,
+          "y": 0
+        },
+        "data": {
+          "label": "write code",
+          "description": "Create code to test the formulated hypotheses.",
+          "nodeType": "task"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "start_task->brainstorm_ideas",
+        "source": "start_task",
+        "target": "brainstorm_ideas",
+        "animated": false,
+        "style": {
+          "stroke": "#6b7280"
+        },
+        "data": {
+          "is_branch": false
+        }
+      }
+    ]
+  },
+  "messages": [
+    {
+      "id": "9e8c1448-5ec1-4370-a6b4-1b1e6ec189a9",
+      "role": "assistant",
+      "content": "Hello! I'm really glad to be here with you today. Let's dive into your workflow for writing a research paper. To start, could you give me an overview of how you typically approach this task from beginning to end?",
+      "timestamp": 1777787580228
+    },
+    {
+      "id": "a5f62738-253d-43be-beea-d544de5d6b57",
+      "role": "user",
+      "content": "I start by brainstorming ideas, and then I workshop them, come up with hypotheses, and then write code to test them",
+      "timestamp": 1777787626494
+    },
+    {
+      "id": "469ff3ad-feed-4d31-bcc6-16b5d6b35ed4",
+      "role": "assistant",
+      "content": "Great, thank you for sharing that! Let's summarize your initial steps:\n\n1. **Brainstorm ideas**\n2. **Workshop ideas**\n3. **Formulate hypotheses**\n4. **Write code to test hypotheses**\n\nNow, I’ll go ahead and add a start node for the task and the first four steps to our graph. \n\nLet’s begin with the first step: brainstorming ideas. How do you typically do that? Do you have a certain method or tools you use?",
+      "timestamp": 1777787629085
+    },
+    {
+      "id": "a168aeff-7ee4-44d2-8c2e-85e9e65e5ca1",
+      "role": "user",
+      "content": "i just think",
+      "timestamp": 1777787674781
+    },
+    {
+      "id": "0a2285f3-c86a-45d2-942b-f13e67c38f1e",
+      "role": "assistant",
+      "content": "I've added the start node for \"write a research paper\" and the first four steps to our graph:\n\n1. **Start**: Write a research paper\n2. **Task**: Brainstorm ideas\n3. **Task**: Workshop ideas\n4. **Task**: Formulate hypotheses\n5. **Task**: Write code to test hypotheses\n\nNow, after brainstorming ideas, you workshop them. Could you elaborate a bit on what this workshop process looks like? Do you discuss with others, use any specific tools, or have a different approach?",
+      "timestamp": 1777787685957
+    }
+  ],
+  "savedAt": "2026-05-03T05:54:45.962Z"
+}

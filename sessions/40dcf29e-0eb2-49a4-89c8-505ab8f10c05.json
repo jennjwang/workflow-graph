@@ -1,0 +1,130 @@
+{
+  "sessionId": "40dcf29e-0eb2-49a4-89c8-505ab8f10c05",
+  "coreTask": "write a research paper",
+  "workflow": {
+    "nodes": [
+      {
+        "id": "start_write_paper",
+        "type": "start",
+        "position": {
+          "x": 0,
+          "y": 0
+        },
+        "data": {
+          "label": "Write Research Paper",
+          "description": "Initiate the process of writing a research paper.",
+          "nodeType": "start"
+        }
+      },
+      {
+        "id": "brainstorm_ideas",
+        "type": "task",
+        "position": {
+          "x": 0,
+          "y": 0
+        },
+        "data": {
+          "label": "Brainstorm Ideas",
+          "description": "Generate various ideas related to the research topic.",
+          "nodeType": "task"
+        }
+      },
+      {
+        "id": "create_outline",
+        "type": "task",
+        "position": {
+          "x": 0,
+          "y": 0
+        },
+        "data": {
+          "label": "Create Outline",
+          "description": "Organize ideas into a structured outline for the paper.",
+          "nodeType": "task"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "start_write_paper->brainstorm_ideas",
+        "source": "start_write_paper",
+        "target": "brainstorm_ideas",
+        "animated": false,
+        "style": {
+          "stroke": "#6b7280"
+        },
+        "data": {
+          "is_branch": false
+        }
+      },
+      {
+        "id": "brainstorm_ideas->create_outline",
+        "source": "brainstorm_ideas",
+        "target": "create_outline",
+        "animated": false,
+        "style": {
+          "stroke": "#6b7280"
+        },
+        "data": {
+          "is_branch": false
+        }
+      }
+    ]
+  },
+  "messages": [
+    {
+      "id": "e2d1cb6d-481d-455b-965d-8b662566123a",
+      "role": "assistant",
+      "content": "Hi there! I'm excited to help you map out your workflow. To get us started, can you tell me about the very first step you take when you begin to write a research paper? Do you typically start with brainstorming, outlining, or something else?",
+      "timestamp": 1777788426559
+    },
+    {
+      "id": "6d1d1aca-963c-4392-8d87-279afb214416",
+      "role": "user",
+      "content": "yes all the above",
+      "timestamp": 1777788433067
+    },
+    {
+      "id": "79f23220-f644-4d82-9f76-c857dc8fd87f",
+      "role": "assistant",
+      "content": "Great! So it sounds like you might start with brainstorming ideas, then move on to outlining your paper. Could you clarify the order of these steps? Do you brainstorm first and then outline, or do you do some outlining alongside brainstorming?",
+      "timestamp": 1777788434449
+    },
+    {
+      "id": "be373ba8-f5a2-4ab7-878d-7ff7da3a822b",
+      "role": "user",
+      "content": "yes",
+      "timestamp": 1777788439835
+    },
+    {
+      "id": "4b316a47-c0bc-454c-aa4b-9f98422b4e8a",
+      "role": "assistant",
+      "content": "It seems like you either brainstorm and outline simultaneously or you aren't sure about the sequence. Could you specify if one step typically happens before the other? For example, do you brainstorm ideas and then create the outline, or do you blend both activities together?",
+      "timestamp": 1777788441427
+    },
+    {
+      "id": "fc68879c-7a40-4c2d-ba34-260bacc3947d",
+      "role": "user",
+      "content": "brainstorm",
+      "timestamp": 1777788448577
+    },
+    {
+      "id": "d3c0b696-bc2f-4da0-a981-e65b777717ce",
+      "role": "assistant",
+      "content": "Got it! You start with brainstorming ideas first. I'll add that step to the graph. \n\nNext, after brainstorming, what's the following action you take? Do you proceed to create an outline, or is there something else?",
+      "timestamp": 1777788450078
+    },
+    {
+      "id": "051fd610-497f-4c1d-b094-9afa0a354b84",
+      "role": "user",
+      "content": "create outline",
+      "timestamp": 1777788456801
+    },
+    {
+      "id": "de9c8192-067d-4ee9-8cf8-b613cf7623c9",
+      "role": "assistant",
+      "content": "I've added the steps to the graph: starting with \"Write Research Paper,\" followed by \"Brainstorm Ideas,\" and then \"Create Outline.\" \n\nNow, after you create the outline, what do you typically do next?",
+      "timestamp": 1777788463541
+    }
+  ],
+  "savedAt": "2026-05-03T06:07:43.548Z"
+}
