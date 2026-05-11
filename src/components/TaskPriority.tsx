@@ -20,48 +20,56 @@ export function TaskPriority() {
   const handleStart = () => {
     if (picked.length === 0) return;
     setCoreTask(picked[0]);
-    setPhase('workflow');
+    setPhase('study-complete');
   };
 
   return (
     <div className="min-h-screen bg-white flex flex-col items-center justify-center px-8 py-16">
-      <div className="max-w-2xl w-full">
+      <div className="absolute top-0 left-0 right-0 h-56 bg-gradient-to-b from-indigo-50/30 to-transparent pointer-events-none" />
+
+      <div className="relative max-w-2xl w-full">
         <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-8">
-          Part 3 of 3 — Workflow Mapping
-        </p>
-        <h1 className="text-3xl font-light text-slate-800 leading-snug mb-2">
-          Which tasks are most important to map?
-        </h1>
-        <p className="text-sm text-slate-400 mb-10">
-          Select the ones you'd like to walk through in detail today. We'll start with the first one you pick.
+          Final question
         </p>
 
-        <div className="grid grid-cols-2 gap-3 mb-10">
-          {selectedTasks.map((task, idx) => {
+        <h1 className="text-[1.85rem] font-light text-slate-800 leading-snug tracking-tight mb-3">
+          Which tasks are most important in your job?
+        </h1>
+        <p className="text-sm text-slate-400 mb-10">
+          Select all that apply.
+        </p>
+
+        <div className="space-y-2.5 mb-10">
+          {selectedTasks.map((task, i) => {
+            const letter = String.fromCharCode(65 + i);
             const isSelected = picked.includes(task);
-            const order = picked.indexOf(task);
             return (
               <button
                 key={task}
                 onClick={() => toggle(task)}
                 className={`
-                  text-left px-4 py-3.5 rounded-2xl border text-sm font-medium
-                  transition-all duration-150 flex items-start gap-3
+                  group flex items-center gap-3.5 w-full px-4 py-3.5 rounded-2xl border text-left
+                  transition-all duration-150 active:scale-[0.99]
                   ${isSelected
-                    ? 'border-indigo-400 bg-indigo-50 text-indigo-800 shadow-sm'
-                    : 'border-slate-200 text-slate-600 hover:border-slate-300 hover:bg-slate-50'}
+                    ? 'border-indigo-400 bg-indigo-50'
+                    : 'border-slate-200/70 hover:border-indigo-300 hover:bg-indigo-50/50 bg-white'}
                 `}
               >
                 <span className={`
-                  mt-0.5 w-5 h-5 rounded-md flex-shrink-0 flex items-center justify-center
-                  border text-[10px] font-bold transition-all
+                  flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-xs font-semibold border
+                  transition-all duration-150
                   ${isSelected
                     ? 'bg-indigo-500 border-indigo-500 text-white'
-                    : 'border-slate-300 text-transparent'}
-                `}>
-                  {isSelected ? order + 1 : idx + 1}
+                    : 'border-slate-200 text-slate-400 group-hover:bg-indigo-500 group-hover:border-indigo-500 group-hover:text-white'}
+                `}>{letter}</span>
+                <span className={`text-sm font-medium leading-snug flex-1 ${isSelected ? 'text-indigo-800' : 'text-slate-700'}`}>
+                  {task}
                 </span>
-                <span className="flex-1 leading-snug">{task}</span>
+                {isSelected && (
+                  <svg className="w-4 h-4 text-indigo-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                )}
               </button>
             );
           })}
@@ -70,8 +78,8 @@ export function TaskPriority() {
         <div className="flex items-center justify-between">
           <span className="text-sm text-slate-400">
             {picked.length === 0
-              ? 'Select the tasks you want to map'
-              : `Starting with: "${picked[0]}"`}
+              ? 'Select the tasks that matter most'
+              : `${picked.length} task${picked.length !== 1 ? 's' : ''} selected`}
           </span>
           <button
             onClick={handleStart}
@@ -79,7 +87,7 @@ export function TaskPriority() {
             className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed
                        text-white px-6 py-2.5 rounded-xl text-sm font-medium transition-all"
           >
-            Start Mapping →
+            Submit →
           </button>
         </div>
       </div>

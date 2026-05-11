@@ -2,6 +2,48 @@
 @tailwind components;
 @tailwind utilities;
 
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fadeSlideIn {
+  animation: fadeSlideIn 0.2s ease-out both;
+}
+
+/* Larger entry animation for hero / intro screens — longer travel, slower easing,
+   meant to be paired with inline animation-delay for staggered cascades. */
+@keyframes fadeSlideUp {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fadeSlideUp {
+  animation: fadeSlideUp 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes waveBar {
+  0%, 100% { transform: scaleY(0.3); }
+  50%      { transform: scaleY(1); }
+}
+.animate-waveBar {
+  animation: waveBar 0.9s ease-in-out infinite;
+  transform-origin: center;
+}
+
+/* Delayed pop-in for tooltip / nudge callouts. The 700ms delay lets the
+   underlying task card settle in first, so the tip clearly references the
+   already-visible content. The slight scale overshoot gives it a "pops up"
+   feel rather than a plain fade. */
+@keyframes popIn {
+  0%   { opacity: 0; transform: translateY(-6px) scale(0.92); }
+  60%  { opacity: 1; transform: translateY(0) scale(1.03); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.animate-popIn {
+  animation: popIn 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation-delay: 0.7s;
+  transform-origin: top left;
+}
+
 html, body, #root {
   height: 100%;
   margin: 0;
