@@ -8,6 +8,96 @@ export const LANE_HEIGHT = 280;
 export const LANE_HEADER_WIDTH = 52;
 const LANE_PAD = (LANE_HEIGHT - NODE_HEIGHT) / 2;
 
+// Recursive subtree-grouped tree layout for LR mode. Unlike dagre's tight-tree
+// (which only enforces per-rank ordering and freely interleaves siblings of
+// different parents in the same column), this assigns each subtree a contiguous
+// vertical band: every child is positioned directly inside its parent's band,
+// never overlapping with a cousin's subtree. The parent is then vertically
+// centered between its first and last child's Y.
+//
+// Honours per-node `collapsed` (descendants are dropped) and manualPositions
+// (override). `edges` is unused here — the tree is reconstructed from each
+// node's `parentId`, which is the single source of truth.
+const RANK_SEP = 80;       // horizontal gap between depths
+const SIBLING_GAP = 24;    // vertical gap between subtree bands
+export function layoutTree(
+  nodes: Node<WorkflowNodeData>[],
+  _edges: Edge[],
+  manualPositions: Record<string, { x: number; y: number }> = {}
+): Node<WorkflowNodeData>[] {
+  if (nodes.length === 0) return nodes;
+
+  const indexOf = new Map(nodes.map((n, i) => [n.id, i]));
+  const childrenByParent: Record<string, Node<WorkflowNodeData>[]> = {};
+  for (const n of nodes) {
+    const pid = n.data.parentId as string | undefined;
+    if (pid) (childrenByParent[pid] ||= []).push(n);
+  }
+  // Stable sibling order: by original creation order in the nodes array.
+  for (const group of Object.values(childrenByParent)) {
+    group.sort((a, b) => (indexOf.get(a.id) ?? 0) - (indexOf.get(b.id) ?? 0));
+  }
+
+  // Hide descendants of any collapsed node so they don't claim layout space.
+  const hidden = new Set<string>();
+  const collapseQueue: string[] = nodes.filter(n => n.data.collapsed).map(n => n.id);
+  while (collapseQueue.length) {
+    const pid = collapseQueue.shift()!;
+    for (const c of childrenByParent[pid] ?? []) {
+      if (!hidden.has(c.id)) {
+        hidden.add(c.id);
+        collapseQueue.push(c.id);
+      }
+    }
+  }
+
+  const placed = new Map<string, { x: number; y: number }>();
+
+  // Layout the subtree rooted at nodeId. Returns the total vertical pixels
+  // consumed (from yTop downward, inclusive of all descendants' bands).
+  function place(nodeId: string, depth: number, yTop: number): number {
+    if (hidden.has(nodeId)) return 0;
+    const x = depth * (NODE_WIDTH + RANK_SEP);
+    const kids = (childrenByParent[nodeId] ?? []).filter(c => !hidden.has(c.id));
+
+    if (kids.length === 0) {
+      placed.set(nodeId, { x, y: yTop });
+      return NODE_HEIGHT;
+    }
+
+    let yCursor = yTop;
+    for (let i = 0; i < kids.length; i++) {
+      const h = place(kids[i].id, depth + 1, yCursor);
+      yCursor += h + (i < kids.length - 1 ? SIBLING_GAP : 0);
+    }
+    const subtreeHeight = yCursor - yTop;
+
+    // Centre the parent between its first and last child's actual Y.
+    const firstY = placed.get(kids[0].id)!.y;
+    const lastY = placed.get(kids[kids.length - 1].id)!.y;
+    placed.set(nodeId, { x, y: (firstY + lastY) / 2 });
+
+    // A parent with only one (short) child can leave the band shorter than
+    // NODE_HEIGHT, which would let an adjacent sibling subtree overlap it
+    // vertically. Pad upward to at least NODE_HEIGHT.
+    return Math.max(subtreeHeight, NODE_HEIGHT);
+  }
+
+  // Place each root subtree stacked vertically.
+  const roots = nodes.filter(n => !n.data.parentId && !hidden.has(n.id));
+  let yCursor = 0;
+  for (let i = 0; i < roots.length; i++) {
+    const h = place(roots[i].id, 0, yCursor);
+    yCursor += h + (i < roots.length - 1 ? SIBLING_GAP : 0);
+  }
+
+  const visible = nodes.filter(n => !hidden.has(n.id) && placed.has(n.id));
+  return visible.map(n => {
+    if (manualPositions[n.id]) return { ...n, position: manualPositions[n.id] };
+    return { ...n, position: placed.get(n.id)! };
+  });
+}
+
 // Standard dagre layout (no lanes). Top-level (parentId-less) flow runs LR.
 // Children of a parent (subtasks) are stacked below the parent inside a group container.
 // Group container nodes are emitted as type='group' (rendered behind the actual nodes).

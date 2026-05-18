@@ -1,39 +1,41 @@
 import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
-  generateTasksForCategory,
+  generateTasksForCategoryStream,
+  extractInterviewTasks,
   recordScreenOut,
   transcribeAudio,
 } from "../lib/api";
 import { useWorkflowStore } from "../store";
 import { TaskAiUse, TaskItem, TaskRecency } from "../types";
 
-const DONE_THRESHOLD = 10;
+// Hard cap on the picker list (real tasks + spliced attention checks). Also
+// the progress-bar denominator so the bar reflects actual rating progress.
+const MAX_TASKS = 15;
 
-// Attention checks — tasks from clearly unrelated occupations. Expected answer: "I don't do this".
-// Inserted at fixed positions in the task list so they're spaced apart (positions 2 and 7 — neither
-// at the edges, with several real tasks between them).
-const ATTENTION_CHECKS: { label: string; insertAt: number }[] = [
-  { label: "Treat patients in an emergency room", insertAt: 2 },
-  { label: "Operate heavy machinery on a construction site", insertAt: 7 },
-];
+// Number of tasks the participant must rate before the "Finish early"
+// affordance unlocks. Pinned to MAX_TASKS so the threshold tracks the picker
+// cap — finishing early now means "after the full list".
+const DONE_THRESHOLD = MAX_TASKS;
 
-function withAttentionChecks(realTasks: TaskItem[]): TaskItem[] {
-  // Keep every real task the model returned (the new MECE prompt produces a
-  // variable 5–9), then splice in attention checks at the configured positions.
-  const out = [...realTasks];
-  for (const check of ATTENTION_CHECKS) {
-    const insertAt = Math.min(check.insertAt, out.length);
-    out.splice(insertAt, 0, {
-      name: check.label,
-      originalName: check.label,
-      status: "unreviewed",
-      category: "__attention_check__",
-      isAttentionCheck: true,
-    });
-  }
-  return out;
-}
+// One attention check inserted after every N real tasks (positions N, 2N, 3N, …).
+const ATTENTION_CHECK_INTERVAL = 4;
+
+// O*NET-style fallback attention checks. Drawn from clearly unrelated
+// occupations so participants can always answer "I don't do this" honestly.
+// Shuffled once per page load so each session sees the checks in a different
+// order — within a session the picker indexes linearly so no check repeats,
+// and across sessions the rotation differs without any state to persist.
+const FALLBACK_ATTENTION_CHECKS: string[] = [
+  "Triage walk-in emergency-room patients to determine treatment priority based on presenting symptoms.",
+  "Replace residential service-panel circuit breakers during scheduled electrical maintenance calls.",
+  "Pull and dispense espresso shots to fulfill customer drink orders during peak café shifts.",
+  "Inspect commercial brake systems on customer vehicles to identify worn pads and rotors.",
+  "Harvest field crops by operating a combine across designated rows during the harvest window.",
+  "Conduct routine traffic stops on patrol to enforce posted speed and equipment regulations.",
+  "Cut and style hair for walk-in salon clients based on consultation and customer preference.",
+  "Operate forklift equipment on a warehouse floor to move palletized inventory between zones.",
+].sort(() => Math.random() - 0.5);
 
 // Three separate bonus pools:
 //  • EDIT bonus:    per-character on tasks the participant rewords (Levenshtein distance).
@@ -90,23 +92,32 @@ function formatUsd(n: number) {
 export function TaskSelection() {
   const {
     userProfile,
+    backgroundTranscript,
+    interviewExtractedTasks,
     setSelectedTasks,
     setTaskItems,
     setBonusSnapshot,
+    setInterviewExtractedTasks,
     setPhase,
     prolific,
     setProlific,
+    condition,
   } = useWorkflowStore(
     useShallow((s) => ({
       userProfile: s.userProfile,
+      backgroundTranscript: s.backgroundTranscript,
+      interviewExtractedTasks: s.interviewExtractedTasks,
       setSelectedTasks: s.setSelectedTasks,
       setTaskItems: s.setTaskItems,
       setBonusSnapshot: s.setBonusSnapshot,
+      setInterviewExtractedTasks: s.setInterviewExtractedTasks,
       setPhase: s.setPhase,
       prolific: s.prolific,
       setProlific: s.setProlific,
+      condition: s.condition,
     })),
   );
+  const totalParts = condition === "short" ? 2 : 3;
 
   // Dev shortcut: ?dev=task-selection&review=1 jumps straight to the
   // "What else fills your week?" review screen with seeded confirmed tasks.
@@ -165,7 +176,11 @@ export function TaskSelection() {
   const [lastBonusDelta, setLastBonusDelta] = useState(0);
 
   // Participant-typed tasks captured on the all-done screen.
-  const [extraTasks, setExtraTasks] = useState<string[]>([]);
+  // Each entry carries the moment it was added so the per-task timestamp in
+  // edits[] reflects when the participant actually typed it, not when they
+  // hit Submit. (Submitting an 11-task batch used to stamp all 11 with the
+  // same millisecond.)
+  const [extraTasks, setExtraTasks] = useState<{ name: string; addedAt: number }[]>([]);
   const [extraInput, setExtraInput] = useState("");
 
   const bonusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -206,22 +221,73 @@ export function TaskSelection() {
     if (devSkipToReview) return; // dev shortcut: tasks are already seeded
     async function load() {
       try {
-        // The MECE prompt picks its own count (5–9) — we don't pass `count`.
-        const taskNames = await generateTasksForCategory(
+        // First pass: pull the activities the participant explicitly mentioned
+        // in the background interview. These get persisted (audit trail) and
+        // passed to the generator as grounding context so the generator fills
+        // gaps instead of echoing what the participant already said.
+        // Failure is non-fatal: if extraction returns nothing / errors, the
+        // generator just runs without grounding (its old behavior).
+        let interviewTasks: string[] = [];
+        try {
+          interviewTasks = await extractInterviewTasks(backgroundTranscript, {
+            jobTitle: userProfile.jobTitle,
+            responsibilities: userProfile.responsibilities,
+          });
+          setInterviewExtractedTasks(interviewTasks);
+        } catch (e) {
+          console.warn("[task-selection] extract failed, generating without grounding:", e);
+        }
+
+        // Stream tasks into the picker as they arrive — the participant can
+        // start rating the first task in ~1-2s instead of waiting ~7s for the
+        // whole list. Attention checks are spliced in inline at the same
+        // ATTENTION_CHECK_INTERVAL cadence; the hard 20-item cap still applies.
+        // Linear indexing into the (already shuffled) FALLBACK_ATTENTION_CHECKS
+        // guarantees no repeats within a session.
+        let realCount = 0;
+        const onTask = (name: string) => {
+          realCount += 1;
+          setTasks((prev) => {
+            // Stop appending once we've hit the visible cap (real + checks).
+            if (prev.length >= MAX_TASKS) return prev;
+            const next: TaskItem[] = [
+              ...prev,
+              { name, originalName: name, status: "unreviewed" },
+            ];
+            // Splice in an attention check after every Nth real task.
+            if (realCount % ATTENTION_CHECK_INTERVAL === 0) {
+              const checkIdx = realCount / ATTENTION_CHECK_INTERVAL - 1;
+              if (
+                checkIdx < FALLBACK_ATTENTION_CHECKS.length &&
+                next.length < MAX_TASKS
+              ) {
+                const label = FALLBACK_ATTENTION_CHECKS[checkIdx];
+                next.push({
+                  name: label,
+                  originalName: label,
+                  status: "unreviewed",
+                  category: "__attention_check__",
+                  isAttentionCheck: true,
+                });
+              }
+            }
+            return next;
+          });
+          // Flip to 'ready' on the first task so the picker shows immediately.
+          if (realCount === 1) setLoadState("ready");
+        };
+        await generateTasksForCategoryStream(
           userProfile.jobTitle,
           userProfile.typicalWeek,
-          "",
           [],
-          undefined,
           userProfile.aiUsage,
+          userProfile.responsibilities,
+          interviewTasks,
+          onTask,
         );
-        const items: TaskItem[] = taskNames.map((name) => ({
-          name,
-          originalName: name,
-          status: "unreviewed",
-        }));
-        setTasks(withAttentionChecks(items));
-        setLoadState("ready");
+        // If the stream returned zero tasks (model fluke), surface an error
+        // state so the participant sees something rather than a frozen loader.
+        if (realCount === 0) setLoadState("error");
       } catch (e) {
         console.error("Task load failed", e);
         setLoadState("error");
@@ -328,8 +394,8 @@ export function TaskSelection() {
   const addExtraTask = (raw: string) => {
     const t = raw.trim();
     if (!t) return;
-    if (extraTasks.includes(t)) return; // dedup against what they've already added
-    setExtraTasks((prev) => [...prev, t]);
+    if (extraTasks.some((e) => e.name === t)) return; // dedup against what they've already added
+    setExtraTasks((prev) => [...prev, { name: t, addedAt: Date.now() }]);
     setExtraInput("");
   };
 
@@ -340,23 +406,24 @@ export function TaskSelection() {
   const proceed = (pendingExtra?: string) => {
     // If the participant clicked Submit with un-added draft text in the input,
     // commit it here. (Doing this in handleSubmit via setExtraTasks would race
-    // with this function reading the stale closure.)
+    // with this function reading the stale closure.) That task is timestamped
+    // at this moment; everything else uses the moment-of-add timestamps
+    // captured when each was originally typed.
     const trimmedPending = pendingExtra?.trim() ?? "";
     const finalExtras =
-      trimmedPending && !extraTasks.includes(trimmedPending)
-        ? [...extraTasks, trimmedPending]
+      trimmedPending && !extraTasks.some((e) => e.name === trimmedPending)
+        ? [...extraTasks, { name: trimmedPending, addedAt: Date.now() }]
         : extraTasks;
 
     // Tasks the participant typed in get appended as confirmed, flagged as participant-added.
-    const now = Date.now();
-    const extraItems: TaskItem[] = finalExtras.map((name) => ({
-      name,
-      originalName: name,
+    const extraItems: TaskItem[] = finalExtras.map((e) => ({
+      name: e.name,
+      originalName: e.name,
       status: "confirmed",
       category: "__participant_added__",
       addedByParticipant: true,
       edits: [
-        { from: "", to: name, charsChanged: name.length, timestamp: now },
+        { from: "", to: e.name, charsChanged: e.name.length, timestamp: e.addedAt },
       ],
     }));
 
@@ -414,7 +481,7 @@ export function TaskSelection() {
       },
       computedAt: new Date().toISOString(),
     });
-    setPhase("study-complete");
+    setPhase(condition === "short" ? "final-questions" : "task-priority");
   };
 
   const confirmedCount = tasks.filter(
@@ -428,7 +495,7 @@ export function TaskSelection() {
     (loadState === "ready" && !currentTask && !isExhausted);
 
   if (showIntro) {
-    return <IntroScreen onStart={() => setShowIntro(false)} />;
+    return <IntroScreen onStart={() => setShowIntro(false)} totalParts={totalParts} />;
   }
 
   return (
@@ -448,7 +515,7 @@ export function TaskSelection() {
       <div className="relative z-10 px-8 pt-8 pb-5 shrink-0">
         <div className="flex items-center justify-between mb-4">
           <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400">
-            Part 2 of 2 — Task Coverage
+            Part 2 of {totalParts} — Task Coverage
           </p>
           {!isExhausted && (editChars > 0 || aiHowSoChars > 0) && (
             <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
@@ -458,12 +525,13 @@ export function TaskSelection() {
           )}
         </div>
         <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
-          {/* Bar fills to 100% at DONE_THRESHOLD (the point participants can finish).
-              Beyond that, additional reviews are optional and the bar stays full. */}
+          {/* Linear progress over the full picker (MAX_TASKS). isExhausted
+              still pegs to 100% so a short stream (fewer tasks than the cap)
+              shows a full bar when the participant finishes the last one. */}
           <div
             className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-violet-400 transition-all duration-500 ease-out"
             style={{
-              width: `${isExhausted ? 100 : Math.min((currentIdx / DONE_THRESHOLD) * 100, 100)}%`,
+              width: `${isExhausted ? 100 : Math.min((currentIdx / MAX_TASKS) * 100, 100)}%`,
             }}
           />
         </div>
@@ -472,8 +540,8 @@ export function TaskSelection() {
       {/* Task area — top-aligned for the review screen (lots of content),
           centered for the per-task review (single card). */}
       <div
-        className={`relative z-10 flex-1 flex flex-col px-8 min-h-0 overflow-y-auto
-        ${isExhausted ? "justify-start pt-6 pb-12" : "justify-center"}`}
+        className={`relative z-10 flex-1 flex flex-col min-h-0 overflow-y-auto
+        ${isExhausted ? "justify-start pt-6 pb-12 px-4 sm:px-6" : "justify-center px-8"}`}
       >
         {loading ? (
           <div className="flex justify-center">
@@ -508,6 +576,7 @@ export function TaskSelection() {
                 (t.status === "confirmed" || t.status === "edited") &&
                 !t.isAttentionCheck,
             )}
+            interviewExtractedTasks={interviewExtractedTasks}
             extraTasks={extraTasks}
             extraInput={extraInput}
             onExtraInputChange={setExtraInput}
@@ -547,17 +616,17 @@ export function TaskSelection() {
 
 // ── Intro screen ───────────────────────────────────────────────────────────────
 
-function IntroScreen({ onStart }: { onStart: () => void }) {
+function IntroScreen({ onStart, totalParts }: { onStart: () => void; totalParts: number }) {
   return (
     <div className="flex flex-col h-full bg-transparent relative overflow-hidden">
       {/* Top gradient is rendered by the parent (App.tsx) so it spans the full viewport. */}
       <div className="relative z-10 flex flex-1 items-center justify-center px-8">
-        <div className="max-w-md w-full">
+        <div className="max-w-lg w-full">
           <p
             className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-9 animate-fadeSlideUp"
             style={{ animationDelay: "0ms" }}
           >
-            Part 2 of 2 — Task Coverage
+            Part 2 of {totalParts} — Task Coverage
           </p>
           <h2
             className="text-[1.65rem] font-light text-slate-800 leading-snug tracking-tight animate-fadeSlideUp"
@@ -569,9 +638,8 @@ function IntroScreen({ onStart }: { onStart: () => void }) {
             className="text-slate-500 mt-6 text-[15px] leading-[1.7] animate-fadeSlideUp"
             style={{ animationDelay: "160ms" }}
           >
-            We'll show you a list of tasks someone in your role might do. For
-            tasks you do, you'll answer two quick follow-ups about how you do
-            it.
+            We'll show you a list of tasks someone in your role might do at
+            work, and we'll ask you to confirm which tasks you do.
           </p>
           <div className="mt-12 space-y-4">
             <div
@@ -606,6 +674,27 @@ function IntroScreen({ onStart }: { onStart: () => void }) {
                     characters
                   </span>{" "}
                   changed, up to {formatUsd(EDIT_BONUS_MAX_USD)}.
+                </p>
+              </div>
+            </div>
+            <div
+              className="px-5 py-4 rounded-xl border border-amber-200 bg-amber-50 animate-fadeSlideUp"
+              style={{ animationDelay: "370ms" }}
+            >
+              <div className="text-sm leading-[1.6]">
+                <p className="font-semibold text-amber-700 mb-1.5">
+                  AI-use description
+                </p>
+                <p className="text-slate-700">
+                  For tasks where you use AI, tell us how — what you use it for,
+                  in what context. The more specific, the better.
+                </p>
+                <p className="mt-2.5 text-amber-800">
+                  <span className="font-semibold">
+                    {formatUsd(AI_HOWSO_BONUS_PER_CHAR_USD * 1000)} per 1,000
+                    characters
+                  </span>{" "}
+                  on AI-use descriptions.
                 </p>
               </div>
             </div>
@@ -1121,6 +1210,7 @@ function AudioTextInput({
 
 function ReviewAndAddScreen({
   confirmedTasks,
+  interviewExtractedTasks,
   extraTasks,
   extraInput,
   onExtraInputChange,
@@ -1131,7 +1221,8 @@ function ReviewAndAddScreen({
   onSubmit,
 }: {
   confirmedTasks: TaskItem[];
-  extraTasks: string[];
+  interviewExtractedTasks: string[];
+  extraTasks: { name: string; addedAt: number }[];
   extraInput: string;
   onExtraInputChange: (v: string) => void;
   onAddExtra: (v: string) => void;
@@ -1140,6 +1231,20 @@ function ReviewAndAddScreen({
   addCapped: boolean;
   onSubmit: (pendingExtra?: string) => void;
 }) {
+  // Merge in the activities extracted from the background interview, deduped
+  // (case-insensitive + trim) against the explicitly confirmed tasks. Anything
+  // the participant described but that didn't surface via the review flow still
+  // shows up here so the "tasks so far" picture is complete.
+  const seenNames = new Set(
+    confirmedTasks.map((t) => t.name.trim().toLowerCase()),
+  );
+  const extractedOnly = interviewExtractedTasks.filter((name) => {
+    const key = name.trim().toLowerCase();
+    if (!key || seenNames.has(key)) return false;
+    seenNames.add(key);
+    return true;
+  });
+  const totalDisplayedSoFar = confirmedTasks.length + extractedOnly.length;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [recordState, setRecordState] = useState<RecordState>("idle");
   const [recordError, setRecordError] = useState<string | null>(null);
@@ -1218,18 +1323,18 @@ function ReviewAndAddScreen({
   };
 
   return (
-    <div className="max-w-2xl mx-auto w-full animate-fadeSlideIn">
-      {confirmedTasks.length > 0 && (
+    <div className="w-full animate-fadeSlideIn">
+      {totalDisplayedSoFar > 0 && (
         <section>
           <h3 className="text-[1.35rem] font-light text-slate-800 leading-snug tracking-tight">
             Here are your tasks so far
           </h3>
           <p className="text-sm text-slate-500 mt-1.5">
-            {confirmedTasks.length} task{confirmedTasks.length !== 1 ? "s" : ""}{" "}
-            you confirmed as part of your work.
+            {totalDisplayedSoFar} task{totalDisplayedSoFar !== 1 ? "s" : ""}{" "}
+            from what you confirmed and what you mentioned earlier.
           </p>
 
-          <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+          <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
             {confirmedTasks.map((t, i) => (
               <div
                 key={`${t.name}-${i}`}
@@ -1241,6 +1346,17 @@ function ReviewAndAddScreen({
                     edited
                   </span>
                 )}
+              </div>
+            ))}
+            {extractedOnly.map((name, i) => (
+              <div
+                key={`extracted-${name}-${i}`}
+                className="px-4 py-3 rounded-xl bg-white border border-slate-200 hover:border-indigo-200 hover:shadow-sm transition"
+              >
+                <p className="text-sm text-slate-800 leading-snug">{name}</p>
+                <span className="mt-1.5 inline-block text-[10px] font-semibold uppercase tracking-wider text-indigo-500">
+                  from interview
+                </span>
               </div>
             ))}
           </div>
@@ -1383,14 +1499,14 @@ function ReviewAndAddScreen({
           <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
             {extraTasks.map((t, i) => (
               <div
-                key={`${t}-${i}`}
+                key={`${t.name}-${i}`}
                 className="group relative pl-4 pr-10 py-3 rounded-xl bg-white border border-indigo-200 hover:shadow-sm transition"
               >
-                <p className="text-sm text-slate-800 leading-snug">{t}</p>
+                <p className="text-sm text-slate-800 leading-snug">{t.name}</p>
                 <button
                   type="button"
                   onClick={() => onRemoveExtra(i)}
-                  aria-label={`Remove ${t}`}
+                  aria-label={`Remove ${t.name}`}
                   title="Remove task"
                   className="absolute top-1/2 -translate-y-1/2 right-2 w-6 h-6 flex items-center justify-center rounded-full text-slate-300 hover:text-red-500 hover:bg-red-50 transition"
                 >

@@ -27,6 +27,16 @@ const QUESTIONS: {
     maxFollowups: 1,
   },
   {
+    field: "responsibilities",
+    text: "What are your primary responsibilities at work?",
+    placeholder: "What you own or are accountable for",
+    criteria: [
+      "The participant has named at least one primary responsibility — any level of detail counts. A short answer ('I own the team's product specs') is sufficient to satisfy this criterion.",
+      "The participant has mentioned at least one concrete responsibility, deliverable, or area they own (e.g. a function they perform, an outcome they're accountable for, a team or domain they cover).",
+    ],
+    maxFollowups: 1,
+  },
+  {
     field: "typicalWeek",
     text: "Walk me through what a typical week looks like for you.",
     placeholder: "Describe your regular activities, meetings, deliverables…",
@@ -166,16 +176,19 @@ function MicOrb({
 }
 
 export function BackgroundInterview() {
-  const { setUserProfile, setPhase, addBackgroundTurn } = useWorkflowStore(
+  const { setUserProfile, setPhase, addBackgroundTurn, condition } = useWorkflowStore(
     useShallow((s) => ({
       setUserProfile: s.setUserProfile,
       setPhase: s.setPhase,
       addBackgroundTurn: s.addBackgroundTurn,
+      condition: s.condition,
     })),
   );
+  const totalParts = condition === "short" ? 2 : 3;
 
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState<Record<keyof UserProfile, string>>({
+    responsibilities: "",
     jobTitle: "",
     typicalWeek: "",
     aiUsage: "",
@@ -381,7 +394,7 @@ export function BackgroundInterview() {
       {/* Header with step progress */}
       <div className="relative z-10 px-10 pt-8 pb-5 shrink-0">
         <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-4">
-          Part 1 of 2 — Background
+          Part 1 of {totalParts} — Background
         </p>
         <div className="flex gap-2 items-center">
           {QUESTIONS.map((_, i) => (
@@ -431,7 +444,7 @@ export function BackgroundInterview() {
 
       {/* Main content */}
       <div className="relative z-10 flex-1 flex flex-col justify-center min-h-0 overflow-y-auto">
-        <div className="px-10 max-w-2xl mx-auto w-full">
+        <div className="px-10 max-w-3xl mx-auto w-full">
           {/* Question / follow-up */}
           <div
             className="mb-12 transition-all duration-250"

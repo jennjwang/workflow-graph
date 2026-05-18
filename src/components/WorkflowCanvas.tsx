@@ -2,121 +2,118 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow, Background, Controls,
   NodeTypes, NodeChange, applyNodeChanges,
-  ConnectionLineType, ConnectionMode,
-  OnConnectStart, OnConnectEnd,
-  useViewport, MarkerType,
+  ConnectionLineType,
+  MarkerType,
+  ReactFlowInstance,
+  Edge,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useWorkflowStore } from '../store';
 import { nodeTypes } from './nodes';
-import { layoutNodes, layoutSwimlanes, LANE_HEIGHT, LANE_HEADER_WIDTH } from '../lib/layout';
-import { WorkflowNodeData, NodeType } from '../types';
+import { layoutTree } from '../lib/layout';
+import { WorkflowNodeData } from '../types';
 import { Node } from '@xyflow/react';
 
-const LANE_COLORS = [
-  { accent: '#6366f1', bg: '#f8f8ff', text: '#6366f1' }, // indigo
-  { accent: '#8b5cf6', bg: '#faf8ff', text: '#8b5cf6' }, // violet
-  { accent: '#0d9488', bg: '#f0fdfa', text: '#0d9488' }, // teal
-  { accent: '#d97706', bg: '#fffbf0', text: '#d97706' }, // amber
-  { accent: '#e11d48', bg: '#fff8f8', text: '#e11d48' }, // rose
-];
-
-const TYPE_OPTIONS: { type: NodeType; label: string; style: string }[] = [
-  { type: 'task',     label: 'Task',     style: 'hover:bg-blue-50 hover:text-blue-700' },
-  { type: 'decision', label: 'Decision', style: 'hover:bg-orange-50 hover:text-orange-700' },
-  { type: 'handoff',  label: 'Handoff',  style: 'hover:bg-violet-50 hover:text-violet-700' },
-  { type: 'input',    label: 'Input',    style: 'hover:bg-teal-50 hover:text-teal-700' },
-  { type: 'failure',  label: 'Failure',  style: 'hover:bg-red-50 hover:text-red-700' },
-  { type: 'wait',     label: 'Wait',     style: 'hover:bg-amber-50 hover:text-amber-700' },
-  { type: 'end',      label: 'End',      style: 'hover:bg-slate-100 hover:text-slate-700' },
-];
-
-function SwimlaneOverlay({ lanes, viewport }: { lanes: string[]; viewport: { x: number; y: number; zoom: number } }) {
-  if (lanes.length === 0) return null;
-  const offsetY = viewport.y;
-  const headerW = LANE_HEADER_WIDTH * viewport.zoom;
-  const laneH = LANE_HEIGHT * viewport.zoom;
-
-  return (
-    <div className="absolute inset-0 pointer-events-none overflow-hidden">
-      {/* Header column background */}
-      <div className="absolute top-0 bottom-0 bg-white z-10 border-r border-slate-100" style={{ left: 0, width: headerW }} />
-
-      {lanes.map((lane, i) => {
-        const c = LANE_COLORS[i % LANE_COLORS.length];
-        const top = offsetY + i * laneH;
-        return (
-          <div key={lane} className="absolute left-0 right-0" style={{ top, height: laneH }}>
-            {/* Lane tinted background */}
-            <div className="absolute inset-0" style={{ backgroundColor: c.bg, opacity: 0.6 }} />
-            {/* Bottom separator */}
-            <div className="absolute bottom-0 left-0 right-0 border-b border-slate-100" />
-            {/* Colored accent strip */}
-            <div className="absolute top-0 bottom-0 z-20" style={{ left: 0, width: Math.max(3, 3 * viewport.zoom), backgroundColor: c.accent }} />
-            {/* Lane label */}
-            <div className="absolute top-0 bottom-0 z-10 flex items-center justify-center" style={{ left: 0, width: headerW }}>
-              <span
-                className="font-semibold uppercase tracking-widest select-none whitespace-nowrap"
-                style={{
-                  color: c.text,
-                  fontSize: Math.max(8, 10 * viewport.zoom),
-                  transform: 'rotate(-90deg)',
-                  maxWidth: laneH - 16,
-                  letterSpacing: '0.12em',
-                }}
-              >
-                {lane}
-              </span>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function ViewportSwimlane({ lanes }: { lanes: string[] }) {
-  const viewport = useViewport();
-  return <SwimlaneOverlay lanes={lanes} viewport={viewport} />;
-}
+type WFNode = Node<WorkflowNodeData>;
 
 export function WorkflowCanvas() {
   const nodes           = useWorkflowStore(s => s.nodes);
   const edges           = useWorkflowStore(s => s.edges);
-  const lanes           = useWorkflowStore(s => s.lanes);
-  const walkerOverlayNodes = useWorkflowStore(s => s.walkerOverlayNodes);
-  const walkerOverlayEdges = useWorkflowStore(s => s.walkerOverlayEdges);
   const manualPositions = useWorkflowStore(s => s.manualPositions);
   const setManualPosition = useWorkflowStore(s => s.setManualPosition);
-  const onEdgesChange   = useWorkflowStore(s => s.onEdgesChange);
-  const onConnect       = useWorkflowStore(s => s.onConnect);
   const deleteNodes     = useWorkflowStore(s => s.deleteNodes);
-  const createNode      = useWorkflowStore(s => s.createNode);
+  const reparentNode    = useWorkflowStore(s => s.reparentNode);
+  const spliceNodeIntoEdge = useWorkflowStore(s => s.spliceNodeIntoEdge);
+  const confirmNode     = useWorkflowStore(s => s.confirmNode);
+  const unconfirmNode   = useWorkflowStore(s => s.unconfirmNode);
+  const pendingFocus    = useWorkflowStore(s => s.pendingFocus);
+  const clearPendingFocus = useWorkflowStore(s => s.clearPendingFocus);
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const rfInstance = useRef<any>(null);
-  const connectingNodeId = useRef<string | null>(null);
-  const connectionMade = useRef(false);
+  // Click vs. double-click disambiguation. Single-click action is deferred so
+  // a follow-up click (within 250ms) can cancel it and trigger discard instead.
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Maximum centroid-to-edge-midpoint distance, in flow units, at which an
+  // edge becomes a splice candidate while a node is being dragged.
+  const SPLICE_THRESHOLD = 70;
+  // Maximum centroid-to-node-bbox distance, in flow units, at which a node
+  // becomes a reparent target. 0 means inside the bbox; >0 means proximity.
+  const REPARENT_PROXIMITY = 80;
+
   const canvasRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
+  const rfInstance = useRef<ReactFlowInstance<WFNode, Edge> | null>(null);
+  // Set when a drag just performed a reparent; suppress the trailing manualPosition save for that node.
+  const justReparented = useRef<string | null>(null);
 
   const [rfNodes, setRfNodes] = useState<Node<WorkflowNodeData>[]>([]);
-  const [popup, setPopup] = useState<{ sourceId: string; canvasX: number; canvasY: number; screenX: number; screenY: number } | null>(null);
+  // Visual hints while dragging:
+  //   spliceEdgeId   — existing edge highlighted to show splice intent
+  //   reparentTarget — prospective new parent; we render a dashed preview edge
+  //                    from that node to the dragged node so the participant
+  //                    can confirm the intended move without overlapping cards.
+  const [spliceEdgeId, setSpliceEdgeId] = useState<string | null>(null);
+  const [reparentTarget, setReparentTarget] = useState<{ targetId: string; draggedId: string } | null>(null);
 
   const laidNodes = useMemo(
-    () => lanes.length > 0
-      ? layoutSwimlanes(nodes, edges, lanes, manualPositions)
-      : layoutNodes(nodes, edges, manualPositions),
-    [nodes, edges, lanes, manualPositions]
+    () => layoutTree(nodes, edges, manualPositions),
+    [nodes, edges, manualPositions]
   );
+
+  const visibleEdges = useMemo(() => {
+    const visibleIds = new Set(laidNodes.map(n => n.id));
+    return edges.filter(e => visibleIds.has(e.source) && visibleIds.has(e.target));
+  }, [laidNodes, edges]);
 
   useEffect(() => {
     if (!draggingRef.current) setRfNodes(laidNodes);
   }, [laidNodes]);
 
-  // Compose final node list: real laid-out nodes + walker ghost/card overlay nodes
-  const renderedNodes = useMemo(() => [...rfNodes, ...walkerOverlayNodes], [rfNodes, walkerOverlayNodes]);
-  const renderedEdges = useMemo(() => [...edges, ...walkerOverlayEdges], [edges, walkerOverlayEdges]);
+  // Auto-refocus when new nodes are added or a node enters edit mode.
+  // Single-node focuses use setCenter (direct, no fitView fallback to
+  // "fit-all-nodes" if the target is unmeasured). Multi-node focuses use
+  // fitView to frame parent + children together.
+  useEffect(() => {
+    if (!pendingFocus || pendingFocus.length === 0) return;
+    const ids = pendingFocus;
+    const handle = setTimeout(() => {
+      const inst = rfInstance.current;
+      if (!inst) return;
+      const all = inst.getNodes() as Node<WorkflowNodeData>[];
+      const present = ids.filter(id => all.some(n => n.id === id));
+      if (present.length === 0) { clearPendingFocus(); return; }
+      if (present.length === 1) {
+        const node = all.find(n => n.id === present[0])!;
+        const w = node.width ?? 220;
+        const h = node.height ?? 80;
+        const cx = node.position.x + w / 2;
+        const cy = node.position.y + h / 2;
+        // Skip the camera move if the node is already comfortably in view at
+        // a readable zoom — avoids the jarring "snap to center" when the
+        // participant double-clicks a node they can already see clearly.
+        const viewport = inst.getViewport();
+        const bounds = canvasRef.current?.getBoundingClientRect();
+        let alreadyInView = false;
+        if (bounds && viewport.zoom >= 0.85) {
+          const tl = inst.flowToScreenPosition({ x: node.position.x, y: node.position.y });
+          const br = inst.flowToScreenPosition({ x: node.position.x + w, y: node.position.y + h });
+          const MARGIN = 60;
+          alreadyInView =
+            tl.x >= bounds.left + MARGIN &&
+            tl.y >= bounds.top + MARGIN &&
+            br.x <= bounds.right - MARGIN &&
+            br.y <= bounds.bottom - MARGIN;
+        }
+        if (!alreadyInView) {
+          inst.setCenter(cx, cy, { zoom: 1.4, duration: 600 });
+        }
+      } else {
+        inst.fitView({ nodes: present.map(id => ({ id })), padding: 0.4, duration: 600, maxZoom: 1.1 });
+      }
+      clearPendingFocus();
+    }, 120);
+    return () => clearTimeout(handle);
+  }, [pendingFocus, clearPendingFocus]);
 
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -129,6 +126,10 @@ export function WorkflowCanvas() {
             draggingRef.current = true;
           } else if (change.position) {
             draggingRef.current = false;
+            if (justReparented.current === change.id) {
+              justReparented.current = null;
+              continue;
+            }
             setManualPosition(change.id, change.position);
           }
         }
@@ -137,121 +138,186 @@ export function WorkflowCanvas() {
     [setManualPosition, deleteNodes]
   );
 
-  const handleConnect = useCallback(
-    (connection: Parameters<typeof onConnect>[0]) => {
-      connectionMade.current = true;
-      onConnect(connection);
-    },
-    [onConnect]
-  );
-
-  const handleConnectStart: OnConnectStart = useCallback((_, { nodeId }) => {
-    connectingNodeId.current = nodeId ?? null;
-    connectionMade.current = false;
+  // Returns the id + connection-distance of the closest non-dragged node whose
+  // right edge is within REPARENT_PROXIMITY of the dragged node's left edge —
+  // i.e. how far the two are from being able to connect parent → child.
+  // Treating the *right edge* as the anchor matches the LR layout: the parent's
+  // outgoing connector emerges there, so it's where participants intuitively
+  // aim when proposing a new child.
+  const findReparentTarget = useCallback((draggedNode: Node<WorkflowNodeData>): { id: string; dist: number } | null => {
+    if (!rfInstance.current) return null;
+    const all = rfInstance.current.getNodes() as Node<WorkflowNodeData>[];
+    const draggedH = draggedNode.height ?? 80;
+    const dragLeftX = draggedNode.position.x;
+    const dragMidY = draggedNode.position.y + draggedH / 2;
+    let best: { id: string; dist: number } | null = null;
+    for (const n of all) {
+      if (n.id === draggedNode.id || n.id.startsWith('__backdrop__')) continue;
+      const x = n.position.x, y = n.position.y;
+      const w = n.width ?? 220, h = n.height ?? 80;
+      const rightX = x + w;
+      // Closest point on the target's right edge to the dragged left-mid point.
+      const clampedY = Math.max(y, Math.min(dragMidY, y + h));
+      const d = Math.hypot(dragLeftX - rightX, dragMidY - clampedY);
+      if (d > REPARENT_PROXIMITY) continue;
+      if (!best || d < best.dist) best = { id: n.id, dist: d };
+    }
+    return best;
   }, []);
 
-  const handleConnectEnd: OnConnectEnd = useCallback((event, connectionState) => {
-    const droppedOnEmpty = connectionState.isValid !== true;
-    if (droppedOnEmpty && connectingNodeId.current) {
-      const isMouse = 'clientX' in event;
-      const clientX = isMouse ? (event as MouseEvent).clientX : (event as TouchEvent).changedTouches[0]?.clientX ?? 0;
-      const clientY = isMouse ? (event as MouseEvent).clientY : (event as TouchEvent).changedTouches[0]?.clientY ?? 0;
-      const rect = canvasRef.current?.getBoundingClientRect();
-      setPopup({
-        sourceId: connectingNodeId.current,
-        canvasX: clientX - (rect?.left ?? 0),
-        canvasY: clientY - (rect?.top ?? 0),
-        screenX: clientX,
-        screenY: clientY,
+  // Returns the closest edge (with its midpoint distance) within SPLICE_THRESHOLD
+  // of the dragged node's centroid, ignoring edges that touch the dragged node.
+  const findSpliceEdge = useCallback((draggedNode: Node<WorkflowNodeData>): { id: string; dist: number } | null => {
+    if (!rfInstance.current) return null;
+    const all = rfInstance.current.getNodes() as Node<WorkflowNodeData>[];
+    const draggedW = draggedNode.width ?? 220;
+    const draggedH = draggedNode.height ?? 80;
+    const cx = draggedNode.position.x + draggedW / 2;
+    const cy = draggedNode.position.y + draggedH / 2;
+
+    let best: { id: string; dist: number } | null = null;
+    for (const e of visibleEdges) {
+      if (e.source === draggedNode.id || e.target === draggedNode.id) continue;
+      const src = all.find(n => n.id === e.source);
+      const tgt = all.find(n => n.id === e.target);
+      if (!src || !tgt) continue;
+      const sw = src.width ?? 220, sh = src.height ?? 80;
+      const tw = tgt.width ?? 220, th = tgt.height ?? 80;
+      const sx = src.position.x + sw / 2, sy = src.position.y + sh / 2;
+      const tx = tgt.position.x + tw / 2, ty = tgt.position.y + th / 2;
+      const mx = (sx + tx) / 2, my = (sy + ty) / 2;
+      const d = Math.hypot(cx - mx, cy - my);
+      if (!best || d < best.dist) best = { id: e.id, dist: d };
+    }
+    return best && best.dist < SPLICE_THRESHOLD ? best : null;
+  }, [visibleEdges]);
+
+  // While dragging: pick whichever candidate is closer.
+  //   Splice candidate (edge midpoint distance)  → "reconnect through this node"
+  //   Reparent candidate (target right-edge gap) → "become child of this node"
+  // Dropping in the gap between A and B → splice wins (midpoint is closer).
+  // Dropping right next to a card with no edges nearby → reparent wins.
+  const handleNodeDrag = useCallback((_e: React.MouseEvent, node: Node<WorkflowNodeData>) => {
+    if (!rfInstance.current) return;
+    if (!node.data.parentId) { setSpliceEdgeId(null); setReparentTarget(null); return; }
+    const reparentCand = findReparentTarget(node);
+    const spliceCand = findSpliceEdge(node);
+    const useSplice = spliceCand && (!reparentCand || spliceCand.dist <= reparentCand.dist);
+    if (useSplice) {
+      setSpliceEdgeId(spliceCand!.id);
+      setReparentTarget(null);
+      return;
+    }
+    if (reparentCand) {
+      setReparentTarget({ targetId: reparentCand.id, draggedId: node.id });
+      setSpliceEdgeId(null);
+      return;
+    }
+    setSpliceEdgeId(null);
+    setReparentTarget(null);
+  }, [findReparentTarget, findSpliceEdge]);
+
+  const handleNodeDragStop = useCallback((_e: React.MouseEvent, node: Node<WorkflowNodeData>) => {
+    setSpliceEdgeId(null);
+    setReparentTarget(null);
+    if (!rfInstance.current) return;
+    if (!node.data.parentId) return;
+    const reparentCand = findReparentTarget(node);
+    const spliceCand = findSpliceEdge(node);
+    const useSplice = spliceCand && (!reparentCand || spliceCand.dist <= reparentCand.dist);
+    if (useSplice) {
+      const e = visibleEdges.find(ed => ed.id === spliceCand!.id);
+      if (e && spliceNodeIntoEdge(node.id, e.source, e.target)) {
+        justReparented.current = node.id;
+      }
+      return;
+    }
+    if (reparentCand) {
+      const ok = reparentNode(node.id, reparentCand.id);
+      if (ok) justReparented.current = node.id;
+    }
+  }, [reparentNode, spliceNodeIntoEdge, findReparentTarget, findSpliceEdge, visibleEdges]);
+
+  // Highlight the candidate splice edge, plus inject a dashed preview edge from
+  // the prospective new parent to the dragged node when reparenting is queued.
+  const renderedEdges = useMemo(() => {
+    const out: Edge[] = visibleEdges.map(e => e.id === spliceEdgeId
+      ? { ...e, className: `${e.className ?? ''} workflow-splice-target`, animated: true }
+      : e
+    );
+    if (reparentTarget) {
+      out.push({
+        id: '__reparent_preview__',
+        source: reparentTarget.targetId,
+        target: reparentTarget.draggedId,
+        animated: true,
+        style: { stroke: '#6366f1', strokeWidth: 2, strokeDasharray: '6 4' },
       });
     }
-    connectingNodeId.current = null;
-    connectionMade.current = false;
-  }, []);
-
-  const handleCreateNode = useCallback(
-    (type: NodeType) => {
-      if (!popup || !rfInstance.current) return;
-      const flowPos = rfInstance.current.screenToFlowPosition({ x: popup.screenX, y: popup.screenY });
-      createNode(type, flowPos, popup.sourceId);
-      setPopup(null);
-    },
-    [popup, createNode]
-  );
+    return out;
+  }, [visibleEdges, spliceEdgeId, reparentTarget]);
 
   return (
-    <div ref={canvasRef} className="flex-1 h-full relative">
+    <div ref={canvasRef} className="flex-1 h-full relative bg-slate-50">
       <ReactFlow
-        nodes={renderedNodes}
+        nodes={rfNodes}
         edges={renderedEdges}
         nodeTypes={nodeTypes as NodeTypes}
         onInit={instance => { rfInstance.current = instance; }}
         onNodesChange={handleNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={handleConnect}
-        onConnectStart={handleConnectStart}
-        onConnectEnd={handleConnectEnd}
+        onNodeDrag={handleNodeDrag}
+        onNodeDragStop={handleNodeDragStop}
+        onNodeClick={(e, n) => {
+          const target = e.target as HTMLElement;
+          if (target.closest('input, button, svg')) return;
+          // If a single-click is already pending, treat this as the 2nd click
+          // of a double-click and let onNodeDoubleClick take over.
+          if (clickTimerRef.current) {
+            clearTimeout(clickTimerRef.current);
+            clickTimerRef.current = null;
+            return;
+          }
+          const data = n.data as WorkflowNodeData;
+          clickTimerRef.current = setTimeout(() => {
+            clickTimerRef.current = null;
+            if (data.confirmed === false) {
+              confirmNode(n.id);
+            } else if (data.parentId) {
+              // Root has no draft state — never unkeep root.
+              unconfirmNode(n.id);
+            }
+          }, 250);
+        }}
+        onNodeDoubleClick={(e, n) => {
+          const target = e.target as HTMLElement;
+          if (target.closest('input, button, svg')) return;
+          if (clickTimerRef.current) {
+            clearTimeout(clickTimerRef.current);
+            clickTimerRef.current = null;
+          }
+          // Enter edit mode for the label and focus the canvas on this node
+          // so the participant can clearly see what they're typing.
+          useWorkflowStore.getState().setEditingNodeId(n.id);
+          useWorkflowStore.getState().setPendingFocus([n.id]);
+        }}
         nodesDraggable
-        nodesConnectable
+        nodesConnectable={false}
+        edgesFocusable={false}
         deleteKeyCode={['Backspace', 'Delete']}
         connectionLineType={ConnectionLineType.SmoothStep}
-        connectionMode={ConnectionMode.Strict}
-        connectionRadius={40}
         defaultEdgeOptions={{
           type: 'smoothstep',
-          style: { stroke: '#94a3b8', strokeWidth: 1.5 },
-          markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8', width: 14, height: 14 },
+          style: { stroke: '#cbd5e1', strokeWidth: 1.5 },
+          markerEnd: { type: MarkerType.ArrowClosed, color: '#cbd5e1', width: 12, height: 12 },
         }}
         fitView
         fitViewOptions={{ padding: 0.3 }}
         proOptions={{ hideAttribution: true }}
       >
-        <Background gap={20} color="#f0f0f0" />
+        <Background gap={22} size={1.4} color="#cbd5e1" />
         <Controls className="!shadow-sm !border !border-gray-200 !rounded-lg overflow-hidden" />
-        {lanes.length > 0 && <ViewportSwimlane lanes={lanes} />}
       </ReactFlow>
 
-      {nodes.length === 0 && (
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <p className="text-gray-300 text-sm">Graph will appear here as you talk</p>
-        </div>
-      )}
-
-      {nodes.length > 0 && nodes.length < 3 && lanes.length === 0 && (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 pointer-events-none">
-          <p className="text-xs text-gray-300 bg-white/80 px-3 py-1 rounded-full border border-gray-100 shadow-sm">
-            Double-click to edit · drag to reposition · select + Delete to remove
-          </p>
-        </div>
-      )}
-
-      {popup && (
-        <>
-          <div className="absolute inset-0 z-40" onMouseDown={() => setPopup(null)} />
-          <div
-            className="absolute z-50 bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden w-36"
-            style={{ left: popup.canvasX, top: popup.canvasY }}
-            onMouseDown={e => e.stopPropagation()}
-          >
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 px-3 pt-2.5 pb-1">Add node</p>
-            {TYPE_OPTIONS.map(opt => (
-              <button
-                key={opt.type}
-                onClick={() => handleCreateNode(opt.type)}
-                className={`w-full text-left px-3 py-2 text-sm font-medium text-gray-600 transition ${opt.style}`}
-              >
-                {opt.label}
-              </button>
-            ))}
-            <button
-              onClick={() => setPopup(null)}
-              className="w-full text-left px-3 py-2 text-xs text-gray-400 hover:bg-gray-50 transition border-t border-gray-100"
-            >
-              Cancel
-            </button>
-          </div>
-        </>
-      )}
     </div>
   );
 }

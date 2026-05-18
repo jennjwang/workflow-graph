@@ -50,3 +50,28 @@ html, body, #root {
   padding: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
+
+/* Drop-target highlight when dragging a node onto another node for reparenting. */
+.react-flow__node.workflow-drop-target > * {
+  outline: 2px solid #6366f1;
+  outline-offset: 3px;
+  border-radius: 1rem;
+  box-shadow: 0 0 0 6px rgba(99, 102, 241, 0.15);
+  transition: box-shadow 80ms ease-out;
+}
+
+/* Splice-target highlight on edges while dragging a node toward them.
+   !important is needed because React Flow applies inline stroke styles
+   from defaultEdgeOptions, which would otherwise win the cascade. */
+.react-flow__edge.workflow-splice-target .react-flow__edge-path {
+  stroke: #6366f1 !important;
+  stroke-width: 3 !important;
+  stroke-dasharray: 6 4 !important;
+  animation: spliceDashFlow 0.8s linear infinite;
+}
+.react-flow__edge.workflow-splice-target .react-flow__edge-path-selector {
+  stroke-width: 14 !important;
+}
+@keyframes spliceDashFlow {
+  to { stroke-dashoffset: -20; }
+}

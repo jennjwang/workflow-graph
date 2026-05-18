@@ -15,7 +15,7 @@ export function SetupScreen() {
 
   return (
     <div className="flex items-center justify-center h-full bg-gray-50">
-      <div className="bg-white rounded-2xl shadow-md p-10 w-full max-w-lg">
+      <div className="bg-white rounded-2xl shadow-md p-10 w-full max-w-xl">
         <h1 className="text-2xl font-bold text-gray-800 mb-2">Workflow Mapper</h1>
         <p className="text-gray-500 mb-8 text-sm">
           An AI interviewer will guide you through mapping your workflow step by step.

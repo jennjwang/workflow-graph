@@ -5,7 +5,7 @@ import { createReadStream } from 'fs';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
-import { UPPER_LEVEL_TASKS_SYSTEM_PROMPT } from './prompts/task-generator.js';
+import { UPPER_LEVEL_TASKS_SYSTEM_PROMPT, SUBTASK_WORKER_SYSTEM_PROMPT } from './prompts/task-generator.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -13,6 +13,10 @@ app.use(express.json({ limit: '25mb' }));
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const MODEL = process.env.MODEL || 'gpt-4o-mini';
+// Smaller/cheaper model used for high-volume, lower-stakes calls (subtask
+// proposals, interviews, walker chat, etc.). The upper-level task generator
+// still uses MODEL because it anchors the whole session and is run only once.
+const SMALL_MODEL = process.env.SMALL_MODEL || 'gpt-4o-mini';
 
 // In production we mount a Cloud Storage bucket at /app/data, so write sessions there.
 const SESSIONS_DIR = process.env.SESSIONS_DIR || path.join(__dirname, 'sessions');
@@ -227,7 +231,7 @@ app.post('/api/generate-categories', async (req, res) => {
   const { jobTitle, typicalWeek } = req.body;
   try {
     const response = await client.chat.completions.create({
-      model: MODEL,
+      model: SMALL_MODEL,
       temperature: 0.7,
       response_format: { type: 'json_object' },
       messages: [
@@ -261,11 +265,110 @@ Return JSON: {"categories": [{"name": "...", "description": "..."}]}`,
   }
 });
 
+// Pull out recurring work activities the participant EXPLICITLY mentioned in
+// the background interview. These ground the upper-level generator so the
+// final task list reflects what they actually said rather than what's typical
+// for the role. Output is plain task names; the generator turns them into
+// MECE upper-level buckets in the next step.
+const INTERVIEW_TASK_EXTRACTOR_PROMPT = `You read a short background interview between a researcher and a participant about their job, and extract the WORK ACTIVITIES the participant EXPLICITLY mentioned.
+
+GROUND TRUTH ONLY. Only include activities the participant actually named — do not infer, do not extrapolate from job title, do not pad with role-typical activities they didn't mention. If they said "I sometimes review PRs", include it. If they said "I work in product" but never named what they do, do not invent "review PRs" for them.
+
+ONE ACTIVITY PER ITEM. Split compound phrases — "Check emails and answer them" becomes two items: "Check emails" and "Answer emails". Compound items are not allowed.
+
+KEEP THE PARTICIPANT'S WORDING. Use their verbs and nouns. If they say "wiring tickets", don't translate to "Closing JIRA tickets". Trim filler ("I usually try to", "kind of", "you know") but preserve their substantive terminology.
+
+VERB-LED, 2–8 WORDS. Each item starts with a verb and reads as an action. Title-case-ish is fine; no trailing period.
+
+NO META, NO ROLES, NO FEELINGS. Skip:
+  - Self-descriptors ("I am a software developer", "I work at a startup").
+  - Tenure ("for 5 years", "since 2022").
+  - Emotional/attitudinal statements ("I love my job", "I find debugging hard").
+  - Tool affordances on their own ("I use Slack", "I have an IDE") — only include them if paired with a clear activity ("Coordinate over Slack" yes, "I use Slack" no).
+
+NO DEDUPLICATION ACROSS PARAPHRASES YOU'RE UNSURE ABOUT. If the participant said "review code" once and "do code reviews" once, treat them as the same — keep only one. But if they distinguish two activities ("review PRs" vs. "review design docs"), keep both.
+
+Return ONLY valid JSON: {"tasks": ["..."]}.`;
+
+app.post('/api/extract-interview-tasks', async (req, res) => {
+  const { backgroundTranscript = [], userProfile } = req.body;
+  if (!Array.isArray(backgroundTranscript)) {
+    return res.status(400).json({ error: 'backgroundTranscript must be an array' });
+  }
+  // Build a clean Q→A transcript. Skip empty answers (the dev seed had a few).
+  const turns = backgroundTranscript
+    .filter(t => t && typeof t.answer === 'string' && t.answer.trim().length > 0)
+    .map(t => `Q: ${t.question}\nA: ${t.answer}`)
+    .join('\n\n');
+  if (!turns) {
+    // No interview to extract from — fail open so the generator can still run.
+    return res.json({ tasks: [] });
+  }
+  const profileBlock = userProfile && (userProfile.jobTitle || userProfile.responsibilities)
+    ? `Participant role context (for resolving pronouns and references — do NOT invent activities from it):\n` +
+      (userProfile.jobTitle ? `- Job title: ${userProfile.jobTitle}\n` : '') +
+      (userProfile.responsibilities ? `- Responsibilities (their words): ${userProfile.responsibilities}\n` : '') +
+      '\n'
+    : '';
+  try {
+    const response = await client.chat.completions.create({
+      model: MODEL,
+      // Deterministic-ish extraction — we want consistent grounding across runs.
+      temperature: 0.2,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: INTERVIEW_TASK_EXTRACTOR_PROMPT },
+        { role: 'user', content: `${profileBlock}Interview transcript:\n\n${turns}\n\nExtract the work activities the participant explicitly named.` },
+      ],
+    });
+    const parsed = JSON.parse(response.choices[0].message.content);
+    const tasks = Array.isArray(parsed.tasks)
+      ? parsed.tasks.filter(t => typeof t === 'string' && t.trim()).map(t => t.trim()).slice(0, 30)
+      : [];
+    // Log what the extractor pulled from the interview so we can verify in
+    // Cloud Run logs whether grounding is being seeded correctly. Each task on
+    // its own line for easy grep.
+    console.log(`[extract-interview-tasks] role=${userProfile?.jobTitle ?? '(none)'} count=${tasks.length}`);
+    for (const t of tasks) console.log(`  • ${t}`);
+    res.json({ tasks });
+  } catch (err) {
+    console.error('[extract-interview-tasks]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/generate-tasks', async (req, res) => {
-  const { jobTitle, typicalWeek, aiUsage, priorTasks = [] } = req.body;
+  const { jobTitle, typicalWeek, aiUsage, responsibilities, priorTasks = [], interviewTasks = [] } = req.body;
   try {
     const priorBlock = priorTasks.length > 0
       ? `\nAlready shown (do NOT repeat or paraphrase):\n${priorTasks.map(t => `- ${t}`).join('\n')}\n`
+      : '';
+
+    // Activities the participant explicitly named in the open interview.
+    // The grounding block REDEFINES the MECE target for this run: coverage of
+    // the role applies to (mentioned ∪ generator output), so the generator's
+    // job is to fill gaps the participant didn't mention. This overrides the
+    // base system prompt's "collectively exhaustive" requirement, which would
+    // otherwise force echoing.
+    const groundingBlock = interviewTasks.length > 0
+      ? `\nACTIVITIES THE PARTICIPANT ALREADY MENTIONED in the open interview:\n${interviewTasks.map(t => `- ${t}`).join('\n')}\n\n` +
+        `REDEFINED MECE TARGET FOR THIS RUN: Treat the mentioned activities above as ALREADY-PRESENT upper-level tasks. Your output PLUS the mentioned activities together must be MECE over the role. Your output's role is to fill the GAPS — categories of work clearly implied by the participant's responsibilities and typical week that they did NOT explicitly mention.\n\n` +
+        `SEMANTIC OVERLAP — READ CAREFULLY (most common failure mode):\n` +
+        `  When you check "is my proposed task the same as one they mentioned?", compare MEANING, not wording. Two tasks are the SAME ACTIVITY when a participant would describe the same minute of their day with either label. Surface differences do not make them different activities.\n\n` +
+        `  Examples of MENTIONED ↔ DO-NOT-OUTPUT pairs:\n` +
+        `    Mentioned "do code reviews"                 → DO NOT output "Review pull requests" / "Review code".\n` +
+        `    Mentioned "answer Slack messages"           → DO NOT output "Respond to team chat" / "Reply to teammates".\n` +
+        `    Mentioned "go to standup"                   → DO NOT output "Attend daily standups" / "Join team standup".\n` +
+        `    Mentioned "implement tickets"               → DO NOT output "Build features" / "Write code for tickets" / "Develop assigned work".\n` +
+        `    Mentioned "write the PRD"                   → DO NOT output "Draft product requirements" / "Author PRDs".\n` +
+        `    Mentioned "answer customer support emails"  → DO NOT output "Respond to customer inquiries" / "Handle support tickets".\n` +
+        `  TEST: for each task you draft, scan every mentioned activity and ask "could a participant honestly say this is the same thing I described?" If yes for any, drop yours.\n\n` +
+        `Concretely:\n` +
+        `  1. DO NOT output an upper-level task that semantically overlaps with one of the mentioned activities, even if the wording, verb, or framing differs. The mentioned set covers that category.\n` +
+        `  2. DO output upper-level tasks for any role-relevant category the mentioned set does NOT touch (admin, communication, periodic reporting, learning, coordination, equipment upkeep, mandated compliance, anything in their responsibilities the typical week doesn't cover, etc.).\n` +
+        `  3. STAY IN THEIR WORLD. Your gap-fill tasks must be clearly implied by their responsibilities or typical week — not imported from outside the role.\n` +
+        `  4. If the mentioned set already exhausts the role's major categories, output FEWER tasks (even just 2–3). Better to output a short list than to manufacture overlap.\n` +
+        `  5. COUNT: aim for total (mentioned + your output) ≈ 25–30. If mentioned has 5, output 20–25. If mentioned has 15, output 10–15.\n`
       : '';
 
     // MECE areas-as-tasks: each task is a broad responsibility area, written as a
@@ -283,76 +386,427 @@ app.post('/api/generate-tasks', async (req, res) => {
         },
         {
           role: 'user',
-          content: `Job: ${jobTitle}\nTypical week: ${typicalWeek}${aiUsage ? `\nAI usage: ${aiUsage}` : ''}\n${priorBlock}\nGenerate the upper-level tasks.`,
+          content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${aiUsage ? `\nAI usage: ${aiUsage}` : ''}${groundingBlock}${priorBlock}\nGenerate the upper-level tasks.`,
         },
       ],
     });
     const parsed = JSON.parse(response.choices[0].message.content);
-    res.json({ tasks: parsed.tasks ?? [] });
+    const generated = parsed.tasks ?? [];
+    // Log the generator's inputs and outputs together so we can audit grounding
+    // failures end-to-end (e.g. "did the generator repeat something that was in
+    // interviewTasks?") without having to crack open the saved session JSON.
+    console.log(`[generate-tasks] role=${jobTitle} interviewTasks=${interviewTasks.length} generated=${generated.length}`);
+    if (interviewTasks.length > 0) {
+      console.log('  interviewTasks (grounding — should NOT be repeated):');
+      for (const t of interviewTasks) console.log(`    ◦ ${t}`);
+    }
+    console.log('  generated:');
+    for (const t of generated) console.log(`    ◦ ${typeof t === 'string' ? t : t?.name ?? '(unknown shape)'}`);
+    res.json({ tasks: generated });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
-app.post('/api/propose-subtasks', async (req, res) => {
-  const { taskLabel, coreTask, jobTitle, statementClarification, existingNodes = [] } = req.body;
-  // statementClarification: optional string — if the user clarified what the vague task means
-  const ctx = statementClarification
-    ? `The participant clarified that "${taskLabel}" means: "${statementClarification}". Now propose 3–5 concrete sub-steps for this clarified task.`
-    : `Propose 3–5 concrete sub-steps that make up "${taskLabel}" in the context of ${coreTask}.`;
-  const existingList = existingNodes.length > 0
-    ? `\n\nOTHER EXISTING NODES IN THE GRAPH (besides "${taskLabel}"):\n${existingNodes.map(n => `- id: ${n.id} | label: "${n.label}" | type: ${n.type}`).join('\n')}\n\nIMPORTANT: If a sub-step you'd propose is essentially the same as one of these existing nodes, DO NOT create it as a new sub-step. Instead, mark it as a connection to that existing node by setting "linkToExistingId" to the existing node's id. The system will draw an edge from the parent to that existing node instead of creating a duplicate.`
-    : '';
+// Streaming variant of /api/generate-tasks. Emits Server-Sent Events as each
+// task is parsed off the OpenAI stream, so the client can render the picker as
+// soon as the first task arrives instead of waiting for the full list (~1-2s
+// time-to-first-paint instead of ~7s for the whole batch).
+//
+// Output format: the model is asked to emit JSONL (one {"name":"..."} per
+// line, no surrounding array). We accumulate stream chunks in a buffer, split
+// on newlines, parse each completed line, and emit an SSE `task` event per
+// parsed object. The shared UPPER_LEVEL_TASKS_SYSTEM_PROMPT still applies —
+// only the OUTPUT FORMAT instruction is overridden.
+app.post('/api/generate-tasks-stream', async (req, res) => {
+  const { jobTitle, typicalWeek, aiUsage, responsibilities, priorTasks = [], interviewTasks = [] } = req.body;
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  const sendEvent = (event, data) => {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    const priorBlock = priorTasks.length > 0
+      ? `\nAlready shown (do NOT repeat or paraphrase):\n${priorTasks.map(t => `- ${t}`).join('\n')}\n`
+      : '';
+
+    const groundingBlock = interviewTasks.length > 0
+      ? `\nACTIVITIES THE PARTICIPANT ALREADY MENTIONED in the open interview:\n${interviewTasks.map(t => `- ${t}`).join('\n')}\n\n` +
+        `REDEFINED MECE TARGET FOR THIS RUN: Treat the mentioned activities above as ALREADY-PRESENT upper-level tasks. Your output PLUS the mentioned activities together must be MECE over the role. Your output's role is to fill the GAPS — categories of work clearly implied by the participant's responsibilities and typical week that they did NOT explicitly mention.\n\n` +
+        `SEMANTIC OVERLAP — READ CAREFULLY (most common failure mode):\n` +
+        `  When you check "is my proposed task the same as one they mentioned?", compare MEANING, not wording. Two tasks are the SAME ACTIVITY when a participant would describe the same minute of their day with either label. Surface differences do not make them different activities.\n\n` +
+        `  Examples of MENTIONED ↔ DO-NOT-OUTPUT pairs:\n` +
+        `    Mentioned "do code reviews"                 → DO NOT output "Review pull requests" / "Review code".\n` +
+        `    Mentioned "answer Slack messages"           → DO NOT output "Respond to team chat" / "Reply to teammates".\n` +
+        `    Mentioned "go to standup"                   → DO NOT output "Attend daily standups" / "Join team standup".\n` +
+        `    Mentioned "implement tickets"               → DO NOT output "Build features" / "Write code for tickets" / "Develop assigned work".\n` +
+        `  TEST: for each task you draft, scan every mentioned activity and ask "could a participant honestly say this is the same thing I described?" If yes for any, drop yours.\n\n` +
+        `Concretely:\n` +
+        `  1. DO NOT output an upper-level task that semantically overlaps with one of the mentioned activities, even if the wording, verb, or framing differs.\n` +
+        `  2. DO output upper-level tasks for any role-relevant category the mentioned set does NOT touch.\n` +
+        `  3. STAY IN THEIR WORLD. Your gap-fill tasks must be clearly implied by their responsibilities or typical week.\n` +
+        `  4. If the mentioned set already exhausts the role's major categories, emit fewer items.\n` +
+        `  5. COUNT: aim for total (mentioned + your output) ≈ 25–30. If mentioned has 5, output 20–25. If mentioned has 15, output 10–15.\n`
+      : '';
+
+    // OVERRIDE the system prompt's final "Return JSON" instruction with a JSONL
+    // directive. Streaming partial JSON is fragile; JSONL splits cleanly on \n.
+    const streamingSystem = `${UPPER_LEVEL_TASKS_SYSTEM_PROMPT}
+
+OUTPUT FORMAT — STREAMING (overrides any earlier JSON instructions):
+Emit ONE JSON object per line. Each line: {"name":"<task name>"}. Separate with newlines. NO outer array, NO commas between objects, NO surrounding {"tasks":[...]}. Just one object per line. Emit them as you decide on them — don't pre-buffer the full set.`;
+
+    const stream = await client.chat.completions.create({
+      model: MODEL,
+      temperature: 0.7,
+      stream: true,
+      messages: [
+        { role: 'system', content: streamingSystem },
+        {
+          role: 'user',
+          content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${aiUsage ? `\nAI usage: ${aiUsage}` : ''}${groundingBlock}${priorBlock}\nGenerate the upper-level tasks.`,
+        },
+      ],
+    });
+
+    let buffer = '';
+    let emitted = 0;
+    const emitLine = (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      try {
+        const obj = JSON.parse(trimmed);
+        if (obj && typeof obj.name === 'string' && obj.name.trim()) {
+          sendEvent('task', { name: obj.name.trim() });
+          emitted += 1;
+        }
+      } catch {
+        // Skip malformed lines silently — model occasionally emits prose or
+        // commentary in stray chunks; we tolerate that.
+      }
+    };
+
+    for await (const chunk of stream) {
+      const delta = chunk.choices?.[0]?.delta?.content ?? '';
+      if (!delta) continue;
+      buffer += delta;
+      let nl;
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 1);
+        emitLine(line);
+      }
+    }
+    if (buffer.trim()) emitLine(buffer);
+
+    console.log(`[generate-tasks-stream] role=${jobTitle} interviewTasks=${interviewTasks.length} emitted=${emitted}`);
+    sendEvent('done', { total: emitted });
+    res.end();
+  } catch (err) {
+    console.error('[generate-tasks-stream]', err);
+    try { sendEvent('error', { error: err.message }); } catch {}
+    res.end();
+  }
+});
+
+// Generate attention-check tasks. These are O*NET-style task statements from
+// occupations clearly unrelated to the participant's role — used to confirm
+// the participant is reading carefully. Returns up to `count` items.
+app.post('/api/generate-attention-checks', async (req, res) => {
+  const { jobTitle, responsibilities, typicalWeek, count = 8 } = req.body ?? {};
+  const targetCount = Math.max(1, Math.min(20, Number(count) || 8));
+  const systemPrompt = `You generate ATTENTION-CHECK task statements for a study. The participant will see them mixed in with real tasks for their job and is expected to mark them "I don't do this".
+
+Each attention check must be:
+- A real task from a CLEARLY UNRELATED occupation — one in a completely different industry, setting, and skill base than the participant's role. A participant should never answer "yes" to it.
+- Written in O*NET TASK STATEMENT form: full action statement, verb-led, with a concrete object and (when natural) purpose or context. 10–25 words. Sentence case, terminal period.
+- Plausible as a real task in its source occupation — not absurd or comedic. The check works because it is obviously not THIS participant's work, not because it is silly.
+
+Pick source occupations from BROADLY DIFFERENT industries — e.g. healthcare, skilled trades (electrician, plumber, mechanic), agriculture, transportation, food service, public safety, manufacturing, education, construction. Avoid picking source occupations that share vocabulary or setting with the participant's job.
+
+CONSTRAINTS:
+- Each task must come from a different source occupation.
+- Do NOT echo the participant's role vocabulary, tools, audiences, or artifacts.
+- Do NOT use generic office vocabulary that could plausibly apply to many jobs.
+
+Return JSON: { "tasks": ["...", "...", ...] }. Exactly ${targetCount} items.`;
+
+  const userBlock =
+    `Participant's role: ${jobTitle ?? '(unknown)'}\n` +
+    (responsibilities ? `Responsibilities: ${responsibilities}\n` : '') +
+    (typicalWeek ? `Typical week: ${typicalWeek}\n` : '') +
+    `\nGenerate ${targetCount} O*NET-style attention-check tasks from occupations clearly unrelated to this role.`;
+
   try {
     const response = await client.chat.completions.create({
       model: MODEL,
+      temperature: 0.8,
       response_format: { type: 'json_object' },
       messages: [
-        {
-          role: 'system',
-          content: `You propose BPMN-lite sub-steps for a workflow task. Return JSON: { "subtasks": [{ "label": "string (2-5 words)", "description": "one sentence", "type": "start" | "task" | "decision" | "handoff" | "wait" | "failure" | "end", "linkToExistingId": "string (optional)" }] }.
-
-Use the right BPMN element type for each step:
-- "task" — most common; a concrete action the person performs.
-- "decision" — a branching point where flow splits based on a condition.
-- "handoff" — work moves to another person, team, or system.
-- "wait" — pauses for external event (approval, response, timer).
-- "failure" — error or exception path.
-
-CRITICAL DEDUP RULES:
-- Look at the OTHER EXISTING NODES list. For each potential sub-step, check whether it OVERLAPS in MEANING with any existing node — not just exact labels. E.g. "Evaluate code quality" overlaps with an existing "Examine code style" or "Review code" node, even though the words differ.
-- If a sub-step overlaps with an existing node: OMIT it entirely. Don't create a duplicate, don't even link to it.
-- NEVER propose a sub-step that conceptually belongs under a DIFFERENT existing parent.
-- NEVER propose a sub-step with the same label as the parent task being expanded.
-
-MUTUAL EXCLUSIVITY (just as critical):
-- The sub-steps you propose must be MUTUALLY EXCLUSIVE — each one covers a distinct concern, not a different angle of the same concern.
-- BAD examples (too similar to each other): "Check code functionality" + "Examine tests" + "Assess code readability" — these all touch on aspects of "review the code" and overlap.
-- GOOD examples for "Review code" (distinct concerns): "Read PR description" → "Run code locally" → "Add inline comments" → "Mark review status". Each is a different ACTION at a different phase.
-- Test: if you can read two of your sub-steps and a person could plausibly be doing both at the same moment, they overlap — replace one.
-- Each sub-step should be a different ACTION/STEP, not a different LENS on the same action.
-
-SPECIFICITY (just as critical):
-- Sub-step labels MUST describe a CONCRETE, OBSERVABLE action — something a new employee could literally watch you do.
-- BANNED vague verbs in labels (when standing alone): "assess", "analyze", "evaluate", "consider", "review", "examine", "understand", "look at", "think about", "verify", "ensure" — these without a specific object/artifact are too abstract.
-- BANNED vague phrases: "potential impacts", "key considerations", "relevant factors", "appropriate criteria", "the situation".
-- Each label should answer: WHAT specifically is read, written, clicked, run, sent, opened, called, filed, or filled in?
-- BAD: "Assess potential impacts" — what does this look like in practice?
-- GOOD: "Read affected user count from analytics dashboard" or "Check Slack #incidents for related reports" or "Open the design doc and list every dependency".
-- BAD: "Evaluate code quality"
-- GOOD: "Run linter locally" or "Check test coverage report" or "Verify type-check passes".
-- The 'description' field can elaborate, but the LABEL itself must already be concrete.
-
-CRITICAL: only use type "decision" when the flow ACTUALLY BRANCHES based on the answer (e.g. "Approve or request changes?" — yes leads one way, no another). A "check" or "verify" step is a TASK, not a decision, unless the result truly splits the flow into different paths. When in doubt, use "task". Decision labels MUST be phrased as a question (end with "?", e.g. "Approve PR?", "Tests passing?", "Major change?").
-
-Order: roughly sequential. Prefer 3–5 sub-steps.`,
-        },
-        { role: 'user', content: `Role: ${jobTitle}\nMain workflow: ${coreTask}\n\n${ctx}${existingList}` },
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userBlock },
       ],
     });
     const parsed = JSON.parse(response.choices[0].message.content);
-    const validTypes = new Set(['start', 'task', 'decision', 'handoff', 'wait', 'failure', 'end']);
+    const tasks = Array.isArray(parsed.tasks) ? parsed.tasks.filter(t => typeof t === 'string') : [];
+    console.log(`[generate-attention-checks] role=${jobTitle} requested=${targetCount} generated=${tasks.length}`);
+    for (const t of tasks) console.log(`    ◦ ${t}`);
+    res.json({ tasks });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Generate work items (tasks OR new responsibilities) that emerged in this
+// participant's job because of their AI usage. Distinct from /api/generate-tasks:
+// that endpoint maps the role's broad MECE coverage; this one zooms in on items
+// caused or transformed by AI tools. Returns a flat list with a `kind` tag so
+// callers can split tasks vs responsibilities.
+app.post('/api/generate-ai-tasks', async (req, res) => {
+  const { jobTitle, responsibilities, typicalWeek, aiUsage } = req.body;
+  if (!aiUsage || !String(aiUsage).trim()) {
+    // Nothing AI-specific to ground on. Fail open with empty list — callers can
+    // treat the no-AI-usage path as "no AI-derived items to surface".
+    return res.json({ items: [] });
+  }
+  const systemPrompt = `You generate work items (tasks OR new responsibilities) that a participant likely has in their job BECAUSE of how they use AI at work. Each item is something that exists in their day-to-day now and would not have existed before AI tools were available — items the regular role description would not capture.
+
+For each item:
+- "name": a short, action-led phrase (3–8 words). Use the participant's own role vocabulary where natural (e.g. "PR", "experiments", "advisor" for a CS PhD; "filings", "depositions" for a litigator). Do NOT pad with corporate buzzwords ("leverage", "synergize", "operationalize").
+- "kind": "task" if it's a concrete recurring activity the participant performs (a unit of work). "responsibility" if it's a broader area of ongoing accountability the participant carries.
+
+GROUNDING — read carefully:
+- Start from the participant's actual AI usage answer. Translate vague phrasing ("I use it for everything") into SPECIFIC items inferred from their role + responsibilities. Do not echo the answer verbatim.
+- Every item must be directly tied to their role. Don't import generic "use AI assistant" items. Use what their role does day-to-day as the anchor, and ask: what part of that work has been transformed or added because of AI?
+
+GOOD examples (FOR SHAPE ONLY — do NOT copy):
+  CS PhD with aiUsage "I use AI for code review and writing":
+    { name: "Verify AI-generated code against tests",        kind: "task" }
+    { name: "Spot-check AI summaries of papers",             kind: "task" }
+    { name: "Curate prompt templates for the research group", kind: "responsibility" }
+    { name: "Stay current on new model releases",            kind: "responsibility" }
+  Litigator with aiUsage "for case research and drafting":
+    { name: "Verify AI-summarized case citations",           kind: "task" }
+    { name: "Redact PII before pasting into AI tools",       kind: "task" }
+    { name: "Set firm policy on AI-drafted client work",     kind: "responsibility" }
+
+CONSTRAINTS:
+- 3–5 items total. Better to return fewer than to pad with generic items.
+- Mix tasks and responsibilities only if both genuinely apply. If the role and AI usage suggest only tasks, return only tasks (and vice versa).
+- Each item must read as something that did NOT exist (or existed differently) before this participant started using AI.
+
+Return JSON: { "items": [{ "name": "...", "kind": "task" | "responsibility" }] }.`;
+
+  const userBlock =
+    `Job: ${jobTitle ?? '(unknown)'}\n` +
+    (responsibilities ? `Primary responsibilities: ${responsibilities}\n` : '') +
+    (typicalWeek ? `Typical week: ${typicalWeek}\n` : '') +
+    `AI usage (the participant's own words): ${aiUsage}\n\n` +
+    `Generate the AI-derived items.`;
+
+  try {
+    const response = await client.chat.completions.create({
+      model: MODEL,
+      temperature: 0.6,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userBlock },
+      ],
+    });
+    const parsed = JSON.parse(response.choices[0].message.content);
+    const items = Array.isArray(parsed.items)
+      ? parsed.items
+          .filter(it => it && typeof it.name === 'string' && it.name.trim())
+          .map(it => ({
+            name: it.name.trim(),
+            kind: it.kind === 'responsibility' ? 'responsibility' : 'task',
+          }))
+          .slice(0, 5)
+      : [];
+    console.log(`[generate-ai-tasks] role=${jobTitle} aiUsage="${aiUsage.slice(0, 60)}${aiUsage.length > 60 ? '…' : ''}" generated=${items.length}`);
+    for (const it of items) console.log(`    ◦ [${it.kind}] ${it.name}`);
+    res.json({ items });
+  } catch (err) {
+    console.error('[generate-ai-tasks]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/propose-subtasks', async (req, res) => {
+  const { taskLabel, coreTask, jobTitle, statementClarification, existingNodes = [], existingChildren = [], ancestorChain = [], responsibilities, typicalWeek, rejected = [], promptVariant = 'default' } = req.body;
+  // existingChildren: direct children of the node being expanded. When non-empty,
+  // we switch to "more" mode and ask for ADDITIONAL sub-tasks beyond what's there.
+  // ancestorChain: labels from root → ... → parent of the node being expanded.
+  // Empty array means we're decomposing the root itself (depth 0).
+
+  const depth = ancestorChain.length;
+  const granularityHint = depth === 0
+    ? `You are decomposing the ROOT task of the tree. Sub-tasks here should be BROAD PHASES of the work — coarse buckets that hold finer steps inside them. Avoid micro-actions.`
+    : depth <= 2
+      ? `You are at depth ${depth} of the tree. Sub-tasks should be CONCRETE NAMED ACTIONS the person performs (e.g., "Read PR description", "Run test suite locally") — not phases, not single clicks.`
+      : `You are at depth ${depth} of the tree — deep in the decomposition. Sub-tasks should be VERY SPECIFIC MICRO-ACTIONS (e.g., "Click the 'Files changed' tab", "Read the diff summary"). If the parent task is already concrete enough that further breakdown becomes trivial, return zero sub-tasks.`;
+
+  const pathLine = depth > 0
+    ? `\nPATH FROM ROOT: ${ancestorChain.map(l => `"${l}"`).join(' → ')} → "${taskLabel}" (the task you are decomposing)\n`
+    : '';
+
+  const isMore = existingChildren.length > 0;
+  let ctx;
+  if (isMore) {
+    ctx = `The participant has already identified these sub-tasks under "${taskLabel}":
+${existingChildren.map(c => `- "${c.label}"`).join('\n')}
+
+Propose 1–3 ADDITIONAL sub-tasks that COMPLEMENT these — covering different angles or aspects that the existing list does not address. Do not refine, restate, or rephrase any existing sub-task. If you cannot think of genuinely distinct additional sub-tasks, return fewer (or even zero). It is much better to return nothing than to return something that overlaps with what is already there.${pathLine}`;
+  } else if (statementClarification) {
+    ctx = `Propose 3–4 sub-steps that make up "${taskLabel}" in the context of ${coreTask}. The participant described how they personally do this work: "${statementClarification}". Prefer phrasing and concrete actions that align with their description, but you may also propose well-grounded sub-steps that fit the task even if not explicitly named in the description — do not omit obvious ones just because they weren't mentioned word-for-word.${pathLine}`;
+  } else {
+    ctx = `Propose 3–4 sub-steps that make up "${taskLabel}" in the context of ${coreTask}.${pathLine}`;
+  }
+  ctx += `\n\nGRANULARITY: ${granularityHint}`;
+
+  const existingList = existingNodes.length > 0
+    ? `\n\nOTHER EXISTING NODES IN THE GRAPH (besides "${taskLabel}"):\n${existingNodes.map(n => `- id: ${n.id} | label: "${n.label}" | type: ${n.type}`).join('\n')}\n\nIMPORTANT: If a sub-step you'd propose is essentially the same as one of these existing nodes, DO NOT create it as a new sub-step. Instead, mark it as a connection to that existing node by setting "linkToExistingId" to the existing node's id. The system will draw an edge from the parent to that existing node instead of creating a duplicate.`
+    : '';
+
+  // Rejection signal: sub-tasks the participant previously discarded for this
+  // same parent. Teaches the model not to re-propose what they've already said
+  // no to — strongest available preference signal we have for this participant.
+  const rejectedList = Array.isArray(rejected) && rejected.length > 0
+    ? `\n\nSUB-TASKS THE PARTICIPANT PREVIOUSLY DISCARDED for "${taskLabel}":\n${rejected.map(r => `- "${r}"`).join('\n')}\n\nDO NOT re-propose any of these or close paraphrases of them. The participant has explicitly said these don't apply to their work. Treat semantic overlap with this list the same way you'd treat overlap with the existing nodes list.`
+    : '';
+  const isWorkerVariant = promptVariant === 'worker';
+
+  try {
+    const response = await client.chat.completions.create({
+      // Subtask decomposition is the participant's main interaction on the
+      // canvas — quality matters more than per-call cost. Use the stronger
+      // MODEL (gpt-5 family) rather than SMALL_MODEL.
+      model: MODEL,
+      response_format: { type: 'json_object' },
+      messages: isWorkerVariant ? [
+        {
+          role: 'system',
+          content: SUBTASK_WORKER_SYSTEM_PROMPT,
+        },
+        {
+          role: 'user',
+          content:
+            `Role: ${jobTitle}` +
+            (responsibilities ? `\nWhat this person is responsible for: ${responsibilities}` : '') +
+            (typicalWeek ? `\nHow they described a typical week: ${typicalWeek}` : '') +
+            `\nMain task they're mapping: ${coreTask}` +
+            (depth > 0 ? `\nCurrent path: ${ancestorChain.join(' → ')} → ${taskLabel}` : `\nTask to break down: ${taskLabel}`) +
+            (statementClarification ? `\nHow they described doing it: "${statementClarification}"` : '') +
+            `\n\nYou are this worker. What steps do you take to do "${taskLabel}"?` +
+            existingList + rejectedList,
+        },
+      ] : [
+        {
+          role: 'system',
+          content: `You decompose a task into its constituent sub-tasks. Return JSON: { "subtasks": [{ "label": "string (4-8 words, sentence case)", "linkToExistingId": "string (optional)" }] }.
+
+LABEL FORMAT: Sentence case (capitalize only the first word), 4–8 words. Be specific — include the object and a short context phrase when useful (e.g. "Pull latest branch from remote", "Flag ambiguous requirements in ticket", "Run test suite against staging"). Plain verb + object language a coworker would immediately recognize. Avoid one-word or two-word stubs.
+
+INTERPRET THE PARENT IN CONTEXT (read this FIRST — it changes how to handle vague labels):
+- The user message gives you the PATH FROM ROOT (ancestor chain), the main workflow, the participant's role, and often the participant's walkthrough. Use ALL of this to understand what the parent label actually means before drafting sub-tasks.
+- If the parent label is short (1-3 words) or generic on its own ("Use Claude", "Review", "Setup", "Send", "Check"), DO NOT refuse — instead, interpret it as shorthand for its contextualized meaning, then decompose THAT.
+  Example: parent "Use Claude" with ancestor "Use Claude for debugging" in workflow "Debug code" — decompose as if the participant wrote "Use Claude for debugging". Produce concrete steps like "Describe the bug to Claude", "Share relevant code or logs", "Apply Claude's suggested fix", "Verify the fix works".
+  Example: parent "Review" with ancestor "Review pull request" — treat as "Review pull request". Produce "Read the diff", "Check tests pass", "Leave inline comments", "Approve or request changes".
+  Example: parent "Setup" with ancestor "Set up dev environment" — treat as "Set up dev environment". Produce concrete setup actions, not generic "Get started" / "Begin setup".
+- This is INTERPRETATION ONLY — output sub-tasks for the contextualized meaning, but do not rename the parent and do not echo the ancestor's label.
+- Still apply ALL the dedup/anti-overlap rules below. If the contextualized parent already has its children represented elsewhere in the graph, use linkToExistingId or omit. Only return empty if even WITH the full context you cannot identify two genuinely distinct parts.
+
+FIRST-PERSON ACTIONS ONLY (critical — common failure mode for participants who build software, content, or other artifacts):
+- Sub-tasks must describe what the PARTICIPANT does — what they type, click, say, decide, read, write, sketch, review, or send. Their hands, their attention, their judgment.
+- If the participant's walkthrough includes the behavior of a product they build (an end-user flow, an app screen sequence, a system state transition, what happens "when the user clicks X"), IGNORE that material — it describes the artifact, not the work of making it.
+- Gut check for every sub-task you draft: does this describe something the participant performs at their keyboard / on a call / at a whiteboard, or something the SYSTEM does for an end user? Only the former qualifies as a sub-task.
+- BAD example — participant who builds an app describes its end-user flow ("user opens app, sees login screen, enters credentials, lands on dashboard, can filter and export reports"):
+  ✗ "User logs in", "User views dashboard", "User filters reports", "User exports a report" — these describe what the APP does, not what the participant does to build it.
+  ✓ "Sketch screen-by-screen wireframes", "Map states and transitions", "Identify edge cases and error states", "Review the flow with stakeholders" — these describe the participant's actual planning work.
+- This rule applies to ANY artifact the participant builds: software (user flows), content (reading experience of an article), curriculum (learner journey), products (end-user steps). Always reframe to the participant's own activities.
+
+This is a DECOMPOSITION tree, not a process flow. Do not invent sequence, branching, or terminal markers:
+- NEVER produce nodes labeled "Start", "Begin", "End", "Done", "Finish", "Review", or any other process boundary marker.
+- NEVER imply ordering between sibling sub-tasks. They are an unordered set of things the parent task is composed of.
+- Do not phrase any sub-task as a yes/no question — there are no branches.
+
+CRITICAL DEDUP RULES:
+- Look at the OTHER EXISTING NODES list. For each potential sub-task, check whether it OVERLAPS in MEANING with any existing node — not just exact labels. E.g. "Evaluate code quality" overlaps with an existing "Examine code style" or "Review code" node, even though the words differ.
+- If a sub-task overlaps with an existing node: OMIT it entirely. Don't create a duplicate, don't even link to it.
+- NEVER propose a sub-task that conceptually belongs under a DIFFERENT existing parent.
+- NEVER propose a sub-task that is a paraphrase, synonym, rewording, or TRUNCATION of the PARENT task being expanded. A sub-task must describe a SMALLER PART of the parent, not the parent in different words and not the parent with a qualifier dropped.
+  BAD: parent "Answer emails" → "Respond to emails" (synonym, not a part).
+  BAD: parent "Review code" → "Conduct code review" (paraphrase).
+  BAD: parent "Run experiments" → "Execute experiments" (synonym).
+  BAD: parent "Use Claude for debugging" → "Use Claude" (TRUNCATION — drops the qualifier "for debugging" and gives back the parent).
+  BAD: parent "Review residential blueprints" → "Review blueprints" (truncation).
+  RULE: if your sub-task is the parent with a word removed, it IS the parent, not a part of it. Reject it.
+  GOOD: parent "Answer emails" → "Draft reply", "Triage by sender", "Send and archive" (distinct parts of answering).
+  GOOD: parent "Use Claude for debugging" → "Describe the bug to Claude", "Share relevant code or logs", "Apply Claude's suggested fix", "Verify the fix works" (distinct parts of the debugging workflow with Claude).
+- If you cannot identify at least two genuinely distinct PARTS of the parent task, return an empty subtasks array rather than rephrasing the parent.
+
+MUTUAL EXCLUSIVITY (just as critical):
+- The sub-tasks you propose must be MUTUALLY EXCLUSIVE — each one covers a distinct concern, not a different angle of the same concern.
+- BAD examples (too similar to each other): "Check code functionality" + "Examine tests" + "Assess code readability" — these all touch on aspects of "review the code" and overlap.
+- GOOD examples for "Review code" (distinct concerns): "Read PR description", "Run code locally", "Add inline comments", "Mark review status". Each is a different concrete action.
+- Test: if you can read two of your sub-tasks and a person could plausibly be doing both at the same moment, they overlap — replace one.
+
+SIBLING-PAIR SYNONYM CHECK (before you return):
+- After drafting your sub-tasks, walk every pair. If two share the same VERB + OBJECT meaning — even when the wording differs — DROP ONE. Same meaning includes:
+  (a) one paraphrases the other,
+  (b) one is the other with the parent's qualifier appended ("with Claude", "for the PR", etc.),
+  (c) one is a shorter form of the other with the same head verb and object.
+- BAD pair: "Discuss findings" + "Discuss findings with Claude" — same verb+object, second just appends the parent's context. Drop one.
+- BAD pair: "Ask clarifying questions" + "Ask questions in Claude" — same verb+object, paraphrased qualifier. Drop one.
+- BAD pair: "Run tests" + "Execute test suite" — synonyms. Drop one.
+- BAD pair: "Write the PRD" + "Draft product requirements" — same artifact, paraphrased verb. Drop one.
+- If dropping leaves you with 1 or 0 sub-tasks, return that — never refill the slot with another paraphrase.
+
+VERB DIVERSITY ACROSS SIBLINGS:
+- Each sub-task should NAME A DIFFERENT KIND OF ACTION, not the same action against different objects. If 3+ siblings share the same head verb (all "Review …", all "Verify …", all "Check …"), the set is flat and probably collapsing several real activities into rewordings of one.
+- After drafting, look at the verbs. If you have ≥3 sub-tasks that begin with the same verb stem, REPLACE at least one with a verb that names a genuinely different activity (read vs. run vs. comment, sketch vs. write vs. review, send vs. file vs. call).
+- BAD: parent "Review pull request" → ["Review the diff", "Review test coverage", "Review code style", "Review CI status"]. Four "Review X" rewordings.
+- GOOD: parent "Review pull request" → ["Read the diff", "Run tests locally", "Comment on issues", "Approve or request changes"]. Each verb names a different physical action.
+- AVOID using the parent's head verb in your sub-tasks unless the sub-task truly is a smaller instance of that verb. "Review code" → child "Review style" is the parent in different clothes; "Run linters" is a different action that supports the parent.
+
+PARAPHRASE-OF-PARENT CHECK (the whole sibling set restates the parent):
+- The synonym check above catches pairs. This one catches the case where the ENTIRE set of siblings is the same activity as the parent, reworded into 2–4 different verb/object surfaces. This happens most often when the parent is an activity verb like "Understand X", "Adjust Y", "Discuss Z", "Evaluate Z" — the model varies the surface form instead of finding constituent sub-actions.
+- BAD: parent "Understand business impact and urgency" → "Identify high-impact tasks" + "Compare task importance" + "Evaluate deadline risks". All three are "the activity of figuring out what's most important" — three reframings, not three sub-actions.
+- BAD: parent "Adjust priorities when urgent demands appear" → "Reorganize workload during the day" + "Respond to unexpected requests" + "Handle urgent issues quickly". All three restate the parent itself.
+- BAD: parent "Discuss priorities with supervisor and team" → "Confirm which task to prioritize" + "Align priorities with company goals" + "Discuss deadline expectations". All three are the same conversation viewed slightly differently.
+- WHOLE-SET TEST: if a participant performed any ONE of your siblings, could they still honestly say they had NOT done the parent? If doing any single sibling alone is essentially the parent done, the set is restating, not decomposing. Reject it.
+- GOOD: parent "Discuss priorities with supervisor and team" → "Schedule the sync" + "Bring task list to the meeting" + "Capture decisions in writing" + "Share updates with the team afterward". Each is a distinct STEP — doing one alone does NOT complete the parent.
+- GOOD: parent "Understand business impact and urgency" → "Skim incoming requests" + "Ask the requester for context" + "Estimate scope and deadline" + "Flag dependencies on other work". Each is a different concrete sub-action you'd actually perform.
+- WHEN THE PARENT IS ATOMIC: if the parent is already a single activity that's done all-at-once (no internal phases), DO NOT manufacture siblings. Return fewer sub-tasks (or zero) rather than three rewordings. Atomic activity parents are common at depth ≥ 2.
+
+GRANULARITY (read the per-request GRANULARITY hint below — it governs how specific your labels should be):
+- At the TOP of the tree (root decomposition): sub-tasks are broad phases like "Read the change", "Decide approval". Don't try to be hyper-specific here — broad phrasing is correct.
+- At MID depths: sub-tasks describe concrete named actions like "Run the test suite locally", "Open the file in editor". Still phrase-level, but a person can see exactly what action it points to.
+- At DEEP levels: sub-tasks are observable micro-actions like "Click the 'Files changed' tab", "Scroll to the first hunk". Anyone could watch you do them.
+- AVOID vague filler phrases regardless of depth: "potential impacts", "key considerations", "relevant factors", "appropriate criteria", "the situation".
+
+Generate AT MOST 4 sub-tasks. Fewer is better than more — only propose ones you're confident apply. If you can't think of 4 distinct, mutually-exclusive, concrete sub-tasks, propose 2 or 3.`,
+        },
+        {
+          role: 'user',
+          content:
+            `Role: ${jobTitle}` +
+            (responsibilities ? `\nPrimary responsibilities (their words): ${responsibilities}` : '') +
+            (typicalWeek ? `\nTypical week: ${typicalWeek}` : '') +
+            `\nMain workflow: ${coreTask}\n\n${ctx}${existingList}${rejectedList}`,
+        },
+      ],
+    });
+    const parsed = JSON.parse(response.choices[0].message.content);
     const existingIds = new Set(existingNodes.map(n => n.id));
 
     // Build a fuzzy-match index of existing nodes by normalized label
@@ -362,8 +816,17 @@ Order: roughly sequential. Prefer 3–5 sub-steps.`,
       labelToId.set(normalize(n.label), n.id);
     }
 
+    // In "more" mode the direct children of the node being expanded are passed
+    // separately. They are also "existing" — anything matching one of them
+    // should be DROPPED outright (not linked, since linking would make a node
+    // its own sibling). Build a set of their normalized labels for filtering.
+    const childLabels = new Set(existingChildren.map(c => normalize(c.label)));
+
     // The current task being expanded — never propose it as a subtask of itself
     const currentNorm = normalize(taskLabel);
+
+    // Filter out any process-boundary markers the AI may still slip in.
+    const BOUNDARY = new Set(['start', 'begin', 'end', 'done', 'finish', 'finished', 'complete', 'completed', 'review']);
 
     const seenNormalized = new Set();
     const subtasks = (parsed.subtasks ?? [])
@@ -374,20 +837,24 @@ Order: roughly sequential. Prefer 3–5 sub-steps.`,
         if (!link && labelToId.has(norm)) link = labelToId.get(norm);
         return {
           label: s.label ?? '',
-          description: s.description ?? '',
-          type: validTypes.has(s.type) ? s.type : 'task',
           linkToExistingId: link,
           _norm: norm,
         };
       })
-      // Drop duplicates within the response and self-references
+      // Drop duplicates, self-references, process-boundary markers, and any
+      // proposal that matches a direct child of the node being expanded
+      // (catches the model re-proposing what's already there in "more" mode).
       .filter(s => {
+        if (!s.label) return false;
         if (s._norm === currentNorm) return false; // proposing the parent itself as a sub-step
+        if (BOUNDARY.has(s._norm)) return false;
+        if (childLabels.has(s._norm)) return false; // overlaps an existing direct child
         if (seenNormalized.has(s._norm)) return false;
         seenNormalized.add(s._norm);
         return true;
       })
-      .map(({ _norm, ...rest }) => rest);
+      .map(({ _norm, ...rest }) => rest)
+      .slice(0, 4); // hard cap so the canvas never gets flooded
     res.json({ subtasks });
   } catch (err) {
     console.error(err);
@@ -401,7 +868,7 @@ app.post('/api/propose-relationships', async (req, res) => {
   try {
     const nodeListStr = nodes.map(n => `- ${n.id}: ${n.label}${n.parentId ? ` (sub-step of ${n.parentId})` : ''}`).join('\n');
     const response = await client.chat.completions.create({
-      model: MODEL,
+      model: SMALL_MODEL,
       response_format: { type: 'json_object' },
       messages: [
         {
@@ -442,7 +909,7 @@ app.post('/api/gap-analysis', async (req, res) => {
 
   try {
     const response = await client.chat.completions.create({
-      model: MODEL,
+      model: SMALL_MODEL,
       response_format: { type: 'json_object' },
       messages: [
         {
@@ -562,7 +1029,7 @@ app.post('/api/walker-interview', async (req, res) => {
 
   try {
     const response = await client.chat.completions.create({
-      model: MODEL,
+      model: SMALL_MODEL,
       response_format: { type: 'json_object' },
       messages: [
         {
@@ -641,7 +1108,7 @@ app.post('/api/expand-node', async (req, res) => {
 
   try {
     const response = await client.chat.completions.create({
-      model: MODEL,
+      model: SMALL_MODEL,
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: systemPrompt },
@@ -663,11 +1130,70 @@ app.post('/api/expand-node', async (req, res) => {
   }
 });
 
+// Generate a natural conversational kickoff question + a short display label.
+// One round trip so WorkflowKickoff can both ask a fluent question and pass a
+// concise title (≤5 words) to the mapping phase for canvas / top-bar use.
+app.post('/api/kickoff-question', async (req, res) => {
+  const { taskLabel } = req.body;
+  if (!taskLabel || typeof taskLabel !== 'string') {
+    return res.status(400).json({ error: 'taskLabel required' });
+  }
+  try {
+    const response = await client.chat.completions.create({
+      // Walkthrough kickoff question needs to feel conversational and faithful
+      // to the participant's wording — use the stronger MODEL (gpt-5 family)
+      // rather than SMALL_MODEL.
+      model: MODEL,
+      temperature: 0.9,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You produce two things from a participant\'s task description:\n' +
+            '1. "question": a short, natural conversational question (≤22 words, ends with "?") that gets them describing the MULTIPLE CONCRETE ACTIONS this task involves. The answer will be decomposed into subtasks, so the question must pull for several distinct steps / components / sub-activities — never a single-fact or opinion answer. Phrase in second person; strip first-person pronouns ("I", "my").\n' +
+            '2. "shortLabel": a concise canvas title (2–5 words, Title Case, no trailing period) that stays faithful to the participant\'s own wording.\n\n' +
+            'Rules for the question — vary the opener so it doesn\'t feel formulaic, but every framing must elicit MULTIPLE concrete actions. Match the framing to the task\'s SHAPE:\n' +
+            '- Sequential procedure (start-to-finish): "Walk me through how you ... from start to finish?", "What are the main steps when you ...?"\n' +
+            '- Recurring routine (regular, no clear endpoint): "What does a typical week of ... involve — what are the main things you do?", "When you sit down to ..., what are the different things that go into it?"\n' +
+            '- Judgment / decision-heavy: "Walk me through your process for deciding ...?", "When you ..., what are all the things you actually do before landing on a call?" (NOT just "How do you decide ...?" — that yields a one-line answer)\n' +
+            '- Open-ended project (something the participant builds, produces, or ships): "When you ..., what does YOUR work look like — the activities, not the end product?", "What are the main things you do while ... — the tasks themselves, not what gets built?". Pull for the participant\'s actions, NOT a narrative of how the thing they built behaves. Avoid "think about the last time" framings — those invite story-telling and end-user-flow descriptions of the artifact.\n' +
+            '- Passive / loose tasks (attending, staying current, etc.): pivot to the active work AROUND it — "What do you do before, during, and after ...?", "What are all the things you do to get value out of ...?"\n' +
+            'Hard rule: NEVER ask a question whose natural answer is a single sentence or a yes/no. The question must invite the participant to enumerate multiple actions. If you find yourself writing "How do you decide X?" or "What do you do to X?" with no expansion, add "— what are the main things involved?" or "walk me through what that looks like" to force a multi-step answer.\n' +
+            'Diversify your openers. Do NOT lean on the same template for every task in a category — vary phrasing, sentence structure, and which prompt-words you use to elicit enumeration ("the steps", "the main things", "what goes into it", "from X to Y", "what does that look like", "agenda / what comes up / what you walk away with", etc.). Imagine you are asking ten participants ten different versions of this prompt — pick a fresh angle each time.\n' +
+            'Do NOT mechanically default to "Can you walk me through ...?" or "What do you do before, during, and after ...?" — those are useful framings but NOT the only ones. The literal phrase "before, during, and after" is OVERUSED — use it at most rarely, and prefer paraphrases ("prep, the session, and afterward", "the lead-up, the meeting itself, and the follow-up", "going in, what happens, and what you do with it after") or entirely different framings ("What does a typical advisor meeting look like — agenda, what comes up, what you walk away with?", "When you sit down with X, what\'s usually on the docket?").\n\n' +
+            'Rules for shortLabel:\n' +
+            '- Build it from verbs and nouns the participant actually used. Don\'t swap in a generic workplace category (e.g. "Daily Standup", "Email Triage", "Inbox Management") that they didn\'t say.\n' +
+            '- Don\'t add framing words ("Daily", "Weekly", "Manage", "Triage") unless the input contains them.\n' +
+            '- If the input is already short, prefer Title-Casing it over rewriting.\n\n' +
+            'Examples:\n' +
+            'Input "Implement ticket changes" → { "question": "Walk me through how you implement a ticket from picking it up to merging.", "shortLabel": "Implement Ticket Changes" }\n' +
+            'Input "Review pull requests from my teammates and leave comments before approving" → { "question": "When a teammate\'s PR lands in your queue, what are all the things you do before approving?", "shortLabel": "Review Pull Requests" }\n' +
+            'Input "Decide which experiments to run next" → { "question": "Walk me through your process for deciding which experiments to run next — what are the steps?", "shortLabel": "Decide Next Experiments" }\n' +
+            'Input "Attend classes and seminars" → { "question": "When you sit through a seminar, what does the work around it look like — prep, the session, and afterward?", "shortLabel": "Attend Classes And Seminars" }\n' +
+            'Input "Stay current with new ML papers" → { "question": "What are all the things you do to stay current with new ML papers — where do you look, what do you read, how do you keep track?", "shortLabel": "Stay Current On ML Papers" }\n' +
+            'Input "Mentor junior researchers" → { "question": "What does mentoring a junior researcher involve for you week to week — what are the main things you do?", "shortLabel": "Mentor Junior Researchers" }\n\n' +
+            'Return JSON: { "question": "string", "shortLabel": "string" }.',
+        },
+        { role: 'user', content: `Task description:\n${taskLabel}` },
+      ],
+    });
+    const parsed = JSON.parse(response.choices[0].message.content);
+    const q = (parsed.question ?? '').trim();
+    const shortLabel = (parsed.shortLabel ?? '').trim();
+    if (!q) return res.status(500).json({ error: 'empty question' });
+    res.json({ question: q, shortLabel: shortLabel || taskLabel });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/suggest-actors', async (req, res) => {
   const { transcript, jobTitle } = req.body;
   try {
     const response = await client.chat.completions.create({
-      model: MODEL,
+      model: SMALL_MODEL,
       response_format: { type: 'json_object' },
       messages: [
         {
@@ -730,7 +1256,7 @@ Ask about one handoff at a time. Keep questions short and conversational. When a
       ...messages.map(m => ({ role: m.role, content: m.content })),
     ];
     const response = await client.chat.completions.create({
-      model: MODEL,
+      model: SMALL_MODEL,
       tools: [TOOLS.find(t => t.function.name === 'suggest_nodes'), TOOLS.find(t => t.function.name === 'add_node'), TOOLS.find(t => t.function.name === 'add_edge')],
       messages: apiMessages,
     });
@@ -759,7 +1285,7 @@ app.post('/api/expand-task', async (req, res) => {
   const { taskLabel, coreTask, jobTitle } = req.body;
   try {
     const response = await client.chat.completions.create({
-      model: MODEL,
+      model: SMALL_MODEL,
       response_format: { type: 'json_object' },
       messages: [
         {
@@ -784,7 +1310,7 @@ app.post('/api/typical-workflow', async (req, res) => {
   const { jobTitle, coreTask } = req.body;
   try {
     const response = await client.chat.completions.create({
-      model: MODEL,
+      model: SMALL_MODEL,
       response_format: { type: 'json_object' },
       messages: [
         {
@@ -942,14 +1468,94 @@ app.post('/api/transcribe', async (req, res) => {
   }
 });
 
+// Per-sessionId write queue — serializes concurrent saves for the same session
+// so a debounced autosave and an unload-time sendBeacon can't race and produce
+// a file with two JSON objects concatenated. Cheap (one Promise per session in
+// flight) and short-lived (cleared as soon as the chain settles).
+const sessionWriteQueue = new Map();
+
+// True iff the payload carries no participant work — used to refuse overwrites
+// of a session file with substantive state when a blank-store reload (e.g.
+// back-button revisit before /api/resume hydration ships) tries to save itself
+// over the top. A real participant's save always populates at least one of
+// these slots.
+function isMateriallyEmpty(d) {
+  if (!d || typeof d !== 'object') return true;
+  const phases = Object.keys(d.phaseEnteredAt || {});
+  const beyondSetup = phases.some(p => p !== 'setup');
+  if (beyondSetup) return false;
+  if (d.userProfile && (d.userProfile.jobTitle || d.userProfile.typicalWeek || d.userProfile.responsibilities || d.userProfile.aiUsage)) return false;
+  if (Array.isArray(d.backgroundTranscript) && d.backgroundTranscript.length > 0) return false;
+  if (Array.isArray(d.selectedTasks) && d.selectedTasks.length > 0) return false;
+  if (Array.isArray(d.taskItems) && d.taskItems.length > 0) return false;
+  if (Array.isArray(d.taskWorkflows) && d.taskWorkflows.length > 0) return false;
+  if (d.workflow && Array.isArray(d.workflow.nodes) && d.workflow.nodes.length > 0) return false;
+  if (Array.isArray(d.transcript) && d.transcript.length > 0) return false;
+  if (typeof d.coreTask === 'string' && d.coreTask.length > 0) return false;
+  if (typeof d.feedback === 'string' && d.feedback.length > 0) return false;
+  if (d.experienceRating != null) return false;
+  return true;
+}
+
 app.post('/api/session', async (req, res) => {
   const { sessionId, ...rest } = req.body;
-  const filePath = path.join(SESSIONS_DIR, `${sessionId}.json`);
-  await fs.writeFile(
-    filePath,
-    JSON.stringify({ sessionId, ...rest, savedAt: new Date().toISOString() }, null, 2)
-  );
-  res.json({ ok: true });
+  if (!sessionId || typeof sessionId !== 'string') {
+    return res.status(400).json({ error: 'sessionId required' });
+  }
+  // Optional external participant ID (for recruits outside Prolific). Client
+  // already sanitizes, but re-sanitize defensively so a hostile body can't
+  // slip path separators or dots into the filename.
+  const rawExtId = typeof rest.externalId === 'string' ? rest.externalId : '';
+  const safeExtId = rawExtId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+  const baseName = safeExtId ? `${safeExtId}_${sessionId}` : sessionId;
+  const filePath = path.join(SESSIONS_DIR, `${baseName}.json`);
+  const incoming = { sessionId, ...rest, savedAt: new Date().toISOString() };
+  const payload = JSON.stringify(incoming, null, 2);
+  // Chain this write onto whatever is already in flight for this sessionId,
+  // then write atomically (temp file + rename) so partial writes can't be
+  // observed by readers (or by a racing concurrent writer).
+  const previous = sessionWriteQueue.get(sessionId) || Promise.resolve();
+  let skipped = false;
+  const next = previous
+    .catch(() => {})
+    .then(async () => {
+      // Guard: don't let a blank-store revisit (back button → fresh load → no
+      // hydration yet → debounced autosave or beacon fires with empty state)
+      // wipe a file with real participant work. Read the existing file inside
+      // the serialized write task so concurrent writers can't race us.
+      if (isMateriallyEmpty(incoming)) {
+        try {
+          const raw = await fs.readFile(filePath, 'utf8');
+          const existing = JSON.parse(raw);
+          if (!isMateriallyEmpty(existing)) {
+            console.warn('[session] refusing to overwrite non-empty file with empty payload', { sessionId, existingSavedAt: existing.savedAt });
+            skipped = true;
+            return;
+          }
+        } catch (err) {
+          // ENOENT or unparseable existing file → fall through and write.
+          if (err.code !== 'ENOENT') {
+            console.warn('[session] guard read failed, proceeding with write:', err.message);
+          }
+        }
+      }
+      const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      await fs.writeFile(tmpPath, payload);
+      await fs.rename(tmpPath, filePath);
+    });
+  sessionWriteQueue.set(sessionId, next);
+  try {
+    await next;
+    res.json({ ok: true, skipped });
+  } catch (err) {
+    console.error('[session] write failed:', err);
+    res.status(500).json({ error: 'write failed' });
+  } finally {
+    // Drop the queue entry once it settles AND nothing newer is queued behind it.
+    if (sessionWriteQueue.get(sessionId) === next) {
+      sessionWriteQueue.delete(sessionId);
+    }
+  }
 });
 
 // In production, serve the Vite-built static frontend from the same Express

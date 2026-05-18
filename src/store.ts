@@ -1,7 +1,21 @@
 import { create } from 'zustand';
 import { Node, Edge, applyEdgeChanges, EdgeChange, Connection, addEdge } from '@xyflow/react';
 import { v4 as uuidv4 } from 'uuid';
-import { WorkflowNodeData, Message, GraphUpdate, Phase, NodeType, UserProfile, TaskCategory, TaskItem, DiscoveryNodeData, DiscoveryLevel, DiscoveryStatus, BackgroundTurn, BonusSnapshot } from './types';
+import { WorkflowNodeData, Message, GraphUpdate, Phase, NodeType, UserProfile, TaskCategory, TaskItem, DiscoveryNodeData, DiscoveryLevel, DiscoveryStatus, BackgroundTurn, BonusSnapshot, StudyCondition } from './types';
+import {
+  levenshtein,
+  mappingEditBonusUsd,
+  MAPPING_EDIT_BONUS_PER_CHAR_USD,
+  MAPPING_EDIT_BONUS_MAX_USD,
+  MAPPING_ADD_NODE_BONUS_USD,
+  MAPPING_ADD_NODE_BONUS_MAX_USD,
+} from './lib/bonus';
+
+// Max number of essential tasks the participant actually maps. They may pick
+// more than this on the priority screen — the extras stay in selectedTasks
+// (so the saved record reflects everything they marked essential), but the
+// mapping loop stops after this many tasks.
+export const MAP_LIMIT = 1;
 
 export interface ProlificContext {
   pid: string | null;
@@ -16,7 +30,22 @@ export interface ProlificContext {
 
 interface WorkflowStore {
   sessionId: string;
+  // Optional external participant ID — captured from the ?id= URL param so we
+  // can recruit users outside of Prolific and still match their saved data
+  // back to whoever they are. Null when the link doesn't carry one.
+  externalId: string | null;
+  // Study condition assigned via the ?cond= URL param. `full` includes Part 3
+  // (task-priority → workflow-kickoff → workflow). `short` skips it and jumps
+  // straight from task-selection to final-questions.
+  condition: StudyCondition;
   phase: Phase;
+  // Millisecond epoch when the store first initialized (≈ page load). Used as
+  // a session-start proxy for time-spent analysis.
+  sessionStartedAt: number;
+  // Millisecond epoch the participant first entered each phase. Re-entries (if
+  // the participant goes back and forward) keep the FIRST entry, since that's
+  // what matters for time-per-phase analysis.
+  phaseEnteredAt: Partial<Record<Phase, number>>;
 
   // Prolific study identifiers — captured from URL params on first mount.
   prolific: ProlificContext;
@@ -45,15 +74,24 @@ interface WorkflowStore {
   taskCategories: TaskCategory[];
   selectedTasks: string[];
   taskItems: TaskItem[];
+  // Activities explicitly named by the participant in the background interview,
+  // extracted by /api/extract-interview-tasks and used to ground the upper-level
+  // generator. Persisted in the session JSON so analysts can audit grounding.
+  interviewExtractedTasks: string[];
   setTaskCategories: (cats: TaskCategory[]) => void;
   setSelectedTasks: (tasks: string[]) => void;
   setTaskItems: (items: TaskItem[]) => void;
+  setInterviewExtractedTasks: (tasks: string[]) => void;
   toggleTask: (task: string) => void;
   addCustomTask: (task: string) => void;
 
   // Phase 3 — workflow (coreTask derived from profile)
   coreTask: string;
   setCoreTask: (task: string) => void;
+  // A concise canvas/top-bar title derived from coreTask by the kickoff endpoint.
+  // Falls back to coreTask if unset.
+  coreTaskShort: string;
+  setCoreTaskShort: (label: string) => void;
   typicalWorkflow: string[] | null;
   setTypicalWorkflow: (steps: string[]) => void;
   lanes: string[];
@@ -62,10 +100,19 @@ interface WorkflowStore {
   addActor: (name: string) => void;
   updateNodeActor: (nodeId: string, actor: string) => void;
   currentTaskIdx: number;
+  // Snapshot of each completed task's tree + walkthrough. Populated by
+  // advanceToNextTask before it wipes the in-progress state.
+  taskWorkflows: { task: string; nodes: { id: string; label: string; description: string; parentId?: string; confirmed: boolean; originalLabel?: string; manuallyAdded: boolean; edited: boolean }[]; edges: { source: string; target: string }[]; messages: { role: 'user' | 'assistant'; content: string }[] }[];
   advanceToNextTask: () => void;
   markNodeClarified: (id: string) => void;
-  addChildNodes: (parentId: string, children: { label: string; description: string; type?: NodeType }[]) => void;
-  addSubstepChained: (parentId: string, child: { label: string; description: string; type?: NodeType }) => void;
+  addChildNodes: (parentId: string, children: { label: string; description: string; type?: NodeType; confirmed?: boolean }[]) => void;
+  seedRoot: () => string;
+  reparentNode: (nodeId: string, newParentId: string) => boolean;
+  spliceNodeIntoEdge: (nodeId: string, edgeSourceId: string, edgeTargetId: string) => boolean;
+  addEmptySubtask: (parentId: string) => string;
+  confirmNode: (id: string) => void;
+  unconfirmNode: (id: string) => void;
+  addSubstepChained: (parentId: string, child: { label: string; description?: string; type?: NodeType }) => void;
   toggleNodeCollapsed: (id: string) => void;
   nodes: Node<WorkflowNodeData>[];
   edges: Edge[];
@@ -75,10 +122,56 @@ interface WorkflowStore {
   editingNodeId: string | null;
   pendingExpand: { nodeId: string; nodeLabel: string } | null;
   setPendingExpand: (v: { nodeId: string; nodeLabel: string } | null) => void;
+  // Tells the canvas to animate-fit to these node ids on the next paint.
+  // Set by addChildNodes / addEmptySubtask; cleared by the canvas after focusing.
+  pendingFocus: string[] | null;
+  setPendingFocus: (ids: string[]) => void;
+  clearPendingFocus: () => void;
+  // Labels of AI-proposed sub-tasks the participant deleted, keyed by parent
+  // node id. Used as a rejection-history signal when /api/propose-subtasks is
+  // called for the same parent ("you suggested these last time; they said no").
+  rejectedByParent: Record<string, string[]>;
   currentExploreNodeId: string | null;
   setCurrentExploreNodeId: (id: string | null) => void;
 
+  // Coach-mark tour shown on first task in the mapping phase. tourStep is
+  // -1 when inactive; 0..N-1 while running.
+  tourStep: number;
+  tourCompleted: boolean;
+  startTour: () => void;
+  advanceTour: () => void;
+  endTour: () => void;
+  // ID of the node whose hover-revealed "+" button should be forced visible by
+  // the tour (e.g. during the "Add your own" step so participants can see what
+  // the bullet refers to). Cleared when the step changes.
+  tourSpotlightAddNode: string | null;
+  setTourSpotlightAddNode: (id: string | null) => void;
+
+  // Set to true the first time the participant keeps a drafted subtask. Used
+  // to drop the per-card "tap to keep" hint once they've learned the gesture.
+  // Session-level so it persists across task resets.
+  hasLearnedKeepGesture: boolean;
+
+  // Cumulative Levenshtein characters edited across all tasks for the mapping
+  // edit bonus. Survives task resets so the bonus pool accumulates session-wide.
+  mappingEditChars: number;
+  // Count of manually-added subtasks across all tasks. Drives a flat
+  // per-node add bonus (MAPPING_ADD_NODE_BONUS_USD). Survives task resets.
+  mappingAddedNodes: number;
+
+  // Tracks which task indices have already started their kickoff (root + first
+  // AI-proposed children). React StrictMode double-mounts the WorkflowMapper in
+  // dev, so a useRef guard inside the component isn't sufficient; this lives in
+  // the store so the second mount sees the first one's flag and bails out.
+  kickoffStartedForTasks: number[];
+  markKickoffStarted: (taskIdx: number) => boolean;
+
   setPhase: (phase: Phase) => void;
+  // Final-questions answers — kept in the store so getExportData() carries them
+  // into the defense-in-depth save fired from StudyComplete on mount.
+  experienceRating: number | null;
+  feedback: string;
+  setFinalAnswers: (answers: { experienceRating: number; feedback: string }) => void;
   addMessage: (role: 'user' | 'assistant', content: string) => void;
   setLoading: (loading: boolean) => void;
   applyGraphUpdates: (updates: GraphUpdate[]) => void;
@@ -99,6 +192,13 @@ interface WorkflowStore {
 
 const urlParams = new URLSearchParams(window.location.search);
 const devPhase = (urlParams.get('dev') as Phase | null) ?? 'setup';
+// Restrict the URL-supplied external ID to filename-safe chars so the server
+// can splice it into a path without escaping concerns. Empty after sanitizing → null.
+const rawExternalId = urlParams.get('id');
+const initialExternalId = rawExternalId
+  ? (rawExternalId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64) || null)
+  : null;
+const initialCondition: StudyCondition = urlParams.get('cond') === 'short' ? 'short' : 'full';
 const initialProlific: ProlificContext = {
   pid: urlParams.get('PROLIFIC_PID'),
   studyId: urlParams.get('STUDY_ID'),
@@ -110,18 +210,47 @@ const initialProlific: ProlificContext = {
   screenedOut: false,
 };
 
-const DEV_KICKOFF_ANSWER = "I look at the code and leave comments, then approve or ask for changes.";
+const SESSION_START_MS = Date.now();
+
+// Persist sessionId across page reloads so an accidental browser back/refresh
+// can resume against the same server-side JSON. Keyed by PROLIFIC_PID so each
+// Prolific participant gets their own slot, and so re-using the same browser
+// for a new study (new PID) starts a fresh session.
+function getOrCreateSessionId(): string {
+  try {
+    const pid = urlParams.get('PROLIFIC_PID') || 'default';
+    const key = `wf-graph-session-${pid}`;
+    const stored = window.localStorage?.getItem(key);
+    if (stored) return stored;
+    const fresh = uuidv4();
+    window.localStorage?.setItem(key, fresh);
+    return fresh;
+  } catch {
+    // localStorage can throw in private windows / SSR — fall back to a
+    // process-lifetime UUID.
+    return uuidv4();
+  }
+}
 
 export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
-  sessionId: uuidv4(),
+  sessionId: getOrCreateSessionId(),
+  externalId: initialExternalId,
+  condition: initialCondition,
   phase: devPhase,
+  sessionStartedAt: SESSION_START_MS,
+  // Seed the initial phase with the same start time so phaseEnteredAt always
+  // has an entry for whatever phase the participant landed on.
+  phaseEnteredAt: { [devPhase]: SESSION_START_MS } as Partial<Record<Phase, number>>,
 
   prolific: initialProlific,
   setProlific: (p) => set(state => ({ prolific: { ...state.prolific, ...p } })),
 
-  // Dev default — used when entering task-selection / workflow phases via ?dev= URL
-  // without going through the background interview. Replaced by real answers in production.
-  userProfile: { jobTitle: 'PhD student in computer science, 3 years', typicalWeek: 'Reading papers, running experiments, writing code, meeting with my advisor, drafting paper sections, attending lab meetings, mentoring undergrads', aiUsage: '' },
+  userProfile: {
+    responsibilities: '',
+    jobTitle: '',
+    typicalWeek: '',
+    aiUsage: '',
+  },
   setUserProfile: (userProfile) => set({ userProfile }),
   backgroundTranscript: [],
   addBackgroundTurn: (turn) =>
@@ -192,17 +321,21 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
       };
     }),
 
-  taskCategories: [
-    { category: 'Planning & Strategy', tasks: ['Write a PRD', 'Run sprint planning', 'Define roadmap priorities', 'Set OKRs'] },
-    { category: 'Collaboration', tasks: ['Sync with engineering', 'Sync with design', 'Run stakeholder reviews', 'Lead team standups'] },
-    { category: 'Execution & Delivery', tasks: ['Review pull requests', 'Triage bugs', 'Write release notes', 'Coordinate launches'] },
-    { category: 'Analysis & Reporting', tasks: ['Review metrics dashboards', 'Write weekly updates', 'Conduct user interviews', 'Analyze A/B tests'] },
-  ],
-  selectedTasks: ['Write a PRD', 'Run sprint planning', 'Review pull requests'],
+  // Starts empty — /api/generate-tasks populates this from the participant's
+  // background interview answers. The previous PM-flavored placeholder
+  // categories ("Write a PRD", "Sync with engineering"…) were stale dev seeds
+  // and could leak into a participant's task list if generation failed.
+  taskCategories: [],
+  // Starts empty — populated when the participant confirms tasks on the
+  // TaskSelection screen. Previously seeded with a dev fixture, which leaked
+  // into incomplete sessions and made them look pre-filled.
+  selectedTasks: [],
   taskItems: [],
+  interviewExtractedTasks: [],
   setTaskCategories: (taskCategories) => set({ taskCategories }),
   setSelectedTasks: (selectedTasks) => set({ selectedTasks }),
   setTaskItems: (taskItems) => set({ taskItems }),
+  setInterviewExtractedTasks: (interviewExtractedTasks) => set({ interviewExtractedTasks }),
   toggleTask: (task) =>
     set(state => ({
       selectedTasks: state.selectedTasks.includes(task)
@@ -226,8 +359,10 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
       };
     }),
 
-  coreTask: devPhase === 'workflow' ? 'Review pull requests' : 'Write a PRD',
+  coreTask: '',
   setCoreTask: (coreTask) => set({ coreTask }),
+  coreTaskShort: '',
+  setCoreTaskShort: (coreTaskShort) => set({ coreTaskShort }),
   markNodeClarified: (id) => set(state => ({
     nodes: state.nodes.map(n =>
       n.id === id ? { ...n, data: { ...n.data, clarified: true } } : n
@@ -247,7 +382,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
       id: newId,
       type: nodeType,
       position: { x: 0, y: 0 },
-      data: { label: child.label, description: child.description, nodeType, clarified: true, parentId },
+      data: { label: child.label, description: child.description ?? '', nodeType, clarified: true, parentId },
     };
     // Find current "tail" sub-step — a sibling that is not the source of any sibling-chain edge.
     const siblings = state.nodes.filter(n => n.data.parentId === parentId);
@@ -267,6 +402,171 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     };
   }),
 
+  seedRoot: () => {
+    const state = get();
+    const existing = state.nodes.find(n => !n.data.parentId);
+    if (existing) return existing.id;
+    const id = `root_${Date.now()}`;
+    // Display the AI-generated short label on the canvas; preserve the full
+    // (possibly long, possibly edited) task text as the description so it can
+    // still inform AI prompts and surface on hover.
+    const label = state.coreTaskShort || state.coreTask;
+    const description = state.coreTaskShort && state.coreTaskShort !== state.coreTask
+      ? state.coreTask
+      : '';
+    const rootNode: Node<WorkflowNodeData> = {
+      id, type: 'task',
+      position: { x: 0, y: 0 },
+      data: { label, description, nodeType: 'task', clarified: true },
+    };
+    set({ nodes: [rootNode], edges: [] });
+    return id;
+  },
+
+  reparentNode: (nodeId, newParentId) => {
+    if (nodeId === newParentId) return false;
+    const state = get();
+    const node = state.nodes.find(n => n.id === nodeId);
+    if (!node || !node.data.parentId) return false; // root has no parent and can't be reparented
+    if (node.data.parentId === newParentId) return false;
+
+    // Reject cycles: newParentId must not be the moved node or any of its descendants.
+    const descendants = new Set<string>([nodeId]);
+    const queue = [nodeId];
+    while (queue.length) {
+      const pid = queue.shift()!;
+      for (const n of state.nodes) {
+        if (n.data.parentId === pid && !descendants.has(n.id)) {
+          descendants.add(n.id);
+          queue.push(n.id);
+        }
+      }
+    }
+    if (descendants.has(newParentId)) return false;
+
+    const oldParentId = node.data.parentId;
+    const oldEdgeId = `${oldParentId}->${nodeId}`;
+    const newEdgeId = `${newParentId}->${nodeId}`;
+
+    // Move the reparented node to the END of the nodes array so layoutTree's
+    // sibling-stabilization (which sorts visible siblings by their index in the
+    // input `nodes` array) places it at the bottom of the new parent's children.
+    // Without this, the node keeps its original index and lands ABOVE existing
+    // siblings of the new parent — reshuffling vertical order that the
+    // participant didn't ask for. Other nodes preserve their relative order.
+    const updatedNode = { ...node, data: { ...node.data, parentId: newParentId } };
+    const nextNodes = [
+      ...state.nodes.filter(n => n.id !== nodeId),
+      updatedNode,
+    ];
+
+    set({
+      nodes: nextNodes,
+      edges: [
+        ...state.edges.filter(e => e.id !== oldEdgeId && e.id !== newEdgeId),
+        {
+          id: newEdgeId,
+          source: newParentId,
+          target: nodeId,
+          style: { stroke: '#cbd5e1', strokeWidth: 1.5 },
+        },
+      ],
+      // Full reset: any node a participant manually positioned would otherwise
+      // stay locked and could overlap the freshly relaid subtree. Clearing
+      // everything lets dagre re-layout the whole canvas cleanly.
+      manualPositions: {},
+    });
+    return true;
+  },
+
+  spliceNodeIntoEdge: (nodeId, srcId, tgtId) => {
+    // "Insert into chain" semantic: dropping X on edge A→B re-slots X between
+    // them. Result: A → X → B. X's old parent link is broken (e.g. A → B → C
+    // dropping C on A → B becomes A → C → B, not a cycle).
+    if (nodeId === srcId || nodeId === tgtId) return false;
+    const state = get();
+    const node = state.nodes.find(n => n.id === nodeId);
+    const tgt = state.nodes.find(n => n.id === tgtId);
+    if (!node || !tgt) return false;
+    if (!node.data.parentId) return false; // root can't be moved
+    const oldNodeParentId = node.data.parentId;
+
+    // Cycle check: making X a child of A would cycle iff X is an ancestor of A.
+    // (X being a descendant of B is fine — we're breaking X's old parent link.)
+    let cur: string | undefined = state.nodes.find(n => n.id === srcId)?.data.parentId;
+    const seen = new Set<string>();
+    while (cur && !seen.has(cur)) {
+      if (cur === nodeId) return false;
+      seen.add(cur);
+      cur = state.nodes.find(n => n.id === cur)?.data.parentId;
+    }
+
+    const oldNodeEdgeId = `${oldNodeParentId}->${nodeId}`;
+    const oldSpliceEdgeId = `${srcId}->${tgtId}`;
+    const newSrcToNodeEdgeId = `${srcId}->${nodeId}`;
+    const newNodeToTgtEdgeId = `${nodeId}->${tgtId}`;
+    const stripIds = new Set([oldNodeEdgeId, oldSpliceEdgeId, newSrcToNodeEdgeId, newNodeToTgtEdgeId]);
+
+    set({
+      nodes: state.nodes.map(n => {
+        if (n.id === nodeId) return { ...n, data: { ...n.data, parentId: srcId } };
+        if (n.id === tgtId) return { ...n, data: { ...n.data, parentId: nodeId } };
+        return n;
+      }),
+      edges: [
+        ...state.edges.filter(e => !stripIds.has(e.id)),
+        { id: newSrcToNodeEdgeId, source: srcId, target: nodeId, style: { stroke: '#cbd5e1', strokeWidth: 1.5 } },
+        { id: newNodeToTgtEdgeId, source: nodeId, target: tgtId, style: { stroke: '#cbd5e1', strokeWidth: 1.5 } },
+      ],
+      // Full reset (see reparentNode): everything reflows so no card overlaps another.
+      manualPositions: {},
+    });
+    return true;
+  },
+
+  confirmNode: (id) => set(state => ({
+    nodes: state.nodes.map(n =>
+      n.id === id ? { ...n, data: { ...n.data, confirmed: true } } : n
+    ),
+    hasLearnedKeepGesture: true,
+  })),
+
+  unconfirmNode: (id) => set(state => ({
+    nodes: state.nodes.map(n =>
+      n.id === id ? { ...n, data: { ...n.data, confirmed: false } } : n
+    ),
+  })),
+
+  addEmptySubtask: (parentId) => {
+    const id = `${parentId}_sub_${Date.now()}`;
+    set(state => ({
+      nodes: [
+        ...state.nodes,
+        {
+          id, type: 'task',
+          // originalLabel intentionally omitted — manually-added subtasks earn
+          // the flat MAPPING_ADD_NODE_BONUS_USD, not per-character edit credit,
+          // so updateNodeLabel must skip the Levenshtein delta for them.
+          // manuallyAdded flag drives (a) auto-delete if the participant leaves
+          // the bare "New subtask" placeholder and (b) reversing the add-node
+          // bonus counter when the subtask is deleted.
+          position: { x: 0, y: 0 },
+          data: { label: 'New subtask', description: '', nodeType: 'task', clarified: true, parentId, manuallyAdded: true },
+        },
+      ],
+      edges: [
+        ...state.edges,
+        { id: `${parentId}->${id}`, source: parentId, target: id, style: { stroke: '#cbd5e1', strokeWidth: 1.5 } },
+      ],
+      editingNodeId: id,
+      // Focus on the new empty node alone — the participant is about to type
+      // into it, so we want it zoomed in, not framed alongside its parent.
+      pendingFocus: [id],
+      mappingAddedNodes: state.mappingAddedNodes + 1,
+    }));
+    return id;
+  },
+
   addChildNodes: (parentId, children) => set(state => {
     if (children.length === 0) return state;
     const ts = Date.now();
@@ -277,41 +577,75 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
         id: subIds[i],
         type: nodeType,
         position: { x: 0, y: 0 },
-        data: { label: c.label, description: c.description, nodeType, clarified: true, parentId },
+        // originalLabel snapshots the AI suggestion so we can credit the
+        // participant's per-character edits later in updateNodeLabel.
+        data: { label: c.label, description: c.description, nodeType, clarified: true, parentId, confirmed: c.confirmed ?? true, originalLabel: c.label },
       };
     });
 
-    // Children form their own sub-flow chained sequentially. Parent stays in the main
-    // flow untouched (its existing outgoing edges are preserved).
-    const newEdges: Edge[] = [];
-    for (let i = 0; i < subIds.length - 1; i++) {
-      newEdges.push({
-        id: `${subIds[i]}->${subIds[i + 1]}`,
-        source: subIds[i],
-        target: subIds[i + 1],
-        style: { stroke: '#94a3b8', strokeDasharray: '4,3' },
-      });
-    }
+    // Pure-tree edges: one parent→child line per new node. No sibling chains.
+    const newEdges: Edge[] = subIds.map(id => ({
+      id: `${parentId}->${id}`,
+      source: parentId,
+      target: id,
+      style: { stroke: '#cbd5e1', strokeWidth: 1.5 },
+    }));
 
     return {
       nodes: [...state.nodes, ...newNodes],
       edges: [...state.edges, ...newEdges],
+      pendingFocus: [parentId, ...subIds],
     };
   }),
   currentTaskIdx: 0,
+  taskWorkflows: [],
   advanceToNextTask: () => set(state => {
+    // Archive the current task's tree + walkthrough so it survives the reset.
+    const archived = state.nodes.length > 0
+      ? [
+          ...state.taskWorkflows,
+          {
+            task: state.coreTask,
+            nodes: state.nodes.map(n => ({
+              id: n.id,
+              label: n.data.label,
+              description: n.data.description,
+              parentId: n.data.parentId,
+              confirmed: n.data.confirmed !== false,
+              // Provenance: how this node arrived on the canvas and whether
+              // the participant changed its label after.
+              originalLabel: n.data.originalLabel,
+              manuallyAdded: !!n.data.manuallyAdded,
+              edited: n.data.originalLabel !== undefined && n.data.label !== n.data.originalLabel,
+            })),
+            edges: state.edges.map(e => ({ source: e.source, target: e.target })),
+            messages: state.messages.map(m => ({ role: m.role, content: m.content })),
+          },
+        ]
+      : state.taskWorkflows;
     const nextIdx = state.currentTaskIdx + 1;
+    const mapCount = Math.min(state.selectedTasks.length, MAP_LIMIT);
     const nextTask = state.selectedTasks[nextIdx] ?? '';
+    const nextPhase: Phase = nextIdx < mapCount ? 'workflow-kickoff' : 'final-questions';
     return {
+      taskWorkflows: archived,
       currentTaskIdx: nextIdx,
       coreTask: nextTask,
+      coreTaskShort: '',
       nodes: [],
       edges: [],
       messages: [],
       manualPositions: {},
       typicalWorkflow: null,
       currentExploreNodeId: null,
-      phase: nextIdx < state.selectedTasks.length ? 'workflow-kickoff' : 'complete',
+      phase: nextPhase,
+      // Stamp first entry only — going back into workflow-kickoff for task 2+
+      // is the FIRST entry to a fresh task, but the phase has been visited
+      // before. We keep the original timestamp; per-task timing is implicit
+      // from the taskWorkflows array length + currentTaskIdx changes.
+      phaseEnteredAt: state.phaseEnteredAt[nextPhase]
+        ? state.phaseEnteredAt
+        : { ...state.phaseEnteredAt, [nextPhase]: Date.now() },
     };
   }),
   typicalWorkflow: null,
@@ -333,19 +667,49 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   }),
   nodes: [],
   edges: [],
-  messages: devPhase === 'workflow' ? [
-    { id: '__q__', role: 'assistant' as const, content: 'Can you walk me through how you review pull requests from start to finish?', timestamp: 0 },
-    { id: '__a__', role: 'user' as const, content: DEV_KICKOFF_ANSWER, timestamp: 1 },
-  ] : [],
+  messages: [],
   isLoading: false,
   pendingExpand: null,
   setPendingExpand: (pendingExpand) => set({ pendingExpand }),
+  pendingFocus: null,
+  setPendingFocus: (pendingFocus) => set({ pendingFocus }),
+  clearPendingFocus: () => set({ pendingFocus: null }),
+  rejectedByParent: {},
   currentExploreNodeId: null,
   setCurrentExploreNodeId: (currentExploreNodeId) => set({ currentExploreNodeId }),
+  tourStep: -1,
+  tourCompleted: false,
+  startTour: () => set(state => state.tourCompleted ? {} : { tourStep: 0 }),
+  advanceTour: () => set(state => ({ tourStep: state.tourStep + 1 })),
+  endTour: () => set({ tourStep: -1, tourCompleted: true, tourSpotlightAddNode: null }),
+  tourSpotlightAddNode: null,
+  setTourSpotlightAddNode: (tourSpotlightAddNode) => set({ tourSpotlightAddNode }),
+  hasLearnedKeepGesture: false,
+  mappingEditChars: 0,
+  mappingAddedNodes: 0,
+  kickoffStartedForTasks: [],
+  // Atomically claims a kickoff slot. Returns true if this is the first claim
+  // for taskIdx (caller should proceed); false if already claimed.
+  markKickoffStarted: (taskIdx) => {
+    const state = get();
+    if (state.kickoffStartedForTasks.includes(taskIdx)) return false;
+    set({ kickoffStartedForTasks: [...state.kickoffStartedForTasks, taskIdx] });
+    return true;
+  },
   manualPositions: {},
   editingNodeId: null,
 
-  setPhase: (phase) => set({ phase }),
+  setPhase: (phase) => set(state => ({
+    phase,
+    // Stamp the first-entry time only — re-entries keep the original so the
+    // "time spent on this phase" duration isn't reset by a back-and-forth.
+    phaseEnteredAt: state.phaseEnteredAt[phase]
+      ? state.phaseEnteredAt
+      : { ...state.phaseEnteredAt, [phase]: Date.now() },
+  })),
+  experienceRating: null,
+  feedback: '',
+  setFinalAnswers: ({ experienceRating, feedback }) => set({ experienceRating, feedback }),
   setLoading: (isLoading) => set({ isLoading }),
   setEditingNodeId: (editingNodeId) => set({ editingNodeId }),
 
@@ -361,21 +725,76 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     set(state => ({ manualPositions: { ...state.manualPositions, [id]: position } })),
 
   updateNodeLabel: (id, label) =>
-    set(state => ({
-      nodes: state.nodes.map(n =>
-        n.id === id ? { ...n, data: { ...n.data, label } } : n
-      ),
-    })),
+    set(state => {
+      const node = state.nodes.find(n => n.id === id);
+      // Credit edits against the node's originalLabel. Only AI-suggested
+      // nodes set originalLabel (the proposed text); manually-added subtasks
+      // leave it undefined and earn the flat add-node bonus instead.
+      let editCharsDelta = 0;
+      if (node?.data.originalLabel !== undefined) {
+        const oldDist = levenshtein(node.data.originalLabel, node.data.label);
+        const newDist = levenshtein(node.data.originalLabel, label);
+        editCharsDelta = newDist - oldDist;
+      }
+      return {
+        nodes: state.nodes.map(n =>
+          n.id === id ? { ...n, data: { ...n.data, label } } : n
+        ),
+        mappingEditChars: Math.max(0, state.mappingEditChars + editCharsDelta),
+      };
+    }),
 
   deleteNodes: (ids) =>
     set(state => {
-      const idSet = new Set(ids);
+      // Cascade: collect the input ids plus every descendant.
+      const toDelete = new Set<string>(ids);
+      const queue = [...ids];
+      while (queue.length) {
+        const pid = queue.shift()!;
+        for (const n of state.nodes) {
+          if (n.data.parentId === pid && !toDelete.has(n.id)) {
+            toDelete.add(n.id);
+            queue.push(n.id);
+          }
+        }
+      }
+      // Reverse bonus contributions for each deleted node so a participant
+      // can't earn the add-bonus or edit-bonus and then keep it by deleting
+      // the subtask. Mirrors the credit logic in updateNodeLabel + addEmptySubtask.
+      let editCharsToReverse = 0;
+      let addedNodesToReverse = 0;
+      // Track AI-proposed labels that just got discarded, grouped by their
+      // parent. Fed to /api/propose-subtasks as rejection signal next time the
+      // same parent is expanded — "you suggested this last round; they said no".
+      // Only items that came from the AI count (originalLabel set, not manuallyAdded);
+      // we use the originalLabel rather than the current label so a participant
+      // who renamed then deleted still teaches the AI about the original.
+      const newRejections: Record<string, string[]> = {};
+      for (const n of state.nodes) {
+        if (!toDelete.has(n.id)) continue;
+        if (n.data.originalLabel !== undefined) {
+          editCharsToReverse += levenshtein(n.data.originalLabel, n.data.label);
+        }
+        if (n.data.manuallyAdded) addedNodesToReverse += 1;
+        if (n.data.originalLabel && !n.data.manuallyAdded && n.data.parentId) {
+          (newRejections[n.data.parentId] ||= []).push(n.data.originalLabel);
+        }
+      }
+      const mergedRejections: Record<string, string[]> = { ...state.rejectedByParent };
+      for (const [parentId, labels] of Object.entries(newRejections)) {
+        const existing = mergedRejections[parentId] ?? [];
+        const set = new Set([...existing, ...labels]);
+        mergedRejections[parentId] = [...set];
+      }
       const manualPositions = { ...state.manualPositions };
-      ids.forEach(id => delete manualPositions[id]);
+      toDelete.forEach(id => delete manualPositions[id]);
       return {
-        nodes: state.nodes.filter(n => !idSet.has(n.id)),
-        edges: state.edges.filter(e => !idSet.has(e.source) && !idSet.has(e.target)),
+        nodes: state.nodes.filter(n => !toDelete.has(n.id)),
+        edges: state.edges.filter(e => !toDelete.has(e.source) && !toDelete.has(e.target)),
         manualPositions,
+        mappingEditChars: Math.max(0, state.mappingEditChars - editCharsToReverse),
+        mappingAddedNodes: Math.max(0, state.mappingAddedNodes - addedNodesToReverse),
+        rejectedByParent: mergedRejections,
       };
     }),
 
@@ -477,21 +896,81 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     }),
 
   getExportData: () => {
-    const { sessionId, prolific, userProfile, backgroundTranscript, selectedTasks, taskItems, taskCategories, coreTask, typicalWorkflow, bonusSnapshot, nodes, edges, messages } = get();
+    const { sessionId, externalId, condition, prolific, userProfile, backgroundTranscript, selectedTasks, taskItems, taskCategories, interviewExtractedTasks, coreTask, typicalWorkflow, bonusSnapshot, nodes, edges, messages, taskWorkflows, currentTaskIdx, experienceRating, feedback, sessionStartedAt, phaseEnteredAt, mappingEditChars, mappingAddedNodes } = get();
+    // Live-computed mapping bonus, recorded on every save so the persisted
+    // session always reflects what the participant has earned so far in the
+    // workflow-mapping phase (raw counters are alongside for verification).
+    const mappingBonus = mappingEditBonusUsd(mappingEditChars, mappingAddedNodes);
+    const mappingBonusSnapshot = {
+      editChars: mappingEditChars,
+      editEarnedUsd: mappingBonus.editUsd,
+      editCapped: mappingBonus.editUsd >= MAPPING_EDIT_BONUS_MAX_USD,
+      addCount: mappingAddedNodes,
+      addEarnedUsd: mappingBonus.addUsd,
+      addCapped: mappingBonus.addUsd >= MAPPING_ADD_NODE_BONUS_MAX_USD,
+      totalEarnedUsd: mappingBonus.usd,
+      rates: {
+        editPerCharUsd: MAPPING_EDIT_BONUS_PER_CHAR_USD,
+        editMaxUsd: MAPPING_EDIT_BONUS_MAX_USD,
+        addPerNodeUsd: MAPPING_ADD_NODE_BONUS_USD,
+        addMaxUsd: MAPPING_ADD_NODE_BONUS_MAX_USD,
+      },
+      computedAt: new Date().toISOString(),
+    };
+    // Completion signal — `study-complete` lands in phaseEnteredAt the moment
+    // the participant arrives at the thanks screen. Surfacing it as a top-level
+    // boolean (plus an ISO timestamp) so analysts can split completers from
+    // abandoners without parsing the phaseEnteredAt map.
+    const completedAtMs = phaseEnteredAt?.['study-complete'];
+    const completed = typeof completedAtMs === 'number';
+    const completedAt = completed ? new Date(completedAtMs).toISOString() : null;
     return {
       sessionId,
+      externalId,
+      condition,
+      completed,
+      completedAt,
       prolific,
       userProfile,
       backgroundTranscript,
+      interviewExtractedTasks,
       taskCategories,
       selectedTasks,
       taskItems,
       coreTask,
+      currentTaskIdx,
       typicalWorkflow,
       bonusSnapshot,
+      // Mapping-phase bonuses — both the raw counters (ground truth) and the
+      // computed snapshot (convenience for analysts).
+      mappingEditChars,
+      mappingAddedNodes,
+      mappingBonusSnapshot,
+      experienceRating,
+      feedback,
+      sessionStartedAt,
+      phaseEnteredAt,
       exportedAt: new Date().toISOString(),
+      // Completed tasks (one entry per task the participant finished before
+      // advancing to the next).
+      taskWorkflows,
+      // The in-progress task (whatever they're currently working on, if any).
       workflow: {
-        nodes: nodes.map(n => ({ id: n.id, type: n.type, label: n.data.label, description: n.data.description, actor: n.data.actor, parentId: n.data.parentId })),
+        nodes: nodes.map(n => ({
+          id: n.id,
+          type: n.type,
+          label: n.data.label,
+          description: n.data.description,
+          actor: n.data.actor,
+          parentId: n.data.parentId,
+          confirmed: n.data.confirmed !== false,
+          // Provenance for analysts: which label the AI proposed, whether the
+          // participant added this node themselves, and whether the current
+          // label differs from the AI suggestion.
+          originalLabel: n.data.originalLabel,
+          manuallyAdded: !!n.data.manuallyAdded,
+          edited: n.data.originalLabel !== undefined && n.data.label !== n.data.originalLabel,
+        })),
         edges: edges.map(e => ({ source: e.source, target: e.target, label: e.label, is_branch: e.data?.is_branch })),
       },
       transcript: messages.map(m => ({ role: m.role, content: m.content })),

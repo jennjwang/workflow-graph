@@ -1,7 +1,17 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 import { Handle, Position, NodeProps, Node } from '@xyflow/react';
 import { WorkflowNodeData, NodeType } from '../types';
 import { useWorkflowStore } from '../store';
+
+// A description that's just a restatement of the label adds no signal — hide
+// it. Compare case-insensitively and ignore surrounding whitespace so trivial
+// differences ("Run experiments" vs "run experiments ") still count as the
+// same.
+function descriptionAddsInfo(label: string, description?: string | null): boolean {
+  if (!description) return false;
+  const norm = (s: string) => s.trim().toLowerCase();
+  return norm(description) !== norm(label);
+}
 
 // Subtask backdrop — a soft-bg container drawn behind the stacked sub-step cards.
 function SubtaskBackdrop() {
@@ -12,7 +22,7 @@ function SubtaskBackdrop() {
     >
       <div className="px-3 pt-2 pointer-events-none select-none">
         <span className="text-[9px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-          sub-steps
+          subtasks
         </span>
       </div>
     </div>
@@ -23,46 +33,6 @@ type WorkflowFlowNode = Node<WorkflowNodeData, NodeType>;
 
 const NODE_WIDTH = 220;
 
-const TYPE_STYLES: Record<NodeType, { border: string; badge: string; bg: string; label: string }> = {
-  start:    { border: 'border-slate-400',    badge: 'bg-slate-100 text-slate-600',    bg: 'bg-white',     label: 'start' },
-  task:     { border: 'border-blue-300',     badge: 'bg-blue-100 text-blue-700',      bg: 'bg-blue-50',   label: 'task' },
-  decision: { border: 'border-amber-400',    badge: 'bg-amber-100 text-amber-700',    bg: 'bg-amber-50',  label: 'decision' },
-  handoff:  { border: 'border-violet-400',   badge: 'bg-violet-100 text-violet-700',  bg: 'bg-violet-50', label: 'handoff' },
-  input:    { border: 'border-teal-400',     badge: 'bg-teal-100 text-teal-700',      bg: 'bg-teal-50',   label: 'input' },
-  failure:  { border: 'border-red-400',      badge: 'bg-red-100 text-red-700',        bg: 'bg-red-50',    label: 'failure' },
-  wait:     { border: 'border-amber-400',    badge: 'bg-amber-100 text-amber-700',    bg: 'bg-amber-50',  label: 'wait' },
-  end:      { border: 'border-slate-500',    badge: 'bg-slate-100 text-slate-700',    bg: 'bg-slate-50',  label: 'end' },
-};
-
-const EXPANDABLE: NodeType[] = ['task', 'handoff', 'wait'];
-
-const PLUS_SVG = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath stroke='%2360a5fa' stroke-width='2' stroke-linecap='round' d='M6 2v8M2 6h8'/%3E%3C/svg%3E")`;
-
-function CircleNode({ id, data, selected }: NodeProps<WorkflowFlowNode>) {
-  const isStart = data.nodeType === 'start';
-  const currentExploreNodeId = useWorkflowStore(s => s.currentExploreNodeId);
-  const isExploring = currentExploreNodeId === id;
-
-  return (
-    <div className="flex flex-col items-center group" style={{ width: NODE_WIDTH }}>
-      <Handle type="target" position={Position.Top} style={{ width: 8, height: 8, backgroundColor: '#94a3b8', border: '2px solid white', top: -4 }} />
-      <div
-        className={`w-14 h-14 rounded-full flex items-center justify-center transition-all
-          ${isStart
-            ? 'border-2 border-slate-500 bg-white'
-            : 'bg-slate-700 border-2 border-slate-700'}
-          ${isExploring ? 'ring-2 ring-indigo-400 ring-offset-2' : selected ? 'ring-2 ring-blue-400 ring-offset-1' : ''}
-        `}
-      >
-        {isStart && <div className="w-3 h-3 rounded-full bg-slate-500" />}
-      </div>
-      <p className="text-sm text-slate-700 mt-2 text-center font-medium">{data.label}</p>
-      {data.description && <p className="text-xs text-slate-400 mt-0.5 text-center max-w-[180px] line-clamp-2">{data.description}</p>}
-      <Handle type="source" position={Position.Bottom} style={{ width: 8, height: 8, backgroundColor: '#94a3b8', border: '2px solid white', bottom: -4 }} />
-    </div>
-  );
-}
-
 export function WorkflowNode({ id, data, selected }: NodeProps<WorkflowFlowNode>) {
   const updateNodeLabel       = useWorkflowStore(s => s.updateNodeLabel);
   const editingNodeId         = useWorkflowStore(s => s.editingNodeId);
@@ -72,20 +42,33 @@ export function WorkflowNode({ id, data, selected }: NodeProps<WorkflowFlowNode>
   const currentExploreNodeId  = useWorkflowStore(s => s.currentExploreNodeId);
   const isExploring           = currentExploreNodeId === id;
   const toggleNodeCollapsed   = useWorkflowStore(s => s.toggleNodeCollapsed);
+  const addEmptySubtask       = useWorkflowStore(s => s.addEmptySubtask);
+  const deleteNodes           = useWorkflowStore(s => s.deleteNodes);
+  const tourSpotlightAddNode  = useWorkflowStore(s => s.tourSpotlightAddNode);
   const allNodes              = useWorkflowStore(s => s.nodes);
+  const tourForcePlus         = tourSpotlightAddNode === id;
   const childCount            = useMemo(() => allNodes.filter(n => n.data.parentId === id).length, [allNodes, id]);
   const isParent              = childCount > 0;
+  // Once the participant has kept any draft (in any task), they've learned the
+  // click-to-keep gesture — drop the per-card hint everywhere from then on.
+  const hasLearnedKeepGesture = useWorkflowStore(s => s.hasLearnedKeepGesture);
   const isCollapsed           = !!data.collapsed;
 
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(data.label);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Dispatch to dedicated shape components
-  if (data.nodeType === 'start' || data.nodeType === 'end') {
-    return <CircleNode id={id} data={data} selected={selected} type={data.nodeType} dragging={false} isConnectable={true} positionAbsoluteX={0} positionAbsoluteY={0} zIndex={0} deletable={true} selectable={true} draggable={true} />;
-  }
-  const styles = TYPE_STYLES[data.nodeType] ?? TYPE_STYLES.task;
-  const canExpand = EXPANDABLE.includes(data.nodeType) && pendingExpand?.nodeId !== id;
+  // Auto-grow the textarea to fit its content while the participant types so
+  // long labels wrap and stay fully visible instead of scrolling horizontally.
+  useEffect(() => {
+    if (!editing) return;
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = el.scrollHeight + 'px';
+  }, [editing, editValue]);
+
+  const canExpand = pendingExpand?.nodeId !== id;
 
   useEffect(() => {
     if (editingNodeId === id) {
@@ -95,15 +78,16 @@ export function WorkflowNode({ id, data, selected }: NodeProps<WorkflowFlowNode>
     }
   }, [editingNodeId, id, setEditingNodeId]);
 
-  const startEdit = (e?: React.MouseEvent) => {
-    e?.stopPropagation();
-    setEditValue(data.label);
-    setEditing(true);
-  };
-
   const commitEdit = () => {
     setEditing(false);
     const trimmed = editValue.trim();
+    // A manually-added subtask must have a real name. If the participant
+    // commits without changing the placeholder, treat the add as a no-op and
+    // remove the node (which also reverses its add-bonus contribution).
+    if (data.manuallyAdded && (!trimmed || trimmed === 'New subtask')) {
+      deleteNodes([id]);
+      return;
+    }
     if (trimmed && trimmed !== data.label) updateNodeLabel(id, trimmed);
   };
 
@@ -112,43 +96,75 @@ export function WorkflowNode({ id, data, selected }: NodeProps<WorkflowFlowNode>
     setPendingExpand({ nodeId: id, nodeLabel: data.label });
   };
 
-  const isSubtask = !!data.parentId;
+  const handleAddEmpty = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    addEmptySubtask(id);
+  };
+
+  const handleDelete = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    deleteNodes([id]);
+  };
+
+  const isDraft = data.confirmed === false;
+  // Hover-revealed delete affordance: any non-root node. AI drafts can also be
+  // discarded by click-to-unkeep, but explicit delete is needed for duplicates
+  // or AI suggestions the participant wants gone from the canvas entirely.
+  const canDelete = !!data.parentId;
 
   return (
     <div
       className={`
-        group relative rounded-2xl border-2 ${styles.border}
-        ${isSubtask ? 'bg-slate-100/80 border-dashed' : styles.bg}
-        shadow-sm px-4 py-3 min-h-[68px]
-        transition-shadow duration-150
-        ${isExploring ? 'shadow-md ring-2 ring-indigo-400 ring-offset-2' : selected ? 'shadow-md ring-2 ring-blue-400 ring-offset-1' : 'hover:shadow-md'}
+        group relative rounded-2xl px-4 py-3 min-h-[68px] transition-all duration-150
+        ${isDraft
+          ? 'border-2 border-dashed border-slate-300 bg-slate-50/70 cursor-pointer hover:border-blue-400 hover:bg-blue-50/40'
+          : 'border border-slate-200 bg-white shadow-sm hover:shadow-md hover:border-slate-300'}
+        ${isExploring ? 'shadow-md ring-2 ring-indigo-400 ring-offset-2' : selected ? 'shadow-md ring-2 ring-blue-400 ring-offset-1' : ''}
       `}
       style={{ width: NODE_WIDTH }}
-      onDoubleClick={editing ? undefined : startEdit}
     >
-      <Handle type="target" position={Position.Top} style={{ width: 8, height: 8, backgroundColor: '#94a3b8', border: '2px solid white', top: -4 }} />
-
-      {isSubtask && (
-        <div className="absolute -top-2 left-3 px-1.5 py-0.5 bg-slate-200 text-slate-500 text-[9px] font-semibold uppercase tracking-wider rounded-full leading-none">
-          sub-step
-        </div>
-      )}
+      <Handle type="target" position={Position.Left} style={{ width: 8, height: 8, backgroundColor: '#94a3b8', border: '2px solid white', left: -4 }} />
 
       {editing ? (
-        <input
+        <textarea
+          ref={textareaRef}
           autoFocus
-          className="w-full text-sm font-semibold text-slate-800 leading-tight bg-transparent border-b-2 border-blue-400 outline-none pb-0.5 text-center"
+          rows={1}
+          className="w-full text-sm font-semibold text-slate-800 leading-tight bg-transparent border-b-2 border-blue-400 outline-none pb-0.5 text-center resize-none overflow-hidden block"
           value={editValue}
+          onClick={e => e.stopPropagation()}
+          onMouseDown={e => e.stopPropagation()}
+          onFocus={e => e.currentTarget.select()}
           onChange={e => setEditValue(e.target.value)}
           onBlur={commitEdit}
-          onKeyDown={e => { if (e.key === 'Enter') commitEdit(); if (e.key === 'Escape') setEditing(false); }}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              commitEdit();
+            }
+            if (e.key === 'Escape') {
+              setEditing(false);
+              // Cancelling on a manually-added subtask that was never given a
+              // real name discards the node entirely.
+              if (data.manuallyAdded && (!data.label.trim() || data.label === 'New subtask')) {
+                deleteNodes([id]);
+              }
+            }
+          }}
         />
       ) : (
-        <p className="text-sm font-semibold text-slate-800 text-center leading-tight">{data.label}</p>
+        <p className={`text-sm font-semibold text-center leading-tight break-words whitespace-pre-wrap ${isDraft ? 'text-slate-500' : 'text-slate-800'}`}>{data.label}</p>
       )}
-
-      {data.description && !editing && (
-        <p className="text-xs text-slate-500 text-center mt-1 leading-snug line-clamp-2">{data.description}</p>
+      {!data.parentId && descriptionAddsInfo(data.label, data.description) && (
+        <p className="text-[11px] text-slate-500 text-center leading-snug mt-1.5 whitespace-pre-wrap break-words">
+          {data.description}
+        </p>
+      )}
+      {isDraft && !hasLearnedKeepGesture && (
+        <p className="text-[9px] text-slate-400 text-center mt-1 uppercase tracking-wide font-medium transition-opacity duration-300">tap to keep</p>
+      )}
+      {!isDraft && data.parentId && !hasLearnedKeepGesture && (
+        <p className="text-[9px] text-slate-300 text-center mt-1 uppercase tracking-wide font-medium opacity-0 group-hover:opacity-100 transition-opacity">tap to unkeep</p>
       )}
 
       {/* Action row */}
@@ -156,21 +172,21 @@ export function WorkflowNode({ id, data, selected }: NodeProps<WorkflowFlowNode>
         {isParent && (
           <button
             onClick={e => { e.stopPropagation(); toggleNodeCollapsed(id); }}
-            title={isCollapsed ? 'Expand sub-steps' : 'Collapse sub-steps'}
+            title={isCollapsed ? 'Expand subtasks' : 'Collapse subtasks'}
             className="text-[10px] flex items-center gap-1 px-2 py-0.5 rounded-full border border-indigo-200 bg-indigo-50/50 hover:bg-indigo-500 hover:text-white hover:border-indigo-500 text-indigo-600 transition-all font-medium"
           >
             <span>{isCollapsed ? '▶' : '▼'}</span>
             <span>{childCount}</span>
           </button>
         )}
-        {!isParent && canExpand && !editing && (
+        {canExpand && !editing && (
           <button
             onClick={handleExpand}
-            title="Break into sub-steps"
+            title={isParent ? 'Suggest more subtasks with AI' : 'Suggest subtasks with AI'}
             className="text-[10px] text-blue-600 hover:text-white hover:bg-blue-500 border border-blue-200 hover:border-blue-500 bg-blue-50/50 px-2 py-0.5 rounded-full transition-all flex items-center gap-1 font-medium"
           >
-            <span className="text-sm leading-none">+</span>
-            <span>break down</span>
+            <span className="text-sm leading-none">✦</span>
+            <span>{isParent ? 'more subtasks' : 'subtasks'}</span>
           </button>
         )}
         {pendingExpand?.nodeId === id && (
@@ -178,17 +194,41 @@ export function WorkflowNode({ id, data, selected }: NodeProps<WorkflowFlowNode>
         )}
       </div>
 
+      {/* Quick-add: hover-revealed plus at the right-center for adding an empty subtask. */}
+      {!editing && (
+        <button
+          onMouseDown={e => e.stopPropagation()}
+          onClick={handleAddEmpty}
+          title="Add an empty subtask"
+          className={`${tourForcePlus ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity absolute top-1/2 -right-3 w-6 h-6 rounded-full border-2 border-blue-400 bg-white text-blue-500 hover:bg-blue-500 hover:text-white grid place-items-center shadow-sm z-10`}
+          style={{ transform: 'translateY(-50%)' }}
+        >
+          <svg viewBox="0 0 24 24" className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+        </button>
+      )}
+
+      {/* Delete: hover-revealed × at the top-right. Available on every non-root
+          node so participants can also remove AI drafts and duplicates outright. */}
+      {!editing && canDelete && (
+        <button
+          onMouseDown={e => e.stopPropagation()}
+          onClick={handleDelete}
+          title="Delete this subtask"
+          className="opacity-0 group-hover:opacity-100 transition-opacity absolute -top-2 -right-2 w-5 h-5 rounded-full border border-slate-300 bg-white text-slate-400 hover:bg-rose-500 hover:text-white hover:border-rose-500 grid place-items-center shadow-sm z-10"
+        >
+          <svg viewBox="0 0 24 24" className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        </button>
+      )}
+
       <Handle
         type="source"
-        position={Position.Bottom}
-        className="opacity-0 group-hover:opacity-100 transition-opacity"
-        style={{
-          width: 22, height: 22, borderRadius: '50%', backgroundColor: 'white',
-          border: '2px solid #60a5fa',
-          backgroundImage: PLUS_SVG, backgroundSize: '10px 10px', backgroundRepeat: 'no-repeat', backgroundPosition: 'center',
-          bottom: -11, left: '50%', transform: 'translateX(-50%)',
-          cursor: 'crosshair', boxShadow: '0 1px 4px rgba(0,0,0,0.12)',
-        }}
+        position={Position.Right}
+        isConnectable={false}
+        style={{ width: 1, height: 1, opacity: 0, right: 0 }}
       />
     </div>
   );
@@ -229,7 +269,7 @@ function WalkerGhost({ data }: NodeProps<Node<WorkflowNodeData, NodeType>>) {
         ↓ preview
       </p>
       <p className="text-sm font-semibold text-slate-800 leading-tight">{data.label}</p>
-      {data.description && <p className="text-xs text-slate-500 mt-1 leading-snug line-clamp-2">{data.description}</p>}
+      {descriptionAddsInfo(data.label, data.description) && <p className="text-xs text-slate-500 mt-1 leading-snug line-clamp-2">{data.description}</p>}
     </div>
   );
 }
@@ -349,7 +389,7 @@ function WalkerCard({ data }: NodeProps<Node<WalkerCardData, NodeType>>) {
       <p className="text-base font-semibold text-slate-800 leading-snug mt-3">
         {data.cardQuestion}
       </p>
-      <p className="text-xs text-slate-400 mt-1">Pick the sub-steps that apply:</p>
+      <p className="text-xs text-slate-400 mt-1">Pick the subtasks that apply:</p>
       <div className="space-y-1.5 mt-3 max-h-[280px] overflow-y-auto">
         {suggestions.map((s, i) => {
           const isSel = selected.has(i);
@@ -364,7 +404,7 @@ function WalkerCard({ data }: NodeProps<Node<WalkerCardData, NodeType>>) {
               </span>
               <div className="min-w-0">
                 <p className="text-sm font-medium text-slate-700 leading-snug">{s.label}</p>
-                {s.description && <p className="text-xs text-slate-500 leading-snug mt-0.5">{s.description}</p>}
+                {descriptionAddsInfo(s.label, s.description) && <p className="text-xs text-slate-500 leading-snug mt-0.5">{s.description}</p>}
               </div>
             </button>
           );
@@ -382,7 +422,7 @@ function WalkerCard({ data }: NodeProps<Node<WalkerCardData, NodeType>>) {
           disabled={selected.size === 0}
           className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-30 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition flex items-center justify-center gap-1.5"
         >
-          <span>+</span><span>Add {selected.size > 0 ? selected.size : ''} sub-step{selected.size !== 1 ? 's' : ''}</span>
+          <span>+</span><span>Add {selected.size > 0 ? selected.size : ''} subtask{selected.size !== 1 ? 's' : ''}</span>
         </button>
       </div>
     </div>

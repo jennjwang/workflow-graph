@@ -101,6 +101,7 @@ gcloud run deploy "$SERVICE_NAME" \
   --memory 1Gi \
   --cpu 1 \
   --timeout 300 \
+  --max-instances 1 \
   --set-env-vars "$NON_SENSITIVE_VARS" \
   --set-secrets "OPENAI_API_KEY=openai-api-key:latest" \
   --add-volume "name=data,type=cloud-storage,bucket=$BUCKET_NAME" \

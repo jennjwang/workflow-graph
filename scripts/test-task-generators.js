@@ -23,36 +23,48 @@ const FIXTURES = {
   'phd-student': {
     jobTitle: 'PhD student in machine learning',
     tenure: '3 years',
+    responsibilities:
+      'Conduct machine learning research that produces publishable results, advance my dissertation, and mentor undergraduate researchers in the lab.',
     typicalWeek:
       'I read recent papers, debug research code, run experiments, meet with my advisor weekly, and present updates at lab meeting. I also draft sections for an upcoming paper and mentor a couple of undergrads.',
   },
   'school-nurse': {
     jobTitle: 'School nurse',
     tenure: '8 years',
+    responsibilities:
+      'Provide day-to-day health care for students at the school, manage chronic-condition care plans, maintain student health records, and run state-required health screenings.',
     typicalWeek:
       'I see kids who come in feeling sick, manage medications throughout the day, handle minor injuries, and update health records. I also run vision/hearing screenings periodically and coordinate with parents about chronic conditions.',
   },
   'product-manager': {
     jobTitle: 'Senior product manager at a fintech startup',
     tenure: '4 years',
+    responsibilities:
+      'Own the product roadmap for my area, drive feature delivery through engineering and design partners, surface customer needs, and report progress to leadership.',
     typicalWeek:
       'I write PRDs, run sprint planning and standups, sync with engineering and design, review metrics dashboards, and talk to customers. I also write quarterly roadmaps and review competitor releases.',
   },
   'barista': {
     jobTitle: 'Barista at a specialty coffee shop',
     tenure: '2 years',
+    responsibilities:
+      'Prepare and serve coffee drinks to customers, keep the bar running smoothly through each shift, and help train new baristas.',
     typicalWeek:
       'I open the cafe, dial in espresso, take orders and pull shots, restock pastry case, clean equipment, and close out the till at the end of the day. I also help train new baristas and run the occasional latte-art class.',
   },
   'electrician': {
     jobTitle: 'Residential electrician',
     tenure: '12 years',
+    responsibilities:
+      'Perform residential electrical work for customers — diagnose problems, install and replace systems, manage permits and inspections, and bill for the work.',
     typicalWeek:
       'I drive to job sites, diagnose wiring issues in homes, run new circuits, install fixtures and panels, pull permits and schedule inspections, and write up invoices for customers at the end of the day.',
   },
   'theory-phd': {
     jobTitle: 'PhD student in theoretical computer science',
     tenure: '4 years',
+    responsibilities:
+      'Prove novel theoretical results in my research area, write them up for publication, and advance my dissertation.',
     typicalWeek:
       'I read papers, prove theorems on a whiteboard, write up proofs in LaTeX, and meet with my advisor. I do NOT run experiments or write production code — my work is purely theoretical.',
   },
@@ -183,9 +195,10 @@ Return ONLY valid JSON of the shape:
 // ─── Strategy 4: areas-as-tasks (MECE) ────────────────────────────────────────
 // Uses the SHARED prompt (prompts/task-generator.js) — same one server.js
 // /api/generate-tasks runs in production. Edit there to change both at once.
-async function strategy4AreasAsTasks({ jobTitle, tenure, typicalWeek }) {
+async function strategy4AreasAsTasks({ jobTitle, tenure, responsibilities, typicalWeek }) {
   const sys = UPPER_LEVEL_TASKS_SYSTEM_PROMPT;
-  const user = `Job: ${jobTitle}\nTenure: ${tenure}\nTypical week: ${typicalWeek}\n\nGenerate the upper-level tasks.`;
+  const respLine = responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : '';
+  const user = `Job: ${jobTitle}\nTenure: ${tenure}${respLine}\nTypical week: ${typicalWeek}\n\nGenerate the upper-level tasks.`;
 
   const resp = await client.chat.completions.create({
     model: MODEL,

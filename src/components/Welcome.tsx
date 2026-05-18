@@ -9,7 +9,7 @@ export function Welcome() {
 
       {/* Welcome card */}
       <div className="relative z-10 flex-1 flex items-center justify-center px-6 py-12">
-        <div className="max-w-xl w-full">
+        <div className="max-w-2xl w-full">
           <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-4">
             Welcome
           </p>

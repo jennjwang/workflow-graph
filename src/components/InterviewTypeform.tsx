@@ -292,7 +292,7 @@ export function InterviewTypeform({ onShowMap, mapVisible }: Props) {
       {/* Header */}
       <div className="relative z-10 px-10 pt-8 pb-5 flex items-start justify-between shrink-0">
         <div className="flex-1 min-w-0 mr-4">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-3">Part 3 of 3 — Workflow Mapping</p>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-3">Part 3 of 3 — Task Decomposition</p>
           {/* Conversation progress bar */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">

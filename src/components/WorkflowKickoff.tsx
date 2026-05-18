@@ -1,7 +1,14 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useWorkflowStore } from "../store";
-import { transcribeAudio } from "../lib/api";
+import { transcribeAudio, fetchKickoffQuestion } from "../lib/api";
+import {
+  MAPPING_EDIT_BONUS_PER_CHAR_USD,
+  MAPPING_EDIT_BONUS_MAX_USD,
+  MAPPING_ADD_NODE_BONUS_USD,
+  MAPPING_ADD_NODE_BONUS_MAX_USD,
+  formatUsd,
+} from "../lib/bonus";
 
 type RecordState = "idle" | "recording" | "transcribing";
 
@@ -133,27 +140,53 @@ function MicOrb({
 }
 
 export function WorkflowKickoff() {
-  const { coreTask, addMessage, setPhase } = useWorkflowStore(
+  const { coreTask, addMessage, setPhase, setCoreTaskShort, currentTaskIdx } = useWorkflowStore(
     useShallow((s) => ({
       coreTask: s.coreTask,
       addMessage: s.addMessage,
       setPhase: s.setPhase,
+      setCoreTaskShort: s.setCoreTaskShort,
+      currentTaskIdx: s.currentTaskIdx,
     })),
   );
 
-  const taskPhrase = coreTask.charAt(0).toLowerCase() + coreTask.slice(1);
-  const question = `Can you walk me through how you ${taskPhrase}?`;
+  // AI-generated to handle both short labels ("Implement ticket changes") and
+  // multi-sentence edited descriptions gracefully. Returns a short canvas label
+  // too so the mapping phase shows a concise title instead of the full prose.
+  // Falls back to a static statement if the server call errors.
+  const [question, setQuestion] = useState<string | null>(null);
+  const fetchedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!coreTask || fetchedFor.current === coreTask) return;
+    fetchedFor.current = coreTask;
+    fetchKickoffQuestion(coreTask)
+      .then(({ question: q, shortLabel }) => {
+        setQuestion(q);
+        setCoreTaskShort(shortLabel);
+      })
+      .catch((err) => {
+        console.error("[kickoff] fetchKickoffQuestion failed:", err);
+        setQuestion(`Walk me through how you do this task: ${coreTask}`);
+        setCoreTaskShort(coreTask);
+      });
+  }, [coreTask, setCoreTaskShort]);
 
   const [answer, setAnswer] = useState("");
   const [showTextInput, setShowTextInput] = useState(false);
   const [recordState, setRecordState] = useState<RecordState>("idle");
+  // Show the framing/instructions card BEFORE the walkthrough question so the
+  // participant knows what they're about to do. The kickoff question fetch
+  // above fires in parallel, so by the time they click Continue the question
+  // is usually ready. Skipped for tasks 2+ — the participant already knows the
+  // drill by then; "Next task →" should land them straight on the question.
+  const [showIntro, setShowIntro] = useState(currentTaskIdx === 0);
   const inputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
 
   const submit = (text: string) => {
     const content = text.trim();
-    if (!content) return;
+    if (!content || !question) return;
     addMessage("assistant", question);
     addMessage("user", content);
     setPhase("workflow");
@@ -211,20 +244,112 @@ export function WorkflowKickoff() {
     }
   };
 
+  if (showIntro) {
+    return (
+      <div className="min-h-screen bg-white flex flex-col items-center justify-center px-8 py-16 relative">
+        <div className="absolute top-0 left-0 right-0 h-56 bg-gradient-to-b from-indigo-50/30 to-transparent pointer-events-none" />
+
+        <div className="relative max-w-2xl w-full">
+          <p
+            className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-9 animate-fadeSlideUp"
+            style={{ animationDelay: "0ms" }}
+          >
+            Part 3 of 3 — Task Decomposition
+          </p>
+          <h2
+            className="text-[1.65rem] font-light text-slate-800 leading-snug tracking-tight animate-fadeSlideUp"
+            style={{ animationDelay: "80ms" }}
+          >
+            Now let's map out the tasks step by step.
+          </h2>
+          <p
+            className="text-slate-500 mt-6 text-[15px] leading-[1.7] animate-fadeSlideUp"
+            style={{ animationDelay: "160ms" }}
+          >
+            For each essential task, we'll first ask you to walk us through how
+            you do it. Then the AI proposes a set of subtasks for that task, and
+            you confirm, rename, discard, or add until the map matches how you
+            really work.
+          </p>
+          <div className="mt-10 space-y-4">
+            <div
+              className="px-5 py-4 rounded-xl border border-amber-200 bg-amber-50 animate-fadeSlideUp"
+              style={{ animationDelay: "240ms" }}
+            >
+              <div className="text-sm leading-[1.6]">
+                <p className="font-semibold text-amber-700 mb-1.5">Bonus</p>
+                <p className="text-slate-700">
+                  Edit an AI-suggested task, or add your own subtasks. We'll
+                  give you a bonus for each edit you make and for every subtask
+                  you add.
+                </p>
+                <p className="mt-2.5 text-amber-800">
+                  <span className="font-semibold">
+                    {formatUsd(MAPPING_EDIT_BONUS_PER_CHAR_USD * 1000)} per
+                    1,000 characters
+                  </span>{" "}
+                  edited (up to {formatUsd(MAPPING_EDIT_BONUS_MAX_USD)}), plus{" "}
+                  <span className="font-semibold">
+                    {formatUsd(MAPPING_ADD_NODE_BONUS_USD)} per subtask added
+                  </span>{" "}
+                  (up to {formatUsd(MAPPING_ADD_NODE_BONUS_MAX_USD)}).
+                </p>
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={() => setShowIntro(false)}
+            className="mt-14 inline-flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-full transition-all active:scale-[0.98] shadow-sm shadow-indigo-200 animate-fadeSlideUp"
+            style={{ animationDelay: "320ms" }}
+          >
+            Continue
+            <svg
+              className="w-4 h-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <line x1="5" y1="12" x2="19" y2="12" />
+              <polyline points="13 6 19 12 13 18" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-white flex flex-col items-center justify-center px-8 py-16 relative">
       <div className="absolute top-0 left-0 right-0 h-56 bg-gradient-to-b from-indigo-50/30 to-transparent pointer-events-none" />
 
-      <div className="relative max-w-2xl w-full">
+      <div className="relative max-w-3xl w-full">
         <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-8">
-          Part 3 of 3 — Workflow Mapping
+          Part 3 of 3 — Task Decomposition
         </p>
 
-        <h1 className="text-[1.85rem] font-light text-slate-800 leading-snug tracking-tight mb-14">
-          {question}
-        </h1>
+        {question ? (
+          <h1 className="text-[1.85rem] font-light text-slate-800 leading-snug tracking-tight mb-14">
+            {question}
+          </h1>
+        ) : (
+          <div className="mb-14 flex items-center gap-2 text-slate-400">
+            <span className="flex gap-1.5">
+              {[0, 150, 300].map((d) => (
+                <span
+                  key={d}
+                  className="w-1.5 h-1.5 bg-indigo-300 rounded-full animate-bounce"
+                  style={{ animationDelay: `${d}ms` }}
+                />
+              ))}
+            </span>
+            <span className="text-sm">Reviewing your task…</span>
+          </div>
+        )}
 
-        {!showTextInput && (
+        {question && !showTextInput && (
           <div className="flex flex-col items-center gap-6 mb-8">
             <MicOrb
               state={recordState}
@@ -243,7 +368,7 @@ export function WorkflowKickoff() {
           </div>
         )}
 
-        {showTextInput && (
+        {question && showTextInput && (
           <div className="space-y-3">
             <textarea
               ref={inputRef as unknown as React.RefObject<HTMLTextAreaElement>}

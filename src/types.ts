@@ -34,6 +34,17 @@ export interface WorkflowNodeData extends Record<string, unknown> {
   clarified?: boolean;
   parentId?: string;
   collapsed?: boolean;
+  // false = AI-proposed draft awaiting user confirmation. undefined or true =
+  // confirmed (user-added, user-clicked, or legacy node from before this field).
+  confirmed?: boolean;
+  // The label this node was created with — AI-suggested for addChildNodes,
+  // "New subtask" placeholder for addEmptySubtask. Used to compute the
+  // per-character edit bonus when the participant renames.
+  originalLabel?: string;
+  // True for nodes created via addEmptySubtask (the participant's manual +).
+  // Used to (a) auto-delete the node if they leave it as the bare placeholder
+  // and (b) reverse the addedNodes bonus counter on delete.
+  manuallyAdded?: boolean;
 }
 
 export interface Message {
@@ -48,7 +59,12 @@ export interface GraphUpdate {
   input: Record<string, unknown>;
 }
 
-export type Phase = 'setup' | 'background' | 'graph-discovery' | 'task-selection' | 'task-priority' | 'study-complete' | 'screen-out' | 'workflow-kickoff' | 'workflow' | 'actor-assignment' | 'handoff-interview' | 'complete';
+export type Phase = 'setup' | 'background' | 'graph-discovery' | 'task-selection' | 'task-priority' | 'final-questions' | 'study-complete' | 'screen-out' | 'workflow-kickoff' | 'workflow' | 'actor-assignment' | 'handoff-interview' | 'complete';
+
+// Study condition selected via the ?cond= URL param. `full` runs all three
+// parts (background → task selection → task decomposition). `short` skips
+// Part 3 and goes straight from task selection to the final questions.
+export type StudyCondition = 'full' | 'short';
 
 export type DiscoveryLevel = 'role' | 'task' | 'subtask';
 
@@ -69,6 +85,8 @@ export interface DiscoveryNodeData extends Record<string, unknown> {
 }
 
 export interface UserProfile {
+  // Free-form answer to "What do you do at work? What are your primary responsibilities?"
+  responsibilities: string;
   // Single free-form field that captures role + tenure from the merged Q1
   // ("What is your current role, and how long have you been in this job?").
   jobTitle: string;

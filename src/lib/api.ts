@@ -47,8 +47,8 @@ export interface InterviewStep {
   prev_node_id?: string;
   question: string;
   edge_label?: string;
-  suggestions?: { label: string; description: string; type: import('../types').NodeType }[];
-  proposed_task?: { id: string; label: string; description: string; type: import('../types').NodeType };
+  suggestions?: { label: string; description?: string; type?: import('../types').NodeType }[];
+  proposed_task?: { id: string; label: string; description?: string; type?: import('../types').NodeType };
 }
 
 export async function fetchInterview(
@@ -145,15 +145,46 @@ export async function proposeSubtasks(
   jobTitle: string,
   statementClarification?: string,
   existingNodes?: { id: string; label: string; type: string }[],
-): Promise<{ label: string; description: string; type: import('../types').NodeType; linkToExistingId?: string }[]> {
+  existingChildren?: { id: string; label: string }[],
+  ancestorChain?: string[],
+  extra?: {
+    responsibilities?: string;
+    typicalWeek?: string;
+    rejected?: string[];
+    promptVariant?: string;
+  },
+): Promise<{ label: string; linkToExistingId?: string }[]> {
   const res = await fetch('/api/propose-subtasks', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ taskLabel, coreTask, jobTitle, statementClarification, existingNodes }),
+    body: JSON.stringify({
+      taskLabel,
+      coreTask,
+      jobTitle,
+      statementClarification,
+      existingNodes,
+      existingChildren,
+      ancestorChain,
+      responsibilities: extra?.responsibilities,
+      typicalWeek: extra?.typicalWeek,
+      rejected: extra?.rejected ?? [],
+      promptVariant: extra?.promptVariant,
+    }),
   });
   if (!res.ok) throw new Error(await res.text());
   const data = await res.json();
   return data.subtasks ?? [];
+}
+
+export async function fetchKickoffQuestion(taskLabel: string): Promise<{ question: string; shortLabel: string }> {
+  const res = await fetch('/api/kickoff-question', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ taskLabel }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const data = await res.json();
+  return { question: data.question, shortLabel: data.shortLabel ?? taskLabel };
 }
 
 export interface ProposedEdge {
@@ -301,15 +332,116 @@ export async function generateTasksForCategory(
   priorTasks: string[] = [],
   count?: number,
   aiUsage?: string,
+  responsibilities?: string,
+  interviewTasks: string[] = [],
 ): Promise<string[]> {
   const res = await fetch('/api/generate-tasks', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jobTitle, typicalWeek, category, priorTasks, count, aiUsage }),
+    body: JSON.stringify({ jobTitle, typicalWeek, category, priorTasks, count, aiUsage, responsibilities, interviewTasks }),
   });
   if (!res.ok) throw new Error(await res.text());
   const data = await res.json();
   return (data.tasks ?? []).map((t: { name: string }) => t.name);
+}
+
+// Streaming version: invokes onTask(name) as each task is parsed off the SSE
+// stream, then resolves once the server signals 'done'. Use this in the picker
+// flow so the first task can render in ~1-2s instead of waiting for the full
+// list (~7s). Throws if the stream errors before completion.
+export async function generateTasksForCategoryStream(
+  jobTitle: string,
+  typicalWeek: string,
+  priorTasks: string[],
+  aiUsage: string | undefined,
+  responsibilities: string | undefined,
+  interviewTasks: string[],
+  onTask: (name: string) => void,
+): Promise<void> {
+  const res = await fetch('/api/generate-tasks-stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jobTitle, typicalWeek, priorTasks, aiUsage, responsibilities, interviewTasks }),
+  });
+  if (!res.ok || !res.body) throw new Error(await res.text());
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) return;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split('\n\n');
+    buffer = parts.pop() ?? '';
+    for (const part of parts) {
+      const lines = part.split('\n');
+      const eventLine = lines.find(l => l.startsWith('event: '));
+      const dataLine = lines.find(l => l.startsWith('data: '));
+      if (!eventLine || !dataLine) continue;
+      const event = eventLine.slice(7);
+      const data = JSON.parse(dataLine.slice(6));
+      if (event === 'task' && typeof data?.name === 'string') onTask(data.name);
+      else if (event === 'error') throw new Error(data.error ?? 'stream error');
+      else if (event === 'done') return;
+    }
+  }
+}
+
+// Extracts the work activities the participant EXPLICITLY mentioned in the
+// background interview. Used to ground the upper-level generator so its output
+// reflects what the participant said, not just what's typical for the role.
+export async function extractInterviewTasks(
+  backgroundTranscript: { field: string; question: string; answer: string; isFollowUp: boolean; timestamp: number }[],
+  userProfile?: { jobTitle?: string; responsibilities?: string },
+): Promise<string[]> {
+  const res = await fetch('/api/extract-interview-tasks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ backgroundTranscript, userProfile }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const data = await res.json();
+  return Array.isArray(data.tasks) ? data.tasks : [];
+}
+
+// Generate O*NET-style attention-check tasks tailored to the participant's role —
+// drawn from clearly unrelated occupations so a participant should always answer
+// "I don't do this". Caller can request `count`; server clamps to 1–20.
+export async function generateAttentionChecks(
+  jobTitle: string,
+  responsibilities?: string,
+  typicalWeek?: string,
+  count = 8,
+): Promise<string[]> {
+  const res = await fetch('/api/generate-attention-checks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jobTitle, responsibilities, typicalWeek, count }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const data = await res.json();
+  return Array.isArray(data.tasks) ? data.tasks.filter((t: unknown) => typeof t === 'string') : [];
+}
+
+export interface AiDerivedItem {
+  name: string;
+  kind: 'task' | 'responsibility';
+}
+
+// Generates work items (tasks OR new responsibilities) that emerged in this
+// participant's job because of their AI usage. Distinct from generateTasksForCategory,
+// which maps the role's broad MECE coverage.
+export async function generateAiTasks(
+  userProfile: { jobTitle: string; responsibilities?: string; typicalWeek?: string; aiUsage: string },
+): Promise<AiDerivedItem[]> {
+  const res = await fetch('/api/generate-ai-tasks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(userProfile),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const data = await res.json();
+  return Array.isArray(data.items) ? data.items : [];
 }
 
 export async function transcribeAudio(blob: Blob): Promise<string> {
@@ -370,6 +502,19 @@ export async function saveSession(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+// Fire-and-forget save that survives page unload — `fetch` is cancelled when
+// the tab closes, but `sendBeacon` is the platform's purpose-built escape
+// hatch for unload-time POSTs. Returns whether the beacon was queued.
+export function saveSessionBeacon(
+  sessionId: string,
+  extra: Record<string, unknown>,
+): boolean {
+  if (typeof navigator === 'undefined' || !navigator.sendBeacon) return false;
+  const body = JSON.stringify({ sessionId, ...extra });
+  const blob = new Blob([body], { type: 'application/json' });
+  return navigator.sendBeacon('/api/session', blob);
 }
 
 // Persist a screen-out keyed on Prolific PID so a refresh can't reset it.

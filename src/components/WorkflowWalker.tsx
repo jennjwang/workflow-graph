@@ -35,7 +35,7 @@ const KIND_LABEL: Record<Kind, string> = {
 
 const KIND_ORDER: Kind[] = ["transition", "missing", "decompose"];
 
-type Suggestion = { label: string; description: string; type: NodeType };
+type Suggestion = { label: string; description?: string; type?: NodeType };
 
 const KICKOFF_HINT = (task: string) =>
   `Ask the participant exactly: "Can you walk me through how you ${task} from start to finish?"`;
@@ -195,6 +195,7 @@ export function WorkflowWalker() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [expandSubs, setExpandSubs] = useState<Suggestion[]>([]);
   const hasKickedOff = useRef(false);
+  const subtaskVariant = new URLSearchParams(window.location.search).get("subtask_variant") ?? undefined;
   const hasFetchedInterview = useRef(false);
 
   // Kickoff: extract top-level nodes from the participant's first answer.
@@ -337,6 +338,9 @@ export function WorkflowWalker() {
       userProfile.jobTitle,
       undefined,
       existingForExpand,
+      undefined,
+      undefined,
+      { promptVariant: subtaskVariant },
     )
       .then(setExpandSubs)
       .catch((err) => console.error("[walker] break-down failed:", err));
