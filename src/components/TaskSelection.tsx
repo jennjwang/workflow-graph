@@ -8,7 +8,7 @@ import {
 } from "../lib/api";
 import { useWorkflowStore } from "../store";
 import { BONUS_ENABLED } from "../lib/bonus";
-import { TaskAiUse, TaskItem, TaskRecency } from "../types";
+import { TaskItem } from "../types";
 
 // Hard cap on the picker list (real tasks + spliced attention checks). Also
 // the progress-bar denominator so the bar reflects actual rating progress.
@@ -341,14 +341,7 @@ export function TaskSelection() {
     }
   };
 
-  const advance = (
-    answer: "yes" | "no",
-    meta?: {
-      recency: TaskRecency;
-      aiUse: TaskAiUse;
-      aiHowSo: string;
-    },
-  ) => {
+  const advance = (answer: "yes" | "no") => {
     const reviewedTask = tasks[currentIdx];
     setTasks((prev) =>
       prev.map((t, i) => {
@@ -357,9 +350,6 @@ export function TaskSelection() {
         return {
           ...t,
           status: t.status === "edited" ? "edited" : "confirmed",
-          recency: meta!.recency,
-          aiUse: meta!.aiUse,
-          aiHowSo: meta!.aiHowSo || undefined,
         };
       }),
     );
@@ -371,27 +361,15 @@ export function TaskSelection() {
       setProlific({ attnCheckFails: nextFails });
       if (nextFails > prolific.attnCheckMaxFails) {
         setProlific({ screenedOut: true });
-        // Lock this PID server-side so a page refresh can't bypass the screen-out.
-        // Fire-and-forget — ScreenOut will also save the full session shortly after.
         if (prolific.pid) {
           const sid = useWorkflowStore.getState().sessionId;
           recordScreenOut(prolific.pid, sid, "attention-check-failed").catch(
             () => {},
           );
         }
-        // Persist the partial response (with the failed attention check) before screening out
-        // so researchers can audit who failed and how.
         setTaskItems(
           tasks.map((t, i) =>
-            i !== currentIdx
-              ? t
-              : {
-                  ...t,
-                  status: "confirmed",
-                  recency: meta?.recency,
-                  aiUse: meta?.aiUse,
-                  aiHowSo: meta?.aiHowSo || undefined,
-                },
+            i !== currentIdx ? t : { ...t, status: "confirmed" },
           ),
         );
         setPhase("screen-out");
@@ -753,14 +731,7 @@ interface TaskReviewCardProps {
   taskIdx: number;
   isLast: boolean;
   onSaveEdit: (idx: number, name: string) => void;
-  onAdvance: (
-    answer: "yes" | "no",
-    meta?: {
-      recency: TaskRecency;
-      aiUse: TaskAiUse;
-      aiHowSo: string;
-    },
-  ) => void;
+  onAdvance: (answer: "yes" | "no") => void;
 }
 
 function TaskReviewCard({
@@ -771,9 +742,6 @@ function TaskReviewCard({
   onAdvance,
 }: TaskReviewCardProps) {
   const [primaryAnswer, setPrimaryAnswer] = useState<"yes" | "no" | null>(null);
-  const [recency, setRecency] = useState<TaskRecency | null>(null);
-  const [aiUse, setAiUse] = useState<TaskAiUse | null>(null);
-  const [aiHowSo, setAiHowSo] = useState("");
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(task.name);
   // One-time nudge on the very first task pointing at the editable name.
@@ -786,24 +754,11 @@ function TaskReviewCard({
     if (editing || primaryAnswer) setShowEditNudge(false);
   }, [editing, primaryAnswer]);
 
-  const canContinue =
-    primaryAnswer === "no" ||
-    (primaryAnswer === "yes" &&
-      recency !== null &&
-      aiUse !== null &&
-      (aiUse === "no" || aiHowSo.trim().length > 0));
+  const canContinue = primaryAnswer !== null;
 
   const handleContinue = () => {
     if (!canContinue) return;
-    if (primaryAnswer === "no") {
-      onAdvance("no");
-    } else {
-      onAdvance("yes", {
-        recency: recency!,
-        aiUse: aiUse!,
-        aiHowSo,
-      });
-    }
+    onAdvance(primaryAnswer!);
   };
 
   const startEdit = () => {
@@ -824,15 +779,6 @@ function TaskReviewCard({
     const trimmed = editValue.trim() || task.name;
     onSaveEdit(taskIdx, trimmed);
   };
-
-  const step =
-    !primaryAnswer || primaryAnswer === "no"
-      ? 0
-      : !recency
-        ? 1
-        : !aiUse
-          ? 2
-          : 3;
 
   return (
     <div className="flex flex-col gap-7">
@@ -941,74 +887,13 @@ function TaskReviewCard({
         ].map(({ value, label, active, inactive }) => (
           <button
             key={value}
-            onClick={() => {
-              setPrimaryAnswer(value);
-              if (value === "no") {
-                setRecency(null);
-                setAiUse(null);
-                setAiHowSo("");
-              }
-            }}
+            onClick={() => setPrimaryAnswer(value)}
             className={`flex-1 py-3 rounded-2xl border text-sm font-medium transition-all active:scale-[0.98] ${primaryAnswer === value ? active : `bg-white border-slate-200 text-slate-600 ${inactive}`}`}
           >
             {label}
           </button>
         ))}
       </div>
-
-      {/* Follow-ups — each fades in sequentially */}
-      {step >= 1 && (
-        <FollowUp label="When do you do this?" animate>
-          <div className="flex gap-2">
-            {(
-              [
-                { value: "past", label: "Used to do" },
-                { value: "current", label: "Currently do" },
-                { value: "new", label: "Recently started" },
-              ] as { value: TaskRecency; label: string }[]
-            ).map(({ value, label }) => (
-              <ChipBtn
-                key={value}
-                label={label}
-                selected={recency === value}
-                onClick={() => setRecency(value)}
-              />
-            ))}
-          </div>
-        </FollowUp>
-      )}
-
-      {step >= 2 && (
-        <FollowUp label="Do you use AI for this?" animate>
-          <div className="flex gap-2">
-            {(
-              [
-                { value: "yes", label: "Yes" },
-                { value: "no", label: "No" },
-              ] as { value: TaskAiUse; label: string }[]
-            ).map(({ value, label }) => (
-              <ChipBtn
-                key={value}
-                label={label}
-                selected={aiUse === value}
-                onClick={() => {
-                  setAiUse(value);
-                  if (value === "no") setAiHowSo("");
-                }}
-              />
-            ))}
-          </div>
-          {aiUse === "yes" && (
-            <div className="animate-fadeSlideIn mt-3">
-              <AudioTextInput
-                value={aiHowSo}
-                onChange={setAiHowSo}
-                placeholder="How so?"
-              />
-            </div>
-          )}
-        </FollowUp>
-      )}
 
       {/* Continue */}
       {primaryAnswer !== null && (
@@ -1024,209 +909,7 @@ function TaskReviewCard({
   );
 }
 
-// ── Shared sub-components ─────────────────────────────────────────────────────
-
-function FollowUp({
-  label,
-  children,
-  animate,
-}: {
-  label: string;
-  children: React.ReactNode;
-  animate?: boolean;
-}) {
-  return (
-    <div className={`space-y-3 ${animate ? "animate-fadeSlideIn" : ""}`}>
-      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
-        {label}
-      </p>
-      {children}
-    </div>
-  );
-}
-
-function ChipBtn({
-  label,
-  selected,
-  onClick,
-}: {
-  label: string;
-  selected: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`flex-1 py-2.5 text-xs rounded-xl border transition-all duration-150 font-medium active:scale-[0.97] ${
-        selected
-          ? "bg-indigo-500 border-indigo-500 text-white shadow-sm shadow-indigo-200"
-          : "bg-white border-slate-200 text-slate-500 hover:border-indigo-200 hover:text-indigo-500"
-      }`}
-    >
-      {label}
-    </button>
-  );
-}
-
-// ── Audio + text input ────────────────────────────────────────────────────────
-
 type RecordState = "idle" | "recording" | "transcribing";
-
-function AudioTextInput({
-  value,
-  onChange,
-  placeholder,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-}) {
-  const [recordState, setRecordState] = useState<RecordState>("idle");
-  const [error, setError] = useState<string | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  const toggleRecording = async () => {
-    if (recordState === "recording") {
-      mediaRecorderRef.current?.stop();
-      return;
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      audioChunksRef.current = [];
-      const mimeType =
-        [
-          "audio/webm;codecs=opus",
-          "audio/webm",
-          "audio/ogg;codecs=opus",
-          "audio/mp4",
-        ].find((t) => MediaRecorder.isTypeSupported(t)) ?? "";
-      const recorder = new MediaRecorder(
-        stream,
-        mimeType ? { mimeType } : undefined,
-      );
-      mediaRecorderRef.current = recorder;
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) audioChunksRef.current.push(e.data);
-      };
-      recorder.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop());
-        const chunks = audioChunksRef.current;
-        if (!chunks.length) {
-          setRecordState("idle");
-          return;
-        }
-        setRecordState("transcribing");
-        try {
-          const blob = new Blob(chunks, { type: mimeType || "audio/webm" });
-          const text = await transcribeAudio(blob);
-          if (text.trim()) {
-            onChange(value ? value + " " + text : text);
-            setTimeout(() => textareaRef.current?.focus(), 50);
-          }
-        } catch {
-          setError("Transcription failed — try typing instead.");
-        } finally {
-          setRecordState("idle");
-        }
-      };
-      recorder.start(250);
-      setError(null);
-      setRecordState("recording");
-    } catch {
-      setError("Mic access denied — please type your answer.");
-    }
-  };
-
-  const isRecording = recordState === "recording";
-  const isTranscribing = recordState === "transcribing";
-
-  return (
-    <div className="space-y-1.5">
-      {/* Single bordered container wraps textarea + mic so the focus ring covers both. */}
-      <div
-        className={`relative rounded-xl border bg-white transition ${
-          isRecording
-            ? "border-red-200 ring-2 ring-red-100"
-            : "border-slate-200 focus-within:ring-2 focus-within:ring-indigo-200 focus-within:border-indigo-300"
-        }`}
-      >
-        <textarea
-          ref={textareaRef}
-          autoFocus
-          rows={2}
-          className="w-full bg-transparent border-0 outline-none resize-none px-3.5 py-2.5 pr-12 text-sm text-slate-700 placeholder-slate-300 disabled:opacity-50"
-          placeholder={
-            isRecording
-              ? "Recording — click the mic again to stop"
-              : isTranscribing
-                ? "Transcribing…"
-                : placeholder
-          }
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          disabled={isTranscribing}
-        />
-        <button
-          type="button"
-          onClick={toggleRecording}
-          disabled={isTranscribing}
-          title={isRecording ? "Stop recording" : "Record answer"}
-          aria-label={isRecording ? "Stop recording" : "Record audio"}
-          className={`absolute bottom-1.5 right-1.5 w-8 h-8 rounded-lg flex items-center justify-center transition active:scale-[0.95] disabled:cursor-not-allowed ${
-            isRecording
-              ? "bg-red-500 text-white shadow-sm shadow-red-200"
-              : isTranscribing
-                ? "bg-slate-50 text-slate-300"
-                : "text-slate-400 hover:bg-indigo-50 hover:text-indigo-500"
-          }`}
-        >
-          {isTranscribing ? (
-            <svg
-              className="w-4 h-4 animate-spin"
-              viewBox="0 0 24 24"
-              fill="none"
-            >
-              <circle
-                cx="12"
-                cy="12"
-                r="10"
-                stroke="currentColor"
-                strokeWidth="3"
-                className="opacity-25"
-              />
-              <path d="M4 12a8 8 0 018-8v8z" fill="currentColor" />
-            </svg>
-          ) : isRecording ? (
-            <svg
-              className="w-3.5 h-3.5"
-              viewBox="0 0 24 24"
-              fill="currentColor"
-            >
-              <rect x="6" y="6" width="12" height="12" rx="2" />
-            </svg>
-          ) : (
-            <svg
-              className="w-4 h-4"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-            >
-              <rect x="9" y="2" width="6" height="11" rx="3" />
-              <path d="M5 10a7 7 0 0 0 14 0" />
-              <line x1="12" y1="19" x2="12" y2="22" />
-              <line x1="8" y1="22" x2="16" y2="22" />
-            </svg>
-          )}
-        </button>
-      </div>
-      {error && <p className="text-xs text-red-400">{error}</p>}
-    </div>
-  );
-}
 
 // ── Review & add screen ────────────────────────────────────────────────────────
 
