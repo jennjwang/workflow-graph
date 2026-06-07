@@ -232,21 +232,20 @@ export function TaskSelection() {
     if (devSkipToReview || devSkipToCard) return; // dev shortcut: tasks are already seeded
     async function load() {
       try {
-        // First pass: pull the activities the participant explicitly mentioned
-        // in the background interview. These get persisted (audit trail) and
-        // passed to the generator as grounding context so the generator fills
-        // gaps instead of echoing what the participant already said.
-        // Failure is non-fatal: if extraction returns nothing / errors, the
-        // generator just runs without grounding (its old behavior).
-        let interviewTasks: string[] = [];
+        // O*NET baseline: task generation is a pure corpus lookup keyed on the
+        // participant's job profile — it does NOT use the interview at all. We
+        // still extract the interview-mentioned activities, but ONLY to populate
+        // the "from interview" section on the review screen (audit/context); the
+        // result is deliberately NOT passed to the task source below. Failure is
+        // non-fatal: the review section just shows no "from interview" items.
         try {
-          interviewTasks = await extractInterviewTasks(backgroundTranscript, {
+          const extracted = await extractInterviewTasks(backgroundTranscript, {
             jobTitle: userProfile.jobTitle,
             responsibilities: userProfile.responsibilities,
           });
-          setInterviewExtractedTasks(interviewTasks);
+          setInterviewExtractedTasks(extracted);
         } catch (e) {
-          console.warn("[task-selection] extract failed, generating without grounding:", e);
+          console.warn("[task-selection] interview extraction failed (review section only):", e);
         }
 
         // Stream tasks into the picker as they arrive — the participant can
@@ -293,7 +292,7 @@ export function TaskSelection() {
           [],
           userProfile.aiUsage,
           userProfile.responsibilities,
-          interviewTasks,
+          [], // O*NET baseline: no interview grounding feeds the task source
           onTask,
         );
         // If the stream returned zero tasks (model fluke), surface an error
