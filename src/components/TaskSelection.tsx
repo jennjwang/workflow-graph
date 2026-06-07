@@ -1,417 +1,1611 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { useShallow } from 'zustand/react/shallow';
-import { generateTaskBatch } from '../lib/api';
-import { useWorkflowStore } from '../store';
-import { TaskItem, TaskRecency, TaskStatus } from '../types';
+import { useEffect, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
+import {
+  generateTasksForCategoryStream,
+  extractInterviewTasks,
+  recordScreenOut,
+  transcribeAudio,
+} from "../lib/api";
+import { useWorkflowStore } from "../store";
+import { BONUS_ENABLED } from "../lib/bonus";
+import { TaskAiUse, TaskItem, TaskRecency } from "../types";
 
-const PAGE_SIZE = 3;
-const BUFFER_PAGES = 2;
+// Hard cap on the picker list (real tasks + spliced attention checks). Also
+// the progress-bar denominator so the bar reflects actual rating progress.
+const MAX_TASKS = 15;
+
+// Number of tasks the participant must rate before the "Finish early"
+// affordance unlocks. Pinned to MAX_TASKS so the threshold tracks the picker
+// cap — finishing early now means "after the full list".
+const DONE_THRESHOLD = MAX_TASKS;
+
+// One attention check inserted after every N real tasks (positions N, 2N, 3N, …).
+const ATTENTION_CHECK_INTERVAL = 4;
+
+// O*NET-style fallback attention checks. Drawn from clearly unrelated
+// occupations so participants can always answer "I don't do this" honestly.
+// Shuffled once per page load so each session sees the checks in a different
+// order — within a session the picker indexes linearly so no check repeats,
+// and across sessions the rotation differs without any state to persist.
+const FALLBACK_ATTENTION_CHECKS: string[] = [
+  "Triage walk-in emergency-room patients to determine treatment priority based on presenting symptoms.",
+  "Replace residential service-panel circuit breakers during scheduled electrical maintenance calls.",
+  "Pull and dispense espresso shots to fulfill customer drink orders during peak café shifts.",
+  "Inspect commercial brake systems on customer vehicles to identify worn pads and rotors.",
+  "Harvest field crops by operating a combine across designated rows during the harvest window.",
+  "Conduct routine traffic stops on patrol to enforce posted speed and equipment regulations.",
+  "Cut and style hair for walk-in salon clients based on consultation and customer preference.",
+  "Operate forklift equipment on a warehouse floor to move palletized inventory between zones.",
+].sort(() => Math.random() - 0.5);
+
+// Three separate bonus pools:
+//  • EDIT bonus:    per-character on tasks the participant rewords (Levenshtein distance).
+//  • ADD  bonus:    flat per-task on tasks the participant types in on the all-done screen.
+//  • AI-USE bonus:  per-character on the "how do you use AI?" description for each task.
+const EDIT_BONUS_PER_CHAR_USD = 0.001;
+const EDIT_BONUS_MAX_USD = 1.5;
+const ADD_BONUS_PER_TASK_USD = 0.05;
+const ADD_BONUS_MAX_USD = 1.0;
+const AI_HOWSO_BONUS_PER_CHAR_USD = 0.001;
+const AI_HOWSO_BONUS_MAX_USD = 1.0;
+
+// Levenshtein distance — counts insertions, deletions, AND substitutions, so
+// rewriting "Review code" → "Review pull requests" credits the real edit work.
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const m = a.length,
+    n = b.length;
+  const prev = new Array<number>(n + 1);
+  const curr = new Array<number>(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+      curr[j] = Math.min(
+        curr[j - 1] + 1, // insertion
+        prev[j] + 1, // deletion
+        prev[j - 1] + cost, // substitution
+      );
+    }
+    for (let j = 0; j <= n; j++) prev[j] = curr[j];
+  }
+  return prev[n];
+}
+
+function totalEditChars(tasks: TaskItem[]): number {
+  return tasks.reduce((sum, t) => {
+    if (t.isAttentionCheck) return sum;
+    return (
+      sum + (t.status === "edited" ? levenshtein(t.originalName, t.name) : 0)
+    );
+  }, 0);
+}
+
+function formatUsd(n: number) {
+  return `$${n.toFixed(2)}`;
+}
+
+// ── Main component ─────────────────────────────────────────────────────────────
 
 export function TaskSelection() {
-  const { userProfile, setSelectedTasks, setPhase } = useWorkflowStore(
-    useShallow(s => ({
+  const {
+    userProfile,
+    backgroundTranscript,
+    interviewExtractedTasks,
+    setSelectedTasks,
+    setTaskItems,
+    setBonusSnapshot,
+    setInterviewExtractedTasks,
+    setPhase,
+    prolific,
+    setProlific,
+    condition,
+  } = useWorkflowStore(
+    useShallow((s) => ({
       userProfile: s.userProfile,
+      backgroundTranscript: s.backgroundTranscript,
+      interviewExtractedTasks: s.interviewExtractedTasks,
       setSelectedTasks: s.setSelectedTasks,
+      setTaskItems: s.setTaskItems,
+      setBonusSnapshot: s.setBonusSnapshot,
+      setInterviewExtractedTasks: s.setInterviewExtractedTasks,
       setPhase: s.setPhase,
-    }))
+      prolific: s.prolific,
+      setProlific: s.setProlific,
+      condition: s.condition,
+    })),
   );
+  const totalParts = condition === "short" ? 2 : 3;
 
-  const [tasks, setTasks] = useState<TaskItem[]>([]);
-  const [page, setPage] = useState(0);
-  const [hasMore, setHasMore] = useState(true);
-  const [isFetching, setIsFetching] = useState(false);
-  const [editBonusCount, setEditBonusCount] = useState(0);
+  // Dev shortcut: ?dev=task-selection&review=1 jumps straight to the
+  // "What else fills your week?" review screen with seeded confirmed tasks.
+  // ?dev=task-selection&card=1 instead lands on the single per-task review card
+  // (the confirm/edit/AI-use step) with seeded unreviewed tasks to click through.
+  const devSkipToReview =
+    new URLSearchParams(window.location.search).get("review") === "1";
+  const devSkipToCard =
+    new URLSearchParams(window.location.search).get("card") === "1";
+
+  const DEV_REVIEW_SEED: TaskItem[] = [
+    {
+      name: "Read recent conference papers",
+      originalName: "Read recent conference papers",
+      status: "confirmed",
+    },
+    {
+      name: "Debug research code",
+      originalName: "Debug research code",
+      status: "confirmed",
+    },
+    {
+      name: "Meet with my advisor",
+      originalName: "Meet with my advisor",
+      status: "confirmed",
+    },
+    {
+      name: "Draft a paper section",
+      originalName: "Draft a paper section",
+      status: "confirmed",
+    },
+    {
+      name: "Present updates at lab meeting",
+      originalName: "Present updates at lab meeting",
+      status: "confirmed",
+    },
+    {
+      name: "Mentor undergraduate researchers",
+      originalName: "Mentor undergraduate researchers",
+      status: "confirmed",
+    },
+    {
+      name: "Prepare figures for a manuscript",
+      originalName: "Prepare figures for a manuscript",
+      status: "confirmed",
+    },
+  ];
+
+  // Same tasks, but unreviewed, so the per-task card shows the action buttons.
+  const DEV_CARD_SEED: TaskItem[] = DEV_REVIEW_SEED.map((t) => ({
+    ...t,
+    status: "unreviewed",
+  }));
+
+  const [tasks, setTasks] = useState<TaskItem[]>(
+    devSkipToCard ? DEV_CARD_SEED : devSkipToReview ? DEV_REVIEW_SEED : [],
+  );
+  const [currentIdx, setCurrentIdx] = useState(
+    !devSkipToCard && devSkipToReview ? DEV_REVIEW_SEED.length : 0,
+  );
+  const [loadState, setLoadState] = useState<"loading" | "ready" | "error">(
+    devSkipToReview || devSkipToCard ? "ready" : "loading",
+  );
+  const [showIntro, setShowIntro] = useState(!devSkipToReview && !devSkipToCard);
   const [showBonusToast, setShowBonusToast] = useState(false);
-  const [customInput, setCustomInput] = useState('');
-  const [showCustom, setShowCustom] = useState(false);
-  const customRef = useRef<HTMLInputElement>(null);
-  const batchIndexRef = useRef(0);
-  const fetchingRef = useRef(false);
-  const bonusToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [lastBonusDelta, setLastBonusDelta] = useState(0);
 
-  const fetchBatch = useCallback(async (currentTasks: TaskItem[]) => {
-    if (fetchingRef.current || !hasMore) return;
-    fetchingRef.current = true;
-    setIsFetching(true);
-    try {
-      const priorNames = currentTasks.map(t => t.originalName);
-      const result = await generateTaskBatch(
-        userProfile.jobTitle,
-        userProfile.tenure,
-        userProfile.typicalWeek,
-        batchIndexRef.current,
-        priorNames
-      );
-      batchIndexRef.current += 1;
-      const newItems: TaskItem[] = (result.tasks ?? []).map(t => ({
-        name: t.name,
-        originalName: t.name,
-        status: 'unreviewed',
-      }));
-      setTasks(prev => [...prev, ...newItems]);
-      setHasMore(result.has_more ?? true);
-    } catch (e) {
-      console.error('Task batch fetch failed', e);
-    } finally {
-      fetchingRef.current = false;
-      setIsFetching(false);
-    }
-  }, [hasMore, userProfile]);
+  // Participant-typed tasks captured on the all-done screen.
+  // Each entry carries the moment it was added so the per-task timestamp in
+  // edits[] reflects when the participant actually typed it, not when they
+  // hit Submit. (Submitting an 11-task batch used to stamp all 11 with the
+  // same millisecond.)
+  const [extraTasks, setExtraTasks] = useState<{ name: string; addedAt: number }[]>([]);
+  const [extraInput, setExtraInput] = useState("");
 
-  // Fetch initial batch on mount
+  const bonusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Edit bonus: per-character (Levenshtein), capped at EDIT_BONUS_MAX_USD.
+  const editChars = totalEditChars(tasks);
+  const editEarnedUsd = Math.min(
+    editChars * EDIT_BONUS_PER_CHAR_USD,
+    EDIT_BONUS_MAX_USD,
+  );
+  const editCapped = editChars * EDIT_BONUS_PER_CHAR_USD >= EDIT_BONUS_MAX_USD;
+  // Add bonus: flat per-task, capped at ADD_BONUS_MAX_USD.
+  const addCount = extraTasks.length;
+  const addEarnedUsd = Math.min(
+    addCount * ADD_BONUS_PER_TASK_USD,
+    ADD_BONUS_MAX_USD,
+  );
+  const addCapped = addCount * ADD_BONUS_PER_TASK_USD >= ADD_BONUS_MAX_USD;
+  // AI-use bonus: per-character on aiHowSo across confirmed real (non-attention)
+  // tasks, capped at AI_HOWSO_BONUS_MAX_USD. Rewards descriptive answers to
+  // "how do you use AI for this?".
+  const aiHowSoChars = tasks.reduce((sum, t) => {
+    if (t.isAttentionCheck) return sum;
+    return sum + (t.aiHowSo?.length ?? 0);
+  }, 0);
+  const aiHowSoEarnedUsd = Math.min(
+    aiHowSoChars * AI_HOWSO_BONUS_PER_CHAR_USD,
+    AI_HOWSO_BONUS_MAX_USD,
+  );
+  const aiHowSoCapped =
+    aiHowSoChars * AI_HOWSO_BONUS_PER_CHAR_USD >= AI_HOWSO_BONUS_MAX_USD;
+
+  // Kick off task load immediately (runs during intro screen).
+  // We skip the domain-generation step and ask the model directly for a breadth-spanning
+  // set of tasks for this role. Faster (one LLM call instead of N+1) and the model handles
+  // breadth on its own when told to.
   useEffect(() => {
-    fetchBatch([]);
+    if (devSkipToReview || devSkipToCard) return; // dev shortcut: tasks are already seeded
+    async function load() {
+      try {
+        // First pass: pull the activities the participant explicitly mentioned
+        // in the background interview. These get persisted (audit trail) and
+        // passed to the generator as grounding context so the generator fills
+        // gaps instead of echoing what the participant already said.
+        // Failure is non-fatal: if extraction returns nothing / errors, the
+        // generator just runs without grounding (its old behavior).
+        let interviewTasks: string[] = [];
+        try {
+          interviewTasks = await extractInterviewTasks(backgroundTranscript, {
+            jobTitle: userProfile.jobTitle,
+            responsibilities: userProfile.responsibilities,
+          });
+          setInterviewExtractedTasks(interviewTasks);
+        } catch (e) {
+          console.warn("[task-selection] extract failed, generating without grounding:", e);
+        }
+
+        // Stream tasks into the picker as they arrive — the participant can
+        // start rating the first task in ~1-2s instead of waiting ~7s for the
+        // whole list. Attention checks are spliced in inline at the same
+        // ATTENTION_CHECK_INTERVAL cadence; the hard 20-item cap still applies.
+        // Linear indexing into the (already shuffled) FALLBACK_ATTENTION_CHECKS
+        // guarantees no repeats within a session.
+        let realCount = 0;
+        const onTask = (name: string) => {
+          realCount += 1;
+          setTasks((prev) => {
+            // Stop appending once we've hit the visible cap (real + checks).
+            if (prev.length >= MAX_TASKS) return prev;
+            const next: TaskItem[] = [
+              ...prev,
+              { name, originalName: name, status: "unreviewed" },
+            ];
+            // Splice in an attention check after every Nth real task.
+            if (realCount % ATTENTION_CHECK_INTERVAL === 0) {
+              const checkIdx = realCount / ATTENTION_CHECK_INTERVAL - 1;
+              if (
+                checkIdx < FALLBACK_ATTENTION_CHECKS.length &&
+                next.length < MAX_TASKS
+              ) {
+                const label = FALLBACK_ATTENTION_CHECKS[checkIdx];
+                next.push({
+                  name: label,
+                  originalName: label,
+                  status: "unreviewed",
+                  category: "__attention_check__",
+                  isAttentionCheck: true,
+                });
+              }
+            }
+            return next;
+          });
+          // Flip to 'ready' on the first task so the picker shows immediately.
+          if (realCount === 1) setLoadState("ready");
+        };
+        await generateTasksForCategoryStream(
+          userProfile.jobTitle,
+          userProfile.typicalWeek,
+          [],
+          userProfile.aiUsage,
+          userProfile.responsibilities,
+          interviewTasks,
+          onTask,
+        );
+        // If the stream returned zero tasks (model fluke), surface an error
+        // state so the participant sees something rather than a frozen loader.
+        if (realCount === 0) setLoadState("error");
+      } catch (e) {
+        console.error("Task load failed", e);
+        setLoadState("error");
+      }
+    }
+    load();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Prefetch when buffer is low
-  useEffect(() => {
-    const bufferedTasks = tasks.length - page * PAGE_SIZE;
-    if (bufferedTasks <= PAGE_SIZE * BUFFER_PAGES && hasMore && !fetchingRef.current) {
-      fetchBatch(tasks);
-    }
-  }, [page, tasks.length, hasMore, fetchBatch, tasks]);
-
-  const visibleTasks = tasks.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
-  const totalPages = Math.ceil(tasks.length / PAGE_SIZE);
-  const isLastPage = !hasMore && page >= totalPages - 1;
-  const canSeeMore = page < totalPages - 1 || hasMore;
-
-  const setStatus = (idx: number, status: TaskStatus) => {
-    setTasks(prev => prev.map((t, i) => i === idx ? { ...t, status } : t));
-  };
-
-  const setRecency = (idx: number, recency: TaskRecency) => {
-    setTasks(prev => prev.map((t, i) => i === idx ? { ...t, recency } : t));
-  };
 
   const saveEdit = (idx: number, newName: string) => {
     const trimmed = newName.trim();
     if (!trimmed) return;
-    setTasks(prev => prev.map((t, i) => {
+    const before = totalEditChars(tasks);
+    const now = Date.now();
+    const next = tasks.map((t, i) => {
       if (i !== idx) return t;
+      // No-op edit (e.g. user opened the editor and saved unchanged) — don't record anything.
+      if (trimmed === t.name) return t;
+      const stepDistance = levenshtein(t.name, trimmed);
+      const editEntry = {
+        from: t.name,
+        to: trimmed,
+        charsChanged: stepDistance,
+        timestamp: now,
+      };
       const changed = trimmed !== t.originalName;
-      if (changed) {
-        // Fire bonus toast
-        setEditBonusCount(c => c + 1);
-        setShowBonusToast(true);
-        if (bonusToastTimerRef.current) clearTimeout(bonusToastTimerRef.current);
-        bonusToastTimerRef.current = setTimeout(() => setShowBonusToast(false), 2200);
+      return {
+        ...t,
+        name: trimmed,
+        status: changed ? "edited" : t.status,
+        edits: [...(t.edits ?? []), editEntry],
+      };
+    });
+    setTasks(next);
+    const after = totalEditChars(next);
+    if (after > before) {
+      setLastBonusDelta(after - before);
+      setShowBonusToast(true);
+      if (bonusTimerRef.current) clearTimeout(bonusTimerRef.current);
+      bonusTimerRef.current = setTimeout(() => setShowBonusToast(false), 2200);
+    }
+  };
+
+  const advance = (
+    answer: "yes" | "no",
+    meta?: {
+      recency: TaskRecency;
+      aiUse: TaskAiUse;
+      aiHowSo: string;
+    },
+  ) => {
+    const reviewedTask = tasks[currentIdx];
+    setTasks((prev) =>
+      prev.map((t, i) => {
+        if (i !== currentIdx) return t;
+        if (answer === "no") return { ...t, status: "removed" };
+        return {
+          ...t,
+          status: t.status === "edited" ? "edited" : "confirmed",
+          recency: meta!.recency,
+          aiUse: meta!.aiUse,
+          aiHowSo: meta!.aiHowSo || undefined,
+        };
+      }),
+    );
+
+    // Hard block: if this was an attention check answered "yes", count it as a fail.
+    // Once fails exceed the configured threshold, route to the screen-out phase.
+    if (reviewedTask?.isAttentionCheck && answer === "yes") {
+      const nextFails = prolific.attnCheckFails + 1;
+      setProlific({ attnCheckFails: nextFails });
+      if (nextFails > prolific.attnCheckMaxFails) {
+        setProlific({ screenedOut: true });
+        // Lock this PID server-side so a page refresh can't bypass the screen-out.
+        // Fire-and-forget — ScreenOut will also save the full session shortly after.
+        if (prolific.pid) {
+          const sid = useWorkflowStore.getState().sessionId;
+          recordScreenOut(prolific.pid, sid, "attention-check-failed").catch(
+            () => {},
+          );
+        }
+        // Persist the partial response (with the failed attention check) before screening out
+        // so researchers can audit who failed and how.
+        setTaskItems(
+          tasks.map((t, i) =>
+            i !== currentIdx
+              ? t
+              : {
+                  ...t,
+                  status: "confirmed",
+                  recency: meta?.recency,
+                  aiUse: meta?.aiUse,
+                  aiHowSo: meta?.aiHowSo || undefined,
+                },
+          ),
+        );
+        setPhase("screen-out");
+        return;
       }
-      return { ...t, name: trimmed, status: changed ? 'edited' : t.status };
-    }));
+    }
+
+    setCurrentIdx((i) => i + 1);
   };
 
-  const addCustomTask = (text: string) => {
-    const t = text.trim();
+  const addExtraTask = (raw: string) => {
+    const t = raw.trim();
     if (!t) return;
-    setTasks(prev => [...prev, { name: t, originalName: t, status: 'confirmed' }]);
-    setCustomInput('');
-    setShowCustom(false);
-    // Advance to last page so custom task is visible
-    setPage(Math.floor((tasks.length) / PAGE_SIZE));
+    if (extraTasks.some((e) => e.name === t)) return; // dedup against what they've already added
+    setExtraTasks((prev) => [...prev, { name: t, addedAt: Date.now() }]);
+    setExtraInput("");
   };
 
-  const proceed = () => {
-    const confirmed = tasks
-      .filter(t => t.status === 'confirmed' || t.status === 'edited')
-      .map(t => t.name);
+  const removeExtraTask = (idx: number) => {
+    setExtraTasks((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const proceed = (pendingExtra?: string) => {
+    // If the participant clicked Submit with un-added draft text in the input,
+    // commit it here. (Doing this in handleSubmit via setExtraTasks would race
+    // with this function reading the stale closure.) That task is timestamped
+    // at this moment; everything else uses the moment-of-add timestamps
+    // captured when each was originally typed.
+    const trimmedPending = pendingExtra?.trim() ?? "";
+    const finalExtras =
+      trimmedPending && !extraTasks.some((e) => e.name === trimmedPending)
+        ? [...extraTasks, { name: trimmedPending, addedAt: Date.now() }]
+        : extraTasks;
+
+    // Tasks the participant typed in get appended as confirmed, flagged as participant-added.
+    const extraItems: TaskItem[] = finalExtras.map((e) => ({
+      name: e.name,
+      originalName: e.name,
+      status: "confirmed",
+      category: "__participant_added__",
+      addedByParticipant: true,
+      edits: [
+        { from: "", to: e.name, charsChanged: e.name.length, timestamp: e.addedAt },
+      ],
+    }));
+
+    const allTasks = [...tasks, ...extraItems];
+    const confirmed = allTasks
+      .filter((t) => t.status === "confirmed" || t.status === "edited")
+      .map((t) => t.name);
+
+    // Freeze the bonus the participant earned at submit time. Char counts are
+    // still recorded as activity metadata, but when the bonus feature is off
+    // every earned amount is forced to $0.
+    const finalEditChars = totalEditChars(allTasks);
+    const finalEditEarned = BONUS_ENABLED
+      ? Math.min(finalEditChars * EDIT_BONUS_PER_CHAR_USD, EDIT_BONUS_MAX_USD)
+      : 0;
+    const finalEditCapped =
+      BONUS_ENABLED &&
+      finalEditChars * EDIT_BONUS_PER_CHAR_USD >= EDIT_BONUS_MAX_USD;
+    const finalAddCount = finalExtras.length;
+    const finalAddEarned = BONUS_ENABLED
+      ? Math.min(finalAddCount * ADD_BONUS_PER_TASK_USD, ADD_BONUS_MAX_USD)
+      : 0;
+    const finalAddCapped =
+      BONUS_ENABLED &&
+      finalAddCount * ADD_BONUS_PER_TASK_USD >= ADD_BONUS_MAX_USD;
+    const finalAiHowSoChars = allTasks.reduce((sum, t) => {
+      if (t.isAttentionCheck) return sum;
+      return sum + (t.aiHowSo?.length ?? 0);
+    }, 0);
+    const finalAiHowSoEarned = BONUS_ENABLED
+      ? Math.min(
+          finalAiHowSoChars * AI_HOWSO_BONUS_PER_CHAR_USD,
+          AI_HOWSO_BONUS_MAX_USD,
+        )
+      : 0;
+    const finalAiHowSoCapped =
+      BONUS_ENABLED &&
+      finalAiHowSoChars * AI_HOWSO_BONUS_PER_CHAR_USD >= AI_HOWSO_BONUS_MAX_USD;
+
     setSelectedTasks(confirmed);
-    const coreTask = `${userProfile.jobTitle} — workflow mapping`;
-    useWorkflowStore.getState().setCoreTask(coreTask);
-    setPhase('workflow');
+    setTaskItems(allTasks);
+    setBonusSnapshot({
+      editChars: finalEditChars,
+      editEarnedUsd: finalEditEarned,
+      editCapped: finalEditCapped,
+      addCount: finalAddCount,
+      addEarnedUsd: finalAddEarned,
+      addCapped: finalAddCapped,
+      aiHowSoChars: finalAiHowSoChars,
+      aiHowSoEarnedUsd: finalAiHowSoEarned,
+      aiHowSoCapped: finalAiHowSoCapped,
+      totalEarnedUsd: finalEditEarned + finalAddEarned + finalAiHowSoEarned,
+      rates: {
+        editPerCharUsd: EDIT_BONUS_PER_CHAR_USD,
+        editMaxUsd: EDIT_BONUS_MAX_USD,
+        addPerTaskUsd: ADD_BONUS_PER_TASK_USD,
+        addMaxUsd: ADD_BONUS_MAX_USD,
+        aiHowSoPerCharUsd: AI_HOWSO_BONUS_PER_CHAR_USD,
+        aiHowSoMaxUsd: AI_HOWSO_BONUS_MAX_USD,
+      },
+      computedAt: new Date().toISOString(),
+    });
+    setPhase(condition === "short" ? "final-questions" : "task-priority");
   };
 
-  const confirmedCount = tasks.filter(t => t.status === 'confirmed' || t.status === 'edited').length;
-  const canProceed = confirmedCount >= 1;
-  const reviewedCount = tasks.filter(t => t.status !== 'unreviewed').length;
+  const confirmedCount = tasks.filter(
+    (t) => t.status === "confirmed" || t.status === "edited",
+  ).length;
+  const canEarlyExit = currentIdx >= DONE_THRESHOLD && confirmedCount >= 1;
+  const isExhausted = currentIdx >= tasks.length && loadState === "ready";
+  const currentTask = tasks[currentIdx];
+  const loading =
+    loadState === "loading" ||
+    (loadState === "ready" && !currentTask && !isExhausted);
+
+  if (showIntro) {
+    return <IntroScreen onStart={() => setShowIntro(false)} totalParts={totalParts} />;
+  }
 
   return (
-    <div className="flex flex-col h-full bg-white relative overflow-hidden">
-      <div className="absolute top-0 left-0 right-0 h-48 bg-gradient-to-b from-indigo-50/30 to-transparent pointer-events-none" />
+    <div className="flex flex-col h-full bg-transparent relative overflow-hidden">
+      {/* Top gradient is rendered by the parent (App.tsx) so it spans the full viewport. */}
 
-      {/* Bonus toast */}
-      <div className={`absolute top-4 right-4 z-50 transition-all duration-300 ${showBonusToast ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-2 pointer-events-none'}`}>
-        <div className="flex items-center gap-1.5 px-3 py-2 bg-amber-400 text-amber-900 text-xs font-semibold rounded-full shadow-md">
-          <span>★</span>
-          <span>Edit bonus earned!</span>
+      {/* Bonus toast — shows the per-edit character delta */}
+      {BONUS_ENABLED && (
+        <div
+          className={`absolute top-4 right-4 z-50 transition-all duration-300 ${showBonusToast ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-2 pointer-events-none"}`}
+        >
+          <div className="flex items-center gap-1.5 px-3 py-2 bg-amber-400 text-amber-900 text-xs font-semibold rounded-full shadow-md">
+            ★ +{lastBonusDelta} char{lastBonusDelta !== 1 ? "s" : ""} edited
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Header */}
-      <div className="relative z-10 px-8 pt-8 pb-4 shrink-0">
+      <div className="relative z-10 px-8 pt-8 pb-5 shrink-0">
         <div className="flex items-center justify-between mb-4">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400">Part 2 of 3 — Task Coverage</p>
-          {editBonusCount > 0 && (
-            <span className="flex items-center gap-1 text-[10px] font-semibold text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
-              ★ {editBonusCount} edit bonus{editBonusCount !== 1 ? 'es' : ''}
+          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400">
+            Part 2 of {totalParts} — Task Coverage
+          </p>
+          {BONUS_ENABLED && !isExhausted && (editChars > 0 || aiHowSoChars > 0) && (
+            <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+              ★ {formatUsd(editEarnedUsd + aiHowSoEarnedUsd)}
+              {editCapped && aiHowSoCapped ? " (max)" : ""}
             </span>
           )}
         </div>
-
-        {/* Progress bar */}
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-500 font-medium">
-              {reviewedCount === 0
-                ? 'Does each task apply to your role?'
-                : `${reviewedCount} reviewed · ${confirmedCount} selected`}
-            </span>
-            {totalPages > 0 && (
-              <span className="text-xs text-slate-400">{page + 1} of {totalPages}{hasMore ? '+' : ''}</span>
-            )}
-          </div>
-          <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-gradient-to-r from-indigo-400 to-violet-400 rounded-full transition-all duration-300 ease-out"
-              style={{ width: totalPages > 0 ? `${((page + 1) / Math.max(totalPages, 1)) * 100}%` : '0%' }}
-            />
-          </div>
+        <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+          {/* Linear progress over the full picker (MAX_TASKS). isExhausted
+              still pegs to 100% so a short stream (fewer tasks than the cap)
+              shows a full bar when the participant finishes the last one. */}
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-violet-400 transition-all duration-500 ease-out"
+            style={{
+              width: `${isExhausted ? 100 : Math.min((currentIdx / MAX_TASKS) * 100, 100)}%`,
+            }}
+          />
         </div>
-
-        <p className="text-[1.4rem] font-light text-slate-800 mt-5 leading-snug tracking-tight">
-          Which of these tasks are part of your work?
-        </p>
-        <p className="text-sm text-slate-400 mt-1.5">
-          Select all that apply. Edit any task to make it more accurate — edits earn a bonus.
-        </p>
       </div>
 
-      {/* Task cards */}
-      <div className="relative z-10 flex-1 overflow-y-auto px-8 pb-4 min-h-0">
-        {tasks.length === 0 && isFetching ? (
-          <div className="flex items-center justify-center h-32">
+      {/* Task area — top-aligned for the review screen (lots of content),
+          centered for the per-task review (single card). */}
+      <div
+        className={`relative z-10 flex-1 flex flex-col min-h-0 overflow-y-auto
+        ${isExhausted ? "justify-start pt-6 pb-12 px-4 sm:px-6" : "justify-center px-8"}`}
+      >
+        {loading ? (
+          <div className="flex justify-center">
             <div className="flex gap-2">
-              {[0, 150, 300].map(d => (
-                <span key={d} className="w-2 h-2 bg-indigo-200 rounded-full animate-bounce" style={{ animationDelay: `${d}ms` }} />
+              {[0, 150, 300].map((d) => (
+                <span
+                  key={d}
+                  className="w-2 h-2 bg-indigo-200 rounded-full animate-bounce"
+                  style={{ animationDelay: `${d}ms` }}
+                />
               ))}
             </div>
           </div>
-        ) : (
-          <div className="space-y-3 pt-2 pb-4">
-            {visibleTasks.map((task, localIdx) => {
-              const globalIdx = page * PAGE_SIZE + localIdx;
-              return (
-                <TaskCard
-                  key={task.originalName + globalIdx}
-                  task={task}
-                  idx={globalIdx}
-                  onStatus={setStatus}
-                  onRecency={setRecency}
-                  onSaveEdit={saveEdit}
-                />
-              );
-            })}
-
-            {/* Custom task — last page only */}
-            {isLastPage && (
-              <div className="pt-2">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-slate-400 mb-2.5">Something missing?</p>
-                {showCustom ? (
-                  <div className="flex gap-2">
-                    <input
-                      ref={customRef}
-                      autoFocus
-                      className="flex-1 border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-transparent"
-                      placeholder="Describe a task (e.g. Review vendor contracts)"
-                      value={customInput}
-                      onChange={e => setCustomInput(e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === 'Enter') addCustomTask(customInput);
-                        if (e.key === 'Escape') { setShowCustom(false); setCustomInput(''); }
-                      }}
-                    />
-                    <button
-                      onClick={() => addCustomTask(customInput)}
-                      disabled={!customInput.trim()}
-                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-30 text-white text-sm font-medium rounded-xl transition"
-                    >
-                      Add
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => { setShowCustom(true); setTimeout(() => customRef.current?.focus(), 50); }}
-                    className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl border border-dashed border-slate-300 text-slate-400 hover:border-indigo-300 hover:text-indigo-500 text-sm transition w-full"
-                  >
-                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                      <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-                    </svg>
-                    Add your own task
-                  </button>
-                )}
-              </div>
+        ) : loadState === "error" ? (
+          <div className="text-center space-y-3">
+            <p className="text-slate-500 text-sm">
+              Couldn't load tasks — is the server running?
+            </p>
+            <button
+              onClick={() => {
+                setLoadState("loading");
+              }}
+              className="text-indigo-500 text-sm underline"
+            >
+              Retry
+            </button>
+          </div>
+        ) : isExhausted ? (
+          <ReviewAndAddScreen
+            confirmedTasks={tasks.filter(
+              (t) =>
+                (t.status === "confirmed" || t.status === "edited") &&
+                !t.isAttentionCheck,
             )}
+            interviewExtractedTasks={interviewExtractedTasks}
+            extraTasks={extraTasks}
+            extraInput={extraInput}
+            onExtraInputChange={setExtraInput}
+            onAddExtra={addExtraTask}
+            onRemoveExtra={removeExtraTask}
+            addEarnedUsd={addEarnedUsd}
+            addCapped={addCapped}
+            onSubmit={proceed}
+          />
+        ) : currentTask ? (
+          <TaskReviewCard
+            key={currentIdx}
+            task={currentTask}
+            taskIdx={currentIdx}
+            isLast={currentIdx >= tasks.length - 1}
+            onSaveEdit={saveEdit}
+            onAdvance={advance}
+          />
+        ) : null}
+      </div>
 
-            {isFetching && (
-              <div className="flex justify-center py-2">
-                <div className="flex gap-1.5">
-                  {[0, 100, 200].map(d => (
-                    <span key={d} className="w-1.5 h-1.5 bg-indigo-200 rounded-full animate-bounce" style={{ animationDelay: `${d}ms` }} />
-                  ))}
+      {/* Footer — early-exit hint, only shown mid-flow (the exhausted screen has its own primary button) */}
+      {canEarlyExit && !isExhausted && (
+        <div className="relative z-10 px-8 pb-8 pt-4 border-t border-slate-100 shrink-0">
+          <button
+            onClick={() => proceed()}
+            className="w-full text-sm text-slate-400 hover:text-slate-600 transition py-1"
+          >
+            Done — continue with {confirmedCount} task
+            {confirmedCount !== 1 ? "s" : ""}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Intro screen ───────────────────────────────────────────────────────────────
+
+function IntroScreen({ onStart, totalParts }: { onStart: () => void; totalParts: number }) {
+  return (
+    <div className="flex flex-col h-full bg-transparent relative overflow-hidden">
+      {/* Top gradient is rendered by the parent (App.tsx) so it spans the full viewport. */}
+      <div className="relative z-10 flex flex-1 items-center justify-center px-8">
+        <div className="max-w-lg w-full">
+          <p
+            className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-9 animate-fadeSlideUp"
+            style={{ animationDelay: "0ms" }}
+          >
+            Part 2 of {totalParts} — Task Coverage
+          </p>
+          <h2
+            className="text-[1.65rem] font-light text-slate-800 leading-snug tracking-tight animate-fadeSlideUp"
+            style={{ animationDelay: "80ms" }}
+          >
+            Next, we'll go through a list of tasks.
+          </h2>
+          <p
+            className="text-slate-500 mt-6 text-[15px] leading-[1.7] animate-fadeSlideUp"
+            style={{ animationDelay: "160ms" }}
+          >
+            We'll show you a list of tasks someone in your role might do at
+            work, and we'll ask you to confirm which tasks you do.
+          </p>
+          <div className="mt-12 space-y-4">
+            <div
+              className="px-5 py-4 rounded-xl border border-indigo-100 bg-indigo-50/60 animate-fadeSlideUp"
+              style={{ animationDelay: "240ms" }}
+            >
+              <div className="text-sm leading-[1.6]">
+                <p className="font-semibold text-indigo-700 mb-1.5">
+                  Attention checks
+                </p>
+                <p className="text-slate-600">
+                  A few items are mixed in to confirm you're reading carefully.
+                  Answer everything honestly.
+                </p>
+              </div>
+            </div>
+            {BONUS_ENABLED && (
+              <div
+                className="px-5 py-4 rounded-xl border border-amber-200 bg-amber-50 animate-fadeSlideUp"
+                style={{ animationDelay: "320ms" }}
+              >
+                <div className="text-sm leading-[1.6]">
+                  <p className="font-semibold text-amber-700 mb-1.5">
+                    Edit bonus
+                  </p>
+                  <p className="text-slate-700">
+                    Edit any task to make it more personalized to your work.
+                    We'll give you a bonus for each character you change.
+                  </p>
+                  <p className="mt-2.5 text-amber-800">
+                    <span className="font-semibold">
+                      {formatUsd(EDIT_BONUS_PER_CHAR_USD * 1000)} per 1,000
+                      characters
+                    </span>{" "}
+                    changed, up to {formatUsd(EDIT_BONUS_MAX_USD)}.
+                  </p>
                 </div>
               </div>
             )}
+            <div
+              className="px-5 py-4 rounded-xl border border-amber-200 bg-amber-50 animate-fadeSlideUp"
+              style={{ animationDelay: "370ms" }}
+            >
+              <div className="text-sm leading-[1.6]">
+                <p className="font-semibold text-amber-700 mb-1.5">
+                  AI-use description
+                </p>
+                <p className="text-slate-700">
+                  For tasks where you use AI, tell us how — what you use it for,
+                  in what context. The more specific, the better.
+                </p>
+                {BONUS_ENABLED && (
+                  <p className="mt-2.5 text-amber-800">
+                    <span className="font-semibold">
+                      {formatUsd(AI_HOWSO_BONUS_PER_CHAR_USD * 1000)} per 1,000
+                      characters
+                    </span>{" "}
+                    on AI-use descriptions.
+                  </p>
+                )}
+              </div>
+            </div>
           </div>
-        )}
-      </div>
-
-      {/* Footer */}
-      <div className="relative z-10 px-8 pb-8 pt-4 border-t border-slate-100 shrink-0 space-y-2">
-        {canSeeMore && (
           <button
-            onClick={() => setPage(p => p + 1)}
-            disabled={isFetching && page >= totalPages - 1}
-            className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-medium rounded-2xl transition-all active:scale-[0.99] shadow-sm shadow-indigo-200"
+            onClick={onStart}
+            className="mt-14 inline-flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-full transition-all active:scale-[0.98] shadow-sm shadow-indigo-200 animate-fadeSlideUp"
+            style={{ animationDelay: "420ms" }}
           >
-            See more →
+            Start
+            <svg
+              className="w-4 h-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <line x1="5" y1="12" x2="19" y2="12" />
+              <polyline points="13 6 19 12 13 18" />
+            </svg>
           </button>
-        )}
-        <button
-          onClick={proceed}
-          disabled={!canProceed}
-          className={`w-full py-3.5 font-medium rounded-2xl transition-all active:scale-[0.99] ${
-            isLastPage
-              ? 'bg-indigo-600 hover:bg-indigo-700 disabled:opacity-30 text-white shadow-sm shadow-indigo-200'
-              : 'bg-white border border-slate-200 text-slate-500 hover:border-slate-300 disabled:opacity-30'
-          }`}
-        >
-          {canProceed
-            ? `Continue with ${confirmedCount} task${confirmedCount !== 1 ? 's' : ''} →`
-            : 'Select at least one task to continue'}
-        </button>
+        </div>
       </div>
     </div>
   );
 }
 
-// ── Task card ──────────────────────────────────────────────────────────────────
+// ── Single task review card ────────────────────────────────────────────────────
 
-interface TaskCardProps {
+interface TaskReviewCardProps {
   task: TaskItem;
-  idx: number;
-  onStatus: (idx: number, status: TaskStatus) => void;
-  onRecency: (idx: number, recency: TaskRecency) => void;
+  taskIdx: number;
+  isLast: boolean;
   onSaveEdit: (idx: number, name: string) => void;
+  onAdvance: (
+    answer: "yes" | "no",
+    meta?: {
+      recency: TaskRecency;
+      aiUse: TaskAiUse;
+      aiHowSo: string;
+    },
+  ) => void;
 }
 
-function TaskCard({ task, idx, onStatus, onRecency, onSaveEdit }: TaskCardProps) {
+function TaskReviewCard({
+  task,
+  taskIdx,
+  isLast,
+  onSaveEdit,
+  onAdvance,
+}: TaskReviewCardProps) {
+  const [primaryAnswer, setPrimaryAnswer] = useState<"yes" | "no" | null>(null);
+  const [recency, setRecency] = useState<TaskRecency | null>(null);
+  const [aiUse, setAiUse] = useState<TaskAiUse | null>(null);
+  const [aiHowSo, setAiHowSo] = useState("");
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(task.name);
-  const inputRef = useRef<HTMLInputElement>(null);
+  // One-time nudge on the very first task pointing at the editable name.
+  const [showEditNudge, setShowEditNudge] = useState(taskIdx === 0);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Dismiss the nudge once the participant has either started editing or
+  // committed to an answer — they've absorbed the affordance.
+  useEffect(() => {
+    if (editing || primaryAnswer) setShowEditNudge(false);
+  }, [editing, primaryAnswer]);
+
+  const canContinue =
+    primaryAnswer === "no" ||
+    (primaryAnswer === "yes" &&
+      recency !== null &&
+      aiUse !== null &&
+      (aiUse === "no" || aiHowSo.trim().length > 0));
+
+  const handleContinue = () => {
+    if (!canContinue) return;
+    if (primaryAnswer === "no") {
+      onAdvance("no");
+    } else {
+      onAdvance("yes", {
+        recency: recency!,
+        aiUse: aiUse!,
+        aiHowSo,
+      });
+    }
+  };
 
   const startEdit = () => {
     setEditValue(task.name);
     setEditing(true);
-    setTimeout(() => { inputRef.current?.focus(); inputRef.current?.select(); }, 30);
+    setTimeout(() => {
+      if (inputRef.current) {
+        inputRef.current.style.height = "auto";
+        inputRef.current.style.height = inputRef.current.scrollHeight + "px";
+        inputRef.current.focus();
+        inputRef.current.select();
+      }
+    }, 20);
   };
 
   const commitEdit = () => {
     setEditing(false);
     const trimmed = editValue.trim() || task.name;
-    onSaveEdit(idx, trimmed);
-    if (task.status === 'unreviewed') onStatus(idx, 'edited');
+    onSaveEdit(taskIdx, trimmed);
   };
 
-  const borderColor = {
-    unreviewed: 'border-slate-200',
-    confirmed: 'border-green-300',
-    edited: 'border-amber-300',
-    removed: 'border-slate-200',
-  }[task.status];
-
-  const bgColor = {
-    unreviewed: 'bg-white',
-    confirmed: 'bg-green-50',
-    edited: 'bg-amber-50',
-    removed: 'bg-slate-50',
-  }[task.status];
-
-  const showRecency = task.status === 'confirmed' || task.status === 'edited';
+  const step =
+    !primaryAnswer || primaryAnswer === "no"
+      ? 0
+      : !recency
+        ? 1
+        : !aiUse
+          ? 2
+          : 3;
 
   return (
-    <div className={`rounded-2xl border ${borderColor} ${bgColor} p-4 transition-all duration-150 ${task.status === 'removed' ? 'opacity-60' : ''}`}>
-      {/* Title row */}
-      <div className="flex items-start gap-2 mb-3">
-        {editing ? (
-          <input
-            ref={inputRef}
-            className="flex-1 text-sm font-medium text-slate-800 border border-slate-300 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-300"
-            value={editValue}
-            onChange={e => setEditValue(e.target.value)}
-            onBlur={commitEdit}
-            onKeyDown={e => {
-              if (e.key === 'Enter') { e.preventDefault(); commitEdit(); }
-              if (e.key === 'Escape') { setEditing(false); setEditValue(task.name); }
-            }}
-          />
-        ) : (
-          <p className={`flex-1 text-sm font-medium leading-snug ${task.status === 'removed' ? 'line-through text-slate-400' : 'text-slate-800'}`}>
-            {task.name}
-          </p>
-        )}
-        {task.status === 'edited' && !editing && (
-          <span className="flex-shrink-0 text-[10px] font-semibold uppercase tracking-wide text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded">edited</span>
-        )}
-      </div>
-
-      {/* Action buttons */}
-      {!editing && (
-        <div className="flex gap-2">
-          <ActionBtn
-            label="Applies to me"
-            active={task.status === 'confirmed'}
-            activeClass="bg-green-100 border-green-300 text-green-700"
-            onClick={() => onStatus(idx, task.status === 'confirmed' ? 'unreviewed' : 'confirmed')}
-          />
-          <ActionBtn
-            label="Edit"
-            active={task.status === 'edited'}
-            activeClass="bg-amber-100 border-amber-300 text-amber-700"
-            onClick={startEdit}
-          />
-          <ActionBtn
-            label="Doesn't apply"
-            active={task.status === 'removed'}
-            activeClass="bg-slate-100 border-slate-300 text-slate-500"
-            onClick={() => onStatus(idx, task.status === 'removed' ? 'unreviewed' : 'removed')}
-          />
+    <div className="flex flex-col gap-7">
+      {/* First-task nudge: pops in shortly after the task card lands. Tells
+          participants the task name is editable. Dismisses once they start
+          editing or pick an answer. */}
+      {showEditNudge && !editing && (
+        <div className="-mb-4 animate-popIn">
+          <div className="relative inline-flex items-start gap-2 max-w-sm px-3.5 py-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-xs leading-relaxed">
+            <svg
+              className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-600"
+              viewBox="0 0 20 20"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M14 4l2 2-9 9-3 1 1-3 9-9z" />
+            </svg>
+            <span>
+              <span className="font-semibold">Tip:</span> To edit the task
+              statement, hover the text below and click to edit it.
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowEditNudge(false)}
+              aria-label="Dismiss tip"
+              className="ml-1 -mr-1 -mt-0.5 w-5 h-5 flex items-center justify-center rounded-full text-amber-500 hover:bg-amber-100 hover:text-amber-700 transition shrink-0"
+            >
+              <svg
+                viewBox="0 0 20 20"
+                className="w-3 h-3"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+              >
+                <line x1="6" y1="6" x2="14" y2="14" />
+                <line x1="14" y1="6" x2="6" y2="14" />
+              </svg>
+            </button>
+            {/* Down-arrow connector pointing at the task name below */}
+            <span className="absolute -bottom-1.5 left-5 w-3 h-3 rotate-45 bg-amber-50 border-b border-r border-amber-200" />
+          </div>
         </div>
       )}
 
-      {/* Recency row */}
-      {showRecency && (
-        <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100">
-          <span className="text-[10px] text-slate-400 uppercase tracking-wide font-medium shrink-0">When?</span>
-          {(['past', 'current', 'new'] as TaskRecency[]).map(r => (
-            <button
-              key={r}
-              onClick={() => onRecency(idx, r)}
-              className={`text-xs px-2.5 py-1 rounded-lg border transition-all ${
-                task.recency === r
-                  ? 'bg-indigo-100 border-indigo-300 text-indigo-700 font-medium'
-                  : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'
-              }`}
-            >
-              {r === 'past' ? 'Used to do' : r === 'current' ? 'Currently do' : 'Recently started'}
-            </button>
-          ))}
-        </div>
+      {/* Task name */}
+      <div
+        onClick={() => !editing && startEdit()}
+        className="cursor-text select-none pb-1"
+      >
+        {editing ? (
+          <textarea
+            ref={inputRef}
+            className="w-full text-2xl font-light text-slate-800 bg-transparent border-b-2 border-indigo-300 focus:outline-none pb-1 resize-none overflow-hidden leading-snug"
+            value={editValue}
+            rows={1}
+            onChange={(e) => {
+              setEditValue(e.target.value);
+              e.target.style.height = "auto";
+              e.target.style.height = e.target.scrollHeight + "px";
+            }}
+            onBlur={commitEdit}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitEdit();
+              }
+              if (e.key === "Escape") {
+                setEditing(false);
+                setEditValue(task.name);
+              }
+            }}
+          />
+        ) : (
+          <div className="group">
+            <p className="text-2xl font-light text-slate-800 leading-snug">
+              {task.name}
+            </p>
+            <p className="text-xs text-slate-300 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              click to edit
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Primary answer */}
+      <div className="flex gap-3">
+        {[
+          {
+            value: "yes" as const,
+            label: "I do this",
+            active:
+              "bg-indigo-600 border-indigo-600 text-white shadow-sm shadow-indigo-200",
+            inactive: "hover:border-indigo-200 hover:text-indigo-600",
+          },
+          {
+            value: "no" as const,
+            label: "I don't do this",
+            active: "bg-slate-100 border-slate-300 text-slate-700",
+            inactive: "hover:border-slate-300",
+          },
+        ].map(({ value, label, active, inactive }) => (
+          <button
+            key={value}
+            onClick={() => {
+              setPrimaryAnswer(value);
+              if (value === "no") {
+                setRecency(null);
+                setAiUse(null);
+                setAiHowSo("");
+              }
+            }}
+            className={`flex-1 py-3 rounded-2xl border text-sm font-medium transition-all active:scale-[0.98] ${primaryAnswer === value ? active : `bg-white border-slate-200 text-slate-600 ${inactive}`}`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Follow-ups — each fades in sequentially */}
+      {step >= 1 && (
+        <FollowUp label="When do you do this?" animate>
+          <div className="flex gap-2">
+            {(
+              [
+                { value: "past", label: "Used to do" },
+                { value: "current", label: "Currently do" },
+                { value: "new", label: "Recently started" },
+              ] as { value: TaskRecency; label: string }[]
+            ).map(({ value, label }) => (
+              <ChipBtn
+                key={value}
+                label={label}
+                selected={recency === value}
+                onClick={() => setRecency(value)}
+              />
+            ))}
+          </div>
+        </FollowUp>
+      )}
+
+      {step >= 2 && (
+        <FollowUp label="Do you use AI for this?" animate>
+          <div className="flex gap-2">
+            {(
+              [
+                { value: "yes", label: "Yes" },
+                { value: "no", label: "No" },
+              ] as { value: TaskAiUse; label: string }[]
+            ).map(({ value, label }) => (
+              <ChipBtn
+                key={value}
+                label={label}
+                selected={aiUse === value}
+                onClick={() => {
+                  setAiUse(value);
+                  if (value === "no") setAiHowSo("");
+                }}
+              />
+            ))}
+          </div>
+          {aiUse === "yes" && (
+            <div className="animate-fadeSlideIn mt-3">
+              <AudioTextInput
+                value={aiHowSo}
+                onChange={setAiHowSo}
+                placeholder="How so?"
+              />
+            </div>
+          )}
+        </FollowUp>
+      )}
+
+      {/* Continue */}
+      {primaryAnswer !== null && (
+        <button
+          onClick={handleContinue}
+          disabled={!canContinue}
+          className="self-end px-5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-30 text-white text-sm font-medium rounded-xl transition-all active:scale-[0.98]"
+        >
+          {isLast ? "Done →" : "Continue →"}
+        </button>
       )}
     </div>
   );
 }
 
-function ActionBtn({ label, active, activeClass, onClick }: {
-  label: string; active: boolean; activeClass: string; onClick: () => void;
+// ── Shared sub-components ─────────────────────────────────────────────────────
+
+function FollowUp({
+  label,
+  children,
+  animate,
+}: {
+  label: string;
+  children: React.ReactNode;
+  animate?: boolean;
+}) {
+  return (
+    <div className={`space-y-3 ${animate ? "animate-fadeSlideIn" : ""}`}>
+      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+        {label}
+      </p>
+      {children}
+    </div>
+  );
+}
+
+function ChipBtn({
+  label,
+  selected,
+  onClick,
+}: {
+  label: string;
+  selected: boolean;
+  onClick: () => void;
 }) {
   return (
     <button
       onClick={onClick}
-      className={`flex-1 text-xs py-1.5 rounded-lg border transition-all font-medium ${
-        active ? activeClass : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300 hover:bg-slate-50'
+      className={`flex-1 py-2.5 text-xs rounded-xl border transition-all duration-150 font-medium active:scale-[0.97] ${
+        selected
+          ? "bg-indigo-500 border-indigo-500 text-white shadow-sm shadow-indigo-200"
+          : "bg-white border-slate-200 text-slate-500 hover:border-indigo-200 hover:text-indigo-500"
       }`}
     >
       {label}
     </button>
+  );
+}
+
+// ── Audio + text input ────────────────────────────────────────────────────────
+
+type RecordState = "idle" | "recording" | "transcribing";
+
+function AudioTextInput({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  const [recordState, setRecordState] = useState<RecordState>("idle");
+  const [error, setError] = useState<string | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const toggleRecording = async () => {
+    if (recordState === "recording") {
+      mediaRecorderRef.current?.stop();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunksRef.current = [];
+      const mimeType =
+        [
+          "audio/webm;codecs=opus",
+          "audio/webm",
+          "audio/ogg;codecs=opus",
+          "audio/mp4",
+        ].find((t) => MediaRecorder.isTypeSupported(t)) ?? "";
+      const recorder = new MediaRecorder(
+        stream,
+        mimeType ? { mimeType } : undefined,
+      );
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const chunks = audioChunksRef.current;
+        if (!chunks.length) {
+          setRecordState("idle");
+          return;
+        }
+        setRecordState("transcribing");
+        try {
+          const blob = new Blob(chunks, { type: mimeType || "audio/webm" });
+          const text = await transcribeAudio(blob);
+          if (text.trim()) {
+            onChange(value ? value + " " + text : text);
+            setTimeout(() => textareaRef.current?.focus(), 50);
+          }
+        } catch {
+          setError("Transcription failed — try typing instead.");
+        } finally {
+          setRecordState("idle");
+        }
+      };
+      recorder.start(250);
+      setError(null);
+      setRecordState("recording");
+    } catch {
+      setError("Mic access denied — please type your answer.");
+    }
+  };
+
+  const isRecording = recordState === "recording";
+  const isTranscribing = recordState === "transcribing";
+
+  return (
+    <div className="space-y-1.5">
+      {/* Single bordered container wraps textarea + mic so the focus ring covers both. */}
+      <div
+        className={`relative rounded-xl border bg-white transition ${
+          isRecording
+            ? "border-red-200 ring-2 ring-red-100"
+            : "border-slate-200 focus-within:ring-2 focus-within:ring-indigo-200 focus-within:border-indigo-300"
+        }`}
+      >
+        <textarea
+          ref={textareaRef}
+          autoFocus
+          rows={2}
+          className="w-full bg-transparent border-0 outline-none resize-none px-3.5 py-2.5 pr-12 text-sm text-slate-700 placeholder-slate-300 disabled:opacity-50"
+          placeholder={
+            isRecording
+              ? "Recording — click the mic again to stop"
+              : isTranscribing
+                ? "Transcribing…"
+                : placeholder
+          }
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          disabled={isTranscribing}
+        />
+        <button
+          type="button"
+          onClick={toggleRecording}
+          disabled={isTranscribing}
+          title={isRecording ? "Stop recording" : "Record answer"}
+          aria-label={isRecording ? "Stop recording" : "Record audio"}
+          className={`absolute bottom-1.5 right-1.5 w-8 h-8 rounded-lg flex items-center justify-center transition active:scale-[0.95] disabled:cursor-not-allowed ${
+            isRecording
+              ? "bg-red-500 text-white shadow-sm shadow-red-200"
+              : isTranscribing
+                ? "bg-slate-50 text-slate-300"
+                : "text-slate-400 hover:bg-indigo-50 hover:text-indigo-500"
+          }`}
+        >
+          {isTranscribing ? (
+            <svg
+              className="w-4 h-4 animate-spin"
+              viewBox="0 0 24 24"
+              fill="none"
+            >
+              <circle
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="3"
+                className="opacity-25"
+              />
+              <path d="M4 12a8 8 0 018-8v8z" fill="currentColor" />
+            </svg>
+          ) : isRecording ? (
+            <svg
+              className="w-3.5 h-3.5"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+            >
+              <rect x="6" y="6" width="12" height="12" rx="2" />
+            </svg>
+          ) : (
+            <svg
+              className="w-4 h-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+            >
+              <rect x="9" y="2" width="6" height="11" rx="3" />
+              <path d="M5 10a7 7 0 0 0 14 0" />
+              <line x1="12" y1="19" x2="12" y2="22" />
+              <line x1="8" y1="22" x2="16" y2="22" />
+            </svg>
+          )}
+        </button>
+      </div>
+      {error && <p className="text-xs text-red-400">{error}</p>}
+    </div>
+  );
+}
+
+// ── Review & add screen ────────────────────────────────────────────────────────
+
+function ReviewAndAddScreen({
+  confirmedTasks,
+  interviewExtractedTasks,
+  extraTasks,
+  extraInput,
+  onExtraInputChange,
+  onAddExtra,
+  onRemoveExtra,
+  addEarnedUsd,
+  addCapped,
+  onSubmit,
+}: {
+  confirmedTasks: TaskItem[];
+  interviewExtractedTasks: string[];
+  extraTasks: { name: string; addedAt: number }[];
+  extraInput: string;
+  onExtraInputChange: (v: string) => void;
+  onAddExtra: (v: string) => void;
+  onRemoveExtra: (idx: number) => void;
+  addEarnedUsd: number;
+  addCapped: boolean;
+  onSubmit: (pendingExtra?: string) => void;
+}) {
+  // Merge in the activities extracted from the background interview, deduped
+  // (case-insensitive + trim) against the explicitly confirmed tasks. Anything
+  // the participant described but that didn't surface via the review flow still
+  // shows up here so the "tasks so far" picture is complete.
+  const seenNames = new Set(
+    confirmedTasks.map((t) => t.name.trim().toLowerCase()),
+  );
+  const extractedOnly = interviewExtractedTasks.filter((name) => {
+    const key = name.trim().toLowerCase();
+    if (!key || seenNames.has(key)) return false;
+    seenNames.add(key);
+    return true;
+  });
+  const totalDisplayedSoFar = confirmedTasks.length + extractedOnly.length;
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [recordState, setRecordState] = useState<RecordState>("idle");
+  const [recordError, setRecordError] = useState<string | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
+  const handleAddExtra = (v: string) => {
+    onAddExtra(v);
+  };
+
+  // Mode-switching primary button: while there's draft text in the input, the
+  // button commits it as a task and clears the input — it does NOT submit.
+  // Only when the input is empty does the button finalize the response. This
+  // prevents accidentally submitting in the middle of typing a task.
+  const draft = extraInput.trim();
+  const hasDraft = draft.length > 0;
+  const handlePrimary = () => {
+    if (hasDraft) {
+      onAddExtra(draft);
+      return;
+    }
+    onSubmit();
+  };
+
+  const toggleRecording = async () => {
+    if (recordState === "recording") {
+      mediaRecorderRef.current?.stop();
+      return;
+    }
+    if (recordState === "transcribing") return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunksRef.current = [];
+      const mimeType =
+        [
+          "audio/webm;codecs=opus",
+          "audio/webm",
+          "audio/ogg;codecs=opus",
+          "audio/mp4",
+        ].find((t) => MediaRecorder.isTypeSupported(t)) ?? "";
+      const recorder = new MediaRecorder(
+        stream,
+        mimeType ? { mimeType } : undefined,
+      );
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const chunks = audioChunksRef.current;
+        if (!chunks.length) {
+          setRecordState("idle");
+          return;
+        }
+        setRecordState("transcribing");
+        try {
+          const blob = new Blob(chunks, { type: mimeType || "audio/webm" });
+          const text = await transcribeAudio(blob);
+          if (text.trim()) {
+            onExtraInputChange(extraInput ? extraInput + " " + text : text);
+            setTimeout(() => textareaRef.current?.focus(), 50);
+          }
+        } catch {
+          setRecordError("Transcription failed — try typing instead.");
+        } finally {
+          setRecordState("idle");
+        }
+      };
+      recorder.start(250);
+      setRecordError(null);
+      setRecordState("recording");
+    } catch {
+      setRecordError("Mic access denied — please type your answer.");
+    }
+  };
+
+  return (
+    <div className="w-full animate-fadeSlideIn">
+      {totalDisplayedSoFar > 0 && (
+        <section>
+          <h3 className="text-[1.35rem] font-light text-slate-800 leading-snug tracking-tight">
+            Here are your tasks so far
+          </h3>
+          <p className="text-sm text-slate-500 mt-1.5">
+            {totalDisplayedSoFar} task{totalDisplayedSoFar !== 1 ? "s" : ""}{" "}
+            from what you confirmed and what you mentioned earlier.
+          </p>
+
+          <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+            {confirmedTasks.map((t, i) => (
+              <div
+                key={`${t.name}-${i}`}
+                className="px-4 py-3 rounded-xl bg-white border border-slate-200 hover:border-indigo-200 hover:shadow-sm transition"
+              >
+                <p className="text-sm text-slate-800 leading-snug">{t.name}</p>
+                {t.status === "edited" && (
+                  <span className="mt-1.5 inline-block text-[10px] font-semibold uppercase tracking-wider text-amber-600">
+                    edited
+                  </span>
+                )}
+              </div>
+            ))}
+            {extractedOnly.map((name, i) => (
+              <div
+                key={`extracted-${name}-${i}`}
+                className="px-4 py-3 rounded-xl bg-white border border-slate-200 hover:border-indigo-200 hover:shadow-sm transition"
+              >
+                <p className="text-sm text-slate-800 leading-snug">{name}</p>
+                <span className="mt-1.5 inline-block text-[10px] font-semibold uppercase tracking-wider text-indigo-500">
+                  from interview
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* What else fills your week. */}
+      <section className="mt-10">
+        <div className="flex items-center justify-between gap-4">
+          <h3 className="text-[1.35rem] font-light text-slate-800 leading-snug tracking-tight">
+            What else fills your week?
+          </h3>
+          {BONUS_ENABLED && (
+            <span className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-50 border border-amber-200 text-xs font-medium text-amber-700 whitespace-nowrap">
+              {formatUsd(addEarnedUsd)}
+              {addCapped ? " (max)" : ""}
+            </span>
+          )}
+        </div>
+        <p className="text-sm text-slate-500 mt-3 leading-relaxed">
+          We almost certainly missed something. Add the tasks that didn't make
+          our list.
+        </p>
+        {BONUS_ENABLED && (
+          <p className="text-xs text-amber-700 mt-3">
+            Earn {formatUsd(ADD_BONUS_PER_TASK_USD)} for each task you add, up to{" "}
+            {formatUsd(ADD_BONUS_MAX_USD)}.
+          </p>
+        )}
+
+        <div className="mt-4 relative">
+          <textarea
+            ref={textareaRef}
+            rows={3}
+            value={extraInput}
+            onChange={(e) => onExtraInputChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleAddExtra(extraInput);
+              }
+            }}
+            placeholder={
+              recordState === "recording"
+                ? "Recording — click the mic again to stop"
+                : recordState === "transcribing"
+                  ? "Transcribing…"
+                  : "Type a task and press Enter — or use the mic to dictate"
+            }
+            disabled={recordState === "transcribing"}
+            className="w-full pl-4 pr-14 py-3 text-sm text-slate-700 placeholder:text-slate-400 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 transition resize-none disabled:opacity-60"
+          />
+          <button
+            type="button"
+            onClick={toggleRecording}
+            disabled={recordState === "transcribing"}
+            aria-label={
+              recordState === "recording" ? "Stop recording" : "Record audio"
+            }
+            title={
+              recordState === "recording" ? "Stop recording" : "Record audio"
+            }
+            className={`absolute right-2.5 bottom-2.5 w-9 h-9 rounded-full flex items-center justify-center transition active:scale-[0.95] disabled:cursor-not-allowed
+              ${
+                recordState === "recording"
+                  ? "bg-red-500 text-white shadow-sm shadow-red-200"
+                  : recordState === "transcribing"
+                    ? "bg-slate-100 text-slate-300"
+                    : "bg-indigo-50 text-indigo-600 hover:bg-indigo-100 hover:text-indigo-700"
+              }`}
+          >
+            {recordState === "transcribing" ? (
+              <div className="flex items-center justify-center gap-[2px] h-5">
+                {[0, 120, 240, 360].map((delay, i) => (
+                  <span
+                    key={i}
+                    className="w-[2px] h-4 bg-indigo-500 rounded-full animate-waveBar"
+                    style={{ animationDelay: `${delay}ms` }}
+                  />
+                ))}
+              </div>
+            ) : recordState === "recording" ? (
+              <svg
+                className="w-3.5 h-3.5"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+              >
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none">
+                <rect
+                  x="9"
+                  y="2"
+                  width="6"
+                  height="12"
+                  rx="3"
+                  fill="currentColor"
+                />
+                <path
+                  d="M5 10a7 7 0 0 0 14 0"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  fill="none"
+                />
+                <line
+                  x1="12"
+                  y1="19"
+                  x2="12"
+                  y2="22"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                />
+                <line
+                  x1="9"
+                  y1="22"
+                  x2="15"
+                  y2="22"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                />
+              </svg>
+            )}
+          </button>
+        </div>
+        {/* <p className="mt-1.5 text-[11px] text-slate-400">
+          <kbd className="bg-slate-100 px-1.5 py-0.5 rounded text-[10px] font-mono text-slate-500 mr-1">
+            Enter
+          </kbd>
+          to add ·{" "}
+          <kbd className="bg-slate-100 px-1.5 py-0.5 rounded text-[10px] font-mono text-slate-500 mr-1">
+            Shift+Enter
+          </kbd>
+          for newline
+        </p> */}
+        {recordError && (
+          <p className="mt-1.5 text-xs text-red-500">{recordError}</p>
+        )}
+
+        {extraTasks.length > 0 && (
+          <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            {extraTasks.map((t, i) => (
+              <div
+                key={`${t.name}-${i}`}
+                className="group relative pl-4 pr-10 py-3 rounded-xl bg-white border border-indigo-200 hover:shadow-sm transition"
+              >
+                <p className="text-sm text-slate-800 leading-snug">{t.name}</p>
+                <button
+                  type="button"
+                  onClick={() => onRemoveExtra(i)}
+                  aria-label={`Remove ${t.name}`}
+                  title="Remove task"
+                  className="absolute top-1/2 -translate-y-1/2 right-2 w-6 h-6 flex items-center justify-center rounded-full text-slate-300 hover:text-red-500 hover:bg-red-50 transition"
+                >
+                  <svg
+                    viewBox="0 0 20 20"
+                    className="w-3.5 h-3.5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                  >
+                    <line x1="6" y1="6" x2="14" y2="14" />
+                    <line x1="14" y1="6" x2="6" y2="14" />
+                  </svg>
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <div className="mt-8 flex items-center justify-end gap-3">
+        {/* {hasDraft && (
+          // <p className="text-[11px] text-slate-400">
+          //   Click to add the task you're typing — submit when the input is
+          //   empty.
+          // </p>
+        )} */}
+        <button
+          onClick={handlePrimary}
+          aria-label={hasDraft ? "Add task" : "Submit"}
+          className={`shrink-0 inline-flex items-center gap-2 px-7 py-3 text-white text-sm font-medium rounded-full transition-all active:scale-[0.98] shadow-md cursor-pointer
+            ${
+              hasDraft
+                ? "bg-gradient-to-br from-indigo-400 to-indigo-500 hover:from-indigo-500 hover:to-indigo-600 shadow-indigo-100"
+                : "bg-gradient-to-br from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 shadow-indigo-200/70"
+            }`}
+        >
+          {hasDraft ? (
+            <>
+              Add task
+              <svg
+                className="w-4 h-4"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+            </>
+          ) : (
+            <>
+              Submit
+              <svg
+                className="w-4 h-4"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <line x1="5" y1="12" x2="19" y2="12" />
+                <polyline points="12 5 19 12 12 19" />
+              </svg>
+            </>
+          )}
+        </button>
+      </div>
+    </div>
   );
 }
