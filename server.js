@@ -342,38 +342,17 @@ app.post('/api/extract-interview-tasks', async (req, res) => {
 });
 
 app.post('/api/generate-tasks', async (req, res) => {
-  const { jobTitle, typicalWeek, aiUsage, responsibilities, priorTasks = [], interviewTasks = [] } = req.body;
+  const { jobTitle, typicalWeek, aiUsage, responsibilities, priorTasks = [] } = req.body;
   try {
     const priorBlock = priorTasks.length > 0
       ? `\nAlready shown (do NOT repeat or paraphrase):\n${priorTasks.map(t => `- ${t}`).join('\n')}\n`
       : '';
 
-    // Activities the participant explicitly named in the open interview.
-    // The grounding block REDEFINES the MECE target for this run: coverage of
-    // the role applies to (mentioned ∪ generator output), so the generator's
-    // job is to fill gaps the participant didn't mention. This overrides the
-    // base system prompt's "collectively exhaustive" requirement, which would
-    // otherwise force echoing.
-    const groundingBlock = interviewTasks.length > 0
-      ? `\nACTIVITIES THE PARTICIPANT ALREADY MENTIONED in the open interview:\n${interviewTasks.map(t => `- ${t}`).join('\n')}\n\n` +
-        `REDEFINED MECE TARGET FOR THIS RUN: Treat the mentioned activities above as ALREADY-PRESENT upper-level tasks. Your output PLUS the mentioned activities together must be MECE over the role. Your output's role is to fill the GAPS — categories of work clearly implied by the participant's responsibilities and typical week that they did NOT explicitly mention.\n\n` +
-        `SEMANTIC OVERLAP — READ CAREFULLY (most common failure mode):\n` +
-        `  When you check "is my proposed task the same as one they mentioned?", compare MEANING, not wording. Two tasks are the SAME ACTIVITY when a participant would describe the same minute of their day with either label. Surface differences do not make them different activities.\n\n` +
-        `  Examples of MENTIONED ↔ DO-NOT-OUTPUT pairs:\n` +
-        `    Mentioned "do code reviews"                 → DO NOT output "Review pull requests" / "Review code".\n` +
-        `    Mentioned "answer Slack messages"           → DO NOT output "Respond to team chat" / "Reply to teammates".\n` +
-        `    Mentioned "go to standup"                   → DO NOT output "Attend daily standups" / "Join team standup".\n` +
-        `    Mentioned "implement tickets"               → DO NOT output "Build features" / "Write code for tickets" / "Develop assigned work".\n` +
-        `    Mentioned "write the PRD"                   → DO NOT output "Draft product requirements" / "Author PRDs".\n` +
-        `    Mentioned "answer customer support emails"  → DO NOT output "Respond to customer inquiries" / "Handle support tickets".\n` +
-        `  TEST: for each task you draft, scan every mentioned activity and ask "could a participant honestly say this is the same thing I described?" If yes for any, drop yours.\n\n` +
-        `Concretely:\n` +
-        `  1. DO NOT output an upper-level task that semantically overlaps with one of the mentioned activities, even if the wording, verb, or framing differs. The mentioned set covers that category.\n` +
-        `  2. DO output upper-level tasks for any role-relevant category the mentioned set does NOT touch (admin, communication, periodic reporting, learning, coordination, equipment upkeep, mandated compliance, anything in their responsibilities the typical week doesn't cover, etc.).\n` +
-        `  3. STAY IN THEIR WORLD. Your gap-fill tasks must be clearly implied by their responsibilities or typical week — not imported from outside the role.\n` +
-        `  4. If the mentioned set already exhausts the role's major categories, output FEWER tasks (even just 2–3). Better to output a short list than to manufacture overlap.\n` +
-        `  5. COUNT: aim for total (mentioned + your output) ≈ 25–30. If mentioned has 5, output 20–25. If mentioned has 15, output 10–15.\n`
-      : '';
+    // simple-LLM baseline: interview-task grounding is intentionally removed.
+    // Generation is steered ONLY by the role profile (jobTitle / responsibilities /
+    // typicalWeek) plus optional retrieval exemplars — the participant's
+    // interview-mentioned activities no longer feed the generator. The
+    // participant's only role downstream is to VALIDATE the generated list.
 
     // MECE areas-as-tasks: each task is a broad responsibility area, written as a
     // verb-led activity. The set is mutually exclusive and collectively exhaustive
@@ -395,20 +374,15 @@ app.post('/api/generate-tasks', async (req, res) => {
         },
         {
           role: 'user',
-          content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${aiUsage ? `\nAI usage: ${aiUsage}` : ''}${exemplarBlock}${groundingBlock}${priorBlock}\nGenerate the upper-level tasks.`,
+          content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${aiUsage ? `\nAI usage: ${aiUsage}` : ''}${exemplarBlock}${priorBlock}\nGenerate the upper-level tasks.`,
         },
       ],
     });
     const parsed = JSON.parse(response.choices[0].message.content);
     const generated = parsed.tasks ?? [];
-    // Log the generator's inputs and outputs together so we can audit grounding
-    // failures end-to-end (e.g. "did the generator repeat something that was in
-    // interviewTasks?") without having to crack open the saved session JSON.
-    console.log(`[generate-tasks] role=${jobTitle} interviewTasks=${interviewTasks.length} generated=${generated.length} retrieval=${exemplarCount > 0 ? `${matchedOccupations.join('|')} (${exemplarCount})` : 'off/empty'}`);
-    if (interviewTasks.length > 0) {
-      console.log('  interviewTasks (grounding — should NOT be repeated):');
-      for (const t of interviewTasks) console.log(`    ◦ ${t}`);
-    }
+    // Log the generator's inputs and outputs together so we can audit retrieval
+    // grounding without having to crack open the saved session JSON.
+    console.log(`[generate-tasks] role=${jobTitle} generated=${generated.length} retrieval=${exemplarCount > 0 ? `${matchedOccupations.join('|')} (${exemplarCount})` : 'off/empty'}`);
     console.log('  generated:');
     for (const t of generated) console.log(`    ◦ ${typeof t === 'string' ? t : t?.name ?? '(unknown shape)'}`);
     res.json({ tasks: generated });
@@ -429,7 +403,7 @@ app.post('/api/generate-tasks', async (req, res) => {
 // parsed object. The shared UPPER_LEVEL_TASKS_SYSTEM_PROMPT still applies —
 // only the OUTPUT FORMAT instruction is overridden.
 app.post('/api/generate-tasks-stream', async (req, res) => {
-  const { jobTitle, typicalWeek, aiUsage, responsibilities, priorTasks = [], interviewTasks = [] } = req.body;
+  const { jobTitle, typicalWeek, aiUsage, responsibilities, priorTasks = [] } = req.body;
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -446,24 +420,10 @@ app.post('/api/generate-tasks-stream', async (req, res) => {
       ? `\nAlready shown (do NOT repeat or paraphrase):\n${priorTasks.map(t => `- ${t}`).join('\n')}\n`
       : '';
 
-    const groundingBlock = interviewTasks.length > 0
-      ? `\nACTIVITIES THE PARTICIPANT ALREADY MENTIONED in the open interview:\n${interviewTasks.map(t => `- ${t}`).join('\n')}\n\n` +
-        `REDEFINED MECE TARGET FOR THIS RUN: Treat the mentioned activities above as ALREADY-PRESENT upper-level tasks. Your output PLUS the mentioned activities together must be MECE over the role. Your output's role is to fill the GAPS — categories of work clearly implied by the participant's responsibilities and typical week that they did NOT explicitly mention.\n\n` +
-        `SEMANTIC OVERLAP — READ CAREFULLY (most common failure mode):\n` +
-        `  When you check "is my proposed task the same as one they mentioned?", compare MEANING, not wording. Two tasks are the SAME ACTIVITY when a participant would describe the same minute of their day with either label. Surface differences do not make them different activities.\n\n` +
-        `  Examples of MENTIONED ↔ DO-NOT-OUTPUT pairs:\n` +
-        `    Mentioned "do code reviews"                 → DO NOT output "Review pull requests" / "Review code".\n` +
-        `    Mentioned "answer Slack messages"           → DO NOT output "Respond to team chat" / "Reply to teammates".\n` +
-        `    Mentioned "go to standup"                   → DO NOT output "Attend daily standups" / "Join team standup".\n` +
-        `    Mentioned "implement tickets"               → DO NOT output "Build features" / "Write code for tickets" / "Develop assigned work".\n` +
-        `  TEST: for each task you draft, scan every mentioned activity and ask "could a participant honestly say this is the same thing I described?" If yes for any, drop yours.\n\n` +
-        `Concretely:\n` +
-        `  1. DO NOT output an upper-level task that semantically overlaps with one of the mentioned activities, even if the wording, verb, or framing differs.\n` +
-        `  2. DO output upper-level tasks for any role-relevant category the mentioned set does NOT touch.\n` +
-        `  3. STAY IN THEIR WORLD. Your gap-fill tasks must be clearly implied by their responsibilities or typical week.\n` +
-        `  4. If the mentioned set already exhausts the role's major categories, emit fewer items.\n` +
-        `  5. COUNT: aim for total (mentioned + your output) ≈ 25–30. If mentioned has 5, output 20–25. If mentioned has 15, output 10–15.\n`
-      : '';
+    // simple-LLM baseline: interview-task grounding is intentionally removed.
+    // Generation is steered ONLY by the role profile (jobTitle / responsibilities /
+    // typicalWeek) plus optional retrieval exemplars — the participant's
+    // interview-mentioned activities no longer feed the generator.
 
     // OVERRIDE the system prompt's final "Return JSON" instruction with a JSONL
     // directive. Streaming partial JSON is fragile; JSONL splits cleanly on \n.
@@ -485,7 +445,7 @@ Emit ONE JSON object per line. Each line: {"name":"<task name>"}. Separate with 
         { role: 'system', content: streamingSystem },
         {
           role: 'user',
-          content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${aiUsage ? `\nAI usage: ${aiUsage}` : ''}${exemplarBlock}${groundingBlock}${priorBlock}\nGenerate the upper-level tasks.`,
+          content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${aiUsage ? `\nAI usage: ${aiUsage}` : ''}${exemplarBlock}${priorBlock}\nGenerate the upper-level tasks.`,
         },
       ],
     });
@@ -520,7 +480,7 @@ Emit ONE JSON object per line. Each line: {"name":"<task name>"}. Separate with 
     }
     if (buffer.trim()) emitLine(buffer);
 
-    console.log(`[generate-tasks-stream] role=${jobTitle} interviewTasks=${interviewTasks.length} emitted=${emitted} retrieval=${exemplarCount > 0 ? `${matchedOccupations.join('|')} (${exemplarCount})` : 'off/empty'}`);
+    console.log(`[generate-tasks-stream] role=${jobTitle} emitted=${emitted} retrieval=${exemplarCount > 0 ? `${matchedOccupations.join('|')} (${exemplarCount})` : 'off/empty'}`);
     sendEvent('done', { total: emitted });
     res.end();
   } catch (err) {

@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   generateTasksForCategoryStream,
-  extractInterviewTasks,
   recordScreenOut,
   transcribeAudio,
 } from "../lib/api";
@@ -93,12 +92,10 @@ function formatUsd(n: number) {
 export function TaskSelection() {
   const {
     userProfile,
-    backgroundTranscript,
     interviewExtractedTasks,
     setSelectedTasks,
     setTaskItems,
     setBonusSnapshot,
-    setInterviewExtractedTasks,
     setPhase,
     prolific,
     setProlific,
@@ -106,12 +103,10 @@ export function TaskSelection() {
   } = useWorkflowStore(
     useShallow((s) => ({
       userProfile: s.userProfile,
-      backgroundTranscript: s.backgroundTranscript,
       interviewExtractedTasks: s.interviewExtractedTasks,
       setSelectedTasks: s.setSelectedTasks,
       setTaskItems: s.setTaskItems,
       setBonusSnapshot: s.setBonusSnapshot,
-      setInterviewExtractedTasks: s.setInterviewExtractedTasks,
       setPhase: s.setPhase,
       prolific: s.prolific,
       setProlific: s.setProlific,
@@ -232,22 +227,12 @@ export function TaskSelection() {
     if (devSkipToReview || devSkipToCard) return; // dev shortcut: tasks are already seeded
     async function load() {
       try {
-        // First pass: pull the activities the participant explicitly mentioned
-        // in the background interview. These get persisted (audit trail) and
-        // passed to the generator as grounding context so the generator fills
-        // gaps instead of echoing what the participant already said.
-        // Failure is non-fatal: if extraction returns nothing / errors, the
-        // generator just runs without grounding (its old behavior).
-        let interviewTasks: string[] = [];
-        try {
-          interviewTasks = await extractInterviewTasks(backgroundTranscript, {
-            jobTitle: userProfile.jobTitle,
-            responsibilities: userProfile.responsibilities,
-          });
-          setInterviewExtractedTasks(interviewTasks);
-        } catch (e) {
-          console.warn("[task-selection] extract failed, generating without grounding:", e);
-        }
+        // simple-LLM baseline: the participant's interview-mentioned activities
+        // do NOT steer generation. We deliberately do not extract or pass
+        // interview tasks; the generator is grounded only by the role profile
+        // (and optional retrieval exemplars). The participant's only role is to
+        // VALIDATE the generated list in the picker below.
+        const interviewTasks: string[] = [];
 
         // Stream tasks into the picker as they arrive — the participant can
         // start rating the first task in ~1-2s instead of waiting ~7s for the
