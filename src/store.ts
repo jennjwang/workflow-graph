@@ -188,6 +188,12 @@ interface WorkflowStore {
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
   getExportData: () => object;
+  // Restore persistent state from a previously-saved snapshot (returned by
+  // GET /api/session). Restores phase + all non-canvas state. The in-progress
+  // workflow canvas (nodes/edges/messages) is intentionally skipped because
+  // node positions aren't saved; if the snapshot's phase was 'workflow', it's
+  // downgraded to 'workflow-kickoff' so the current task re-kicks off.
+  hydrateFromSnapshot: (data: Record<string, unknown>) => void;
 }
 
 const urlParams = new URLSearchParams(window.location.search);
@@ -928,6 +934,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
       sessionId,
       externalId,
       condition,
+      phase: get().phase,
       completed,
       completedAt,
       prolific,
@@ -976,4 +983,73 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
       transcript: messages.map(m => ({ role: m.role, content: m.content })),
     };
   },
+
+  hydrateFromSnapshot: (data) => set(state => {
+    const d = data as Record<string, unknown>;
+    const next: Partial<WorkflowStore> = {};
+
+    if (d.condition === 'short' || d.condition === 'full') next.condition = d.condition;
+    if (typeof d.externalId === 'string' && state.externalId === null) {
+      next.externalId = d.externalId;
+    }
+    if (d.userProfile && typeof d.userProfile === 'object') {
+      next.userProfile = { ...state.userProfile, ...(d.userProfile as Partial<UserProfile>) };
+    }
+    if (Array.isArray(d.backgroundTranscript)) next.backgroundTranscript = d.backgroundTranscript as BackgroundTurn[];
+    if (Array.isArray(d.taskCategories)) next.taskCategories = d.taskCategories as TaskCategory[];
+    if (Array.isArray(d.selectedTasks)) next.selectedTasks = d.selectedTasks as string[];
+    if (Array.isArray(d.taskItems)) next.taskItems = d.taskItems as TaskItem[];
+    if (Array.isArray(d.interviewExtractedTasks)) next.interviewExtractedTasks = d.interviewExtractedTasks as string[];
+    if (typeof d.coreTask === 'string') next.coreTask = d.coreTask;
+    if (typeof d.currentTaskIdx === 'number') next.currentTaskIdx = d.currentTaskIdx;
+    if (Array.isArray(d.typicalWorkflow)) next.typicalWorkflow = d.typicalWorkflow as string[];
+    if (Array.isArray(d.taskWorkflows)) {
+      next.taskWorkflows = d.taskWorkflows as WorkflowStore['taskWorkflows'];
+    }
+    if (typeof d.mappingEditChars === 'number') next.mappingEditChars = d.mappingEditChars;
+    if (typeof d.mappingAddedNodes === 'number') next.mappingAddedNodes = d.mappingAddedNodes;
+    if (d.bonusSnapshot && typeof d.bonusSnapshot === 'object') {
+      next.bonusSnapshot = d.bonusSnapshot as BonusSnapshot;
+    }
+    if (typeof d.experienceRating === 'number') next.experienceRating = d.experienceRating;
+    if (typeof d.feedback === 'string') next.feedback = d.feedback;
+    if (d.phaseEnteredAt && typeof d.phaseEnteredAt === 'object') {
+      next.phaseEnteredAt = d.phaseEnteredAt as WorkflowStore['phaseEnteredAt'];
+    }
+    if (d.prolific && typeof d.prolific === 'object') {
+      const savedProlific = d.prolific as Partial<ProlificContext>;
+      // Keep URL-derived PID/STUDY_ID/SESSION_ID when present; otherwise fall
+      // back to saved values. completionCode/screenOutCode/attnCheckMaxFails
+      // come back from /api/config, so saved values are fine as a stopgap
+      // until that fetch resolves.
+      next.prolific = {
+        ...state.prolific,
+        ...savedProlific,
+        pid: state.prolific.pid ?? savedProlific.pid ?? null,
+        studyId: state.prolific.studyId ?? savedProlific.studyId ?? null,
+        sessionId: state.prolific.sessionId ?? savedProlific.sessionId ?? null,
+      };
+    }
+
+    // Determine the phase to restore. Prefer the explicit `phase` field;
+    // fall back to deriving from phaseEnteredAt (latest by timestamp) for
+    // snapshots saved before `phase` was added to the export.
+    let savedPhase: Phase | null = null;
+    if (typeof d.phase === 'string') {
+      savedPhase = d.phase as Phase;
+    } else if (next.phaseEnteredAt) {
+      const entries = Object.entries(next.phaseEnteredAt);
+      if (entries.length > 0) {
+        entries.sort(([, a], [, b]) => (b as number) - (a as number));
+        savedPhase = entries[0][0] as Phase;
+      }
+    }
+    // The in-progress canvas isn't restored (positions aren't saved), so a
+    // participant who reloaded mid-mapping is sent back to re-kick off the
+    // current task. Already-completed tasks live in taskWorkflows.
+    if (savedPhase === 'workflow') savedPhase = 'workflow-kickoff';
+    if (savedPhase) next.phase = savedPhase;
+
+    return next;
+  }),
 }));

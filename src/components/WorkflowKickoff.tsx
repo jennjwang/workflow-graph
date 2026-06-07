@@ -3,6 +3,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useWorkflowStore } from "../store";
 import { transcribeAudio, fetchKickoffQuestion } from "../lib/api";
 import {
+  BONUS_ENABLED,
   MAPPING_EDIT_BONUS_PER_CHAR_USD,
   MAPPING_EDIT_BONUS_MAX_USD,
   MAPPING_ADD_NODE_BONUS_USD,
@@ -271,32 +272,34 @@ export function WorkflowKickoff() {
             you confirm, rename, discard, or add until the map matches how you
             really work.
           </p>
-          <div className="mt-10 space-y-4">
-            <div
-              className="px-5 py-4 rounded-xl border border-amber-200 bg-amber-50 animate-fadeSlideUp"
-              style={{ animationDelay: "240ms" }}
-            >
-              <div className="text-sm leading-[1.6]">
-                <p className="font-semibold text-amber-700 mb-1.5">Bonus</p>
-                <p className="text-slate-700">
-                  Edit an AI-suggested task, or add your own subtasks. We'll
-                  give you a bonus for each edit you make and for every subtask
-                  you add.
-                </p>
-                <p className="mt-2.5 text-amber-800">
-                  <span className="font-semibold">
-                    {formatUsd(MAPPING_EDIT_BONUS_PER_CHAR_USD * 1000)} per
-                    1,000 characters
-                  </span>{" "}
-                  edited (up to {formatUsd(MAPPING_EDIT_BONUS_MAX_USD)}), plus{" "}
-                  <span className="font-semibold">
-                    {formatUsd(MAPPING_ADD_NODE_BONUS_USD)} per subtask added
-                  </span>{" "}
-                  (up to {formatUsd(MAPPING_ADD_NODE_BONUS_MAX_USD)}).
-                </p>
+          {BONUS_ENABLED && (
+            <div className="mt-10 space-y-4">
+              <div
+                className="px-5 py-4 rounded-xl border border-amber-200 bg-amber-50 animate-fadeSlideUp"
+                style={{ animationDelay: "240ms" }}
+              >
+                <div className="text-sm leading-[1.6]">
+                  <p className="font-semibold text-amber-700 mb-1.5">Bonus</p>
+                  <p className="text-slate-700">
+                    Edit an AI-suggested task, or add your own subtasks. We'll
+                    give you a bonus for each edit you make and for every subtask
+                    you add.
+                  </p>
+                  <p className="mt-2.5 text-amber-800">
+                    <span className="font-semibold">
+                      {formatUsd(MAPPING_EDIT_BONUS_PER_CHAR_USD * 1000)} per
+                      1,000 characters
+                    </span>{" "}
+                    edited (up to {formatUsd(MAPPING_EDIT_BONUS_MAX_USD)}), plus{" "}
+                    <span className="font-semibold">
+                      {formatUsd(MAPPING_ADD_NODE_BONUS_USD)} per subtask added
+                    </span>{" "}
+                    (up to {formatUsd(MAPPING_ADD_NODE_BONUS_MAX_USD)}).
+                  </p>
+                </div>
               </div>
             </div>
-          </div>
+          )}
           <button
             onClick={() => setShowIntro(false)}
             className="mt-14 inline-flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-full transition-all active:scale-[0.98] shadow-sm shadow-indigo-200 animate-fadeSlideUp"

@@ -3,6 +3,7 @@ import { useReactFlow, useViewport, Node } from '@xyflow/react';
 import { useShallow } from 'zustand/react/shallow';
 import { useWorkflowStore } from '../store';
 import { WorkflowNodeData } from '../types';
+import { BONUS_ENABLED } from '../lib/bonus';
 
 type WFNode = Node<WorkflowNodeData>;
 
@@ -44,16 +45,18 @@ const STEPS: Step[] = [
     ),
   },
   {
-    title: 'Rename for a bonus',
+    title: BONUS_ENABLED ? 'Rename for a bonus' : 'Rename to match your work',
     pickTargetId: nodes => nodes.find(n => n.data.parentId)?.id ?? null,
     body: (
       <>
         <p>
           <span className="font-medium text-slate-800">Double-click</span> a task to rename it and make it match how you actually work.
         </p>
-        <p className="mt-2 text-amber-700">
-          Each character you change earns the <span className="font-semibold">bonus</span> shown in the top bar.
-        </p>
+        {BONUS_ENABLED && (
+          <p className="mt-2 text-amber-700">
+            Each character you change earns the <span className="font-semibold">bonus</span> shown in the top bar.
+          </p>
+        )}
       </>
     ),
   },

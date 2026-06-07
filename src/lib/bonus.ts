@@ -1,3 +1,8 @@
+// Master switch for the participant bonus feature. When false, all bonus UI is
+// hidden and every earned amount is forced to $0 (nothing is earned or
+// recorded). Flip to true to restore the incentive across both phases.
+export const BONUS_ENABLED = false;
+
 // Edit-bonus pool for the workflow-mapping phase. Same per-character rate as
 // the task-selection edit bonus, but a separate cap so the two pools can be
 // tuned independently.
@@ -46,6 +51,9 @@ export function mappingEditBonusUsd(
   addUsd: number;
   maxUsd: number;
 } {
+  if (!BONUS_ENABLED) {
+    return { usd: 0, capped: false, editUsd: 0, addUsd: 0, maxUsd: 0 };
+  }
   const editRaw = editChars * MAPPING_EDIT_BONUS_PER_CHAR_USD;
   const editUsd = Math.min(editRaw, MAPPING_EDIT_BONUS_MAX_USD);
   const editCapped = editRaw >= MAPPING_EDIT_BONUS_MAX_USD;

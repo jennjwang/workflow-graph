@@ -484,6 +484,22 @@ export async function fetchAppConfig(): Promise<AppConfig> {
   }
 }
 
+export async function fetchSession(
+  sessionId: string,
+  externalId?: string | null,
+): Promise<{ found: boolean; data?: Record<string, unknown> }> {
+  try {
+    const params = new URLSearchParams({ sessionId });
+    if (externalId) params.set('externalId', externalId);
+    const res = await fetch(`/api/session?${params.toString()}`);
+    if (!res.ok) return { found: false };
+    const json = await res.json();
+    return json as { found: boolean; data?: Record<string, unknown> };
+  } catch {
+    return { found: false };
+  }
+}
+
 export async function saveSession(
   sessionId: string,
   coreTask?: string,

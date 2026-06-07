@@ -4,6 +4,18 @@ import { useWorkflowStore } from "../store";
 
 const MIN_PICKS = 1;
 
+// Dev shortcut: ?dev=task-priority&review=1 seeds a few tasks so the page
+// renders with content when there's no real session behind it.
+const DEV_SEED_TASKS = [
+  "Read recent conference papers",
+  "Debug research code",
+  "Meet with my advisor",
+  "Draft a paper section",
+  "Present updates at lab meeting",
+  "Mentor undergraduate researchers",
+  "Prepare figures for a manuscript",
+];
+
 // Fisher-Yates shuffle; keeps the source array intact.
 function shuffled<T>(arr: T[]): T[] {
   const out = [...arr];
@@ -48,10 +60,18 @@ export function TaskPriority() {
     return out;
   }, [selectedTasks, interviewExtractedTasks]);
 
+  // In review mode with no real tasks, fall back to a seed so the page is
+  // viewable. Memoized so the shuffle below stays stable across renders.
+  const effectiveTasks = useMemo(() => {
+    const reviewMode =
+      new URLSearchParams(window.location.search).get("review") === "1";
+    return reviewMode && mergedTasks.length === 0 ? DEV_SEED_TASKS : mergedTasks;
+  }, [mergedTasks]);
+
   // Shuffle once per mount so participants don't anchor on the first task in
   // the original (TaskSelection) ordering. The canonical store order is left
   // intact so submit can preserve it for the picked subset.
-  const displayTasks = useMemo(() => shuffled(mergedTasks), [mergedTasks]);
+  const displayTasks = useMemo(() => shuffled(effectiveTasks), [effectiveTasks]);
 
   const [picked, setPicked] = useState<Set<string>>(new Set());
 
@@ -70,7 +90,7 @@ export function TaskPriority() {
     if (!canContinue) return;
     // Preserve the merged-pool order (selectedTasks first, then interview-only
     // extras) so the mapping loop visits picks in the same order shown here.
-    const ordered = mergedTasks.filter((t) => picked.has(t));
+    const ordered = effectiveTasks.filter((t) => picked.has(t));
     setSelectedTasks(ordered);
     setCoreTask(ordered[0]);
     setPhase("workflow-kickoff");

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useWorkflowStore, MAP_LIMIT } from "../store";
 import { proposeSubtasks } from "../lib/api";
-import { formatUsd, mappingEditBonusUsd } from "../lib/bonus";
+import { BONUS_ENABLED, formatUsd, mappingEditBonusUsd } from "../lib/bonus";
 
 export function WorkflowMapper() {
   const {
@@ -262,19 +262,21 @@ export function WorkflowMapper() {
           {/* Live bonus counter — per-character Levenshtein edits against
               AI-suggested originals, plus a flat per-node bonus for manually
               added subtasks. Accumulates across all mapping tasks. */}
-          <div
-            title={`${formatUsd(bonus.editUsd)} from renaming + ${formatUsd(bonus.addUsd)} from adding subtasks. Cap: ${formatUsd(bonus.maxUsd)}.`}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-medium transition-colors ${
-              bonus.capped
-                ? "border-amber-300 bg-amber-100 text-amber-800"
-                : "border-amber-200 bg-amber-50 text-amber-700"
-            }`}
-          >
-            <span className="text-[9px] uppercase tracking-[0.14em] font-semibold opacity-70">
-              Bonus
-            </span>
-            <span className="tabular-nums">{formatUsd(bonus.usd)}</span>
-          </div>
+          {BONUS_ENABLED && (
+            <div
+              title={`${formatUsd(bonus.editUsd)} from renaming + ${formatUsd(bonus.addUsd)} from adding subtasks. Cap: ${formatUsd(bonus.maxUsd)}.`}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-medium transition-colors ${
+                bonus.capped
+                  ? "border-amber-300 bg-amber-100 text-amber-800"
+                  : "border-amber-200 bg-amber-50 text-amber-700"
+              }`}
+            >
+              <span className="text-[9px] uppercase tracking-[0.14em] font-semibold opacity-70">
+                Bonus
+              </span>
+              <span className="tabular-nums">{formatUsd(bonus.usd)}</span>
+            </div>
+          )}
           {!extracting && nodes.length > 0 && (
             <button
               onClick={advanceToNextTask}

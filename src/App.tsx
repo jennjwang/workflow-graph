@@ -12,17 +12,68 @@ import { MappingTour } from './components/MappingTour';
 import { FinalQuestions } from './components/FinalQuestions';
 import { StudyComplete } from './components/StudyComplete';
 import { ScreenOut } from './components/ScreenOut';
-import { fetchAppConfig, checkScreenStatus, saveSession, saveSessionBeacon } from './lib/api';
+import { DevNav } from './components/DevNav';
+import { fetchAppConfig, checkScreenStatus, fetchSession, saveSession, saveSessionBeacon } from './lib/api';
+
+// When the URL carries `review=1` we're in the dev page-review mode: skip
+// session hydration so the `?dev=<phase>` choice from the DevNav picker sticks
+// instead of being overwritten by a saved snapshot's phase.
+const REVIEW_MODE = new URLSearchParams(window.location.search).get('review') === '1';
 
 export default function App() {
   const phase = useWorkflowStore(s => s.phase);
   const setProlific = useWorkflowStore(s => s.setProlific);
   const setPhase = useWorkflowStore(s => s.setPhase);
   const prolificPid = useWorkflowStore(s => s.prolific.pid);
+  const externalId = useWorkflowStore(s => s.externalId);
+  const hydrateFromSnapshot = useWorkflowStore(s => s.hydrateFromSnapshot);
 
   // Brief loading window while we check whether this PID has been screened out
   // before. Prevents a flash of the welcome screen for a refresh-after-fail.
   const [bootstrapping, setBootstrapping] = useState<boolean>(!!prolificPid);
+  // Fetching the saved session snapshot to rehydrate the store. True until the
+  // GET /api/session call resolves, regardless of whether a snapshot was found.
+  const [hydrating, setHydrating] = useState<boolean>(true);
+
+  // Rehydrate from a previously-saved session snapshot. Runs once on mount,
+  // before any participant interaction. If the localStorage-pinned sessionId
+  // matches an existing snapshot on the server, restore phase + non-canvas
+  // state so the participant lands where they left off after a reload. The
+  // matching POST autosave path is debounced and the server has a guard that
+  // refuses to overwrite a real snapshot with empty state, so a fast-closing
+  // tab during this fetch can't clobber the file.
+  useEffect(() => {
+    if (REVIEW_MODE) { setHydrating(false); return; }
+    let cancelled = false;
+    fetchSession(sessionId, externalId)
+      .then(snap => {
+        if (cancelled) return;
+        if (snap.found && snap.data) {
+          hydrateFromSnapshot(snap.data);
+        }
+      })
+      .finally(() => { if (!cancelled) setHydrating(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Block pasting into any text field so participants must type their own
+  // answers rather than dropping in pre-written or AI-generated text. A single
+  // capture-phase listener covers every <input>, <textarea>, and
+  // contentEditable element across the app without touching each component.
+  useEffect(() => {
+    const blockPaste = (e: ClipboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (!t) return;
+      const tag = t.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || t.isContentEditable) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+    document.addEventListener('paste', blockPaste, true);
+    return () => document.removeEventListener('paste', blockPaste, true);
+  }, []);
 
   // Fetch the runtime app config (Prolific codes + attention-check threshold) once on mount.
   useEffect(() => {
@@ -56,15 +107,21 @@ export default function App() {
   const edges = useWorkflowStore(s => s.edges);
   const messages = useWorkflowStore(s => s.messages);
   useEffect(() => {
+    // In review mode the store is full of seeded dev data — never persist it.
+    if (REVIEW_MODE) return;
     // Skip phases where a dedicated save runs (FinalQuestions/StudyComplete/
     // ScreenOut each fire their own save on mount or submit).
     if (phase === 'setup' || phase === 'screen-out' || phase === 'final-questions' || phase === 'study-complete') return;
+    // Don't autosave until hydration has settled — otherwise a fresh-store
+    // POST can race the hydrate fetch. (The server also guards empty-payload
+    // overwrites, so this is defense-in-depth.)
+    if (hydrating) return;
     const handle = setTimeout(() => {
       const data = getExportData() as Record<string, unknown>;
       saveSession(sessionId, undefined, undefined, undefined, data).catch(() => {});
     }, 800);
     return () => clearTimeout(handle);
-  }, [phase, sessionId, getExportData, userProfile, backgroundTranscript, taskCategories, taskItems, selectedTasks, coreTask, currentTaskIdx, typicalWorkflow, taskWorkflows, nodes, edges, messages]);
+  }, [phase, sessionId, hydrating, getExportData, userProfile, backgroundTranscript, taskCategories, taskItems, selectedTasks, coreTask, currentTaskIdx, typicalWorkflow, taskWorkflows, nodes, edges, messages]);
 
   // Flush the latest state on page unload via sendBeacon so participants who
   // close the tab inside the 800ms debounce window still get their last action
@@ -76,6 +133,9 @@ export default function App() {
   // `study-complete`) — guards against accidental Back/Cmd-W blowing away
   // their in-progress responses.
   useEffect(() => {
+    // Review mode: don't persist seeded data or block navigation, so the DevNav
+    // page links reload freely without a "Leave site?" prompt.
+    if (REVIEW_MODE) return;
     const PROTECTED_PHASES = new Set([
       'background', 'graph-discovery', 'task-selection', 'task-priority',
       'workflow-kickoff', 'workflow', 'actor-assignment', 'handoff-interview',
@@ -120,7 +180,7 @@ export default function App() {
     return () => { cancelled = true; };
   }, [prolificPid, setProlific, setPhase]);
 
-  if (bootstrapping) {
+  if (bootstrapping || hydrating) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white">
         <div className="flex gap-2">
@@ -132,63 +192,72 @@ export default function App() {
     );
   }
 
-  if (phase === 'setup') {
-    return <Welcome />;
-  }
+  const renderPhase = () => {
+    if (phase === 'setup') {
+      return <Welcome />;
+    }
 
-  if (phase === 'background') {
-    return (
-      <div className="flex h-screen w-screen overflow-hidden">
-        <div className="flex-1">
-          <BackgroundInterview />
+    if (phase === 'background') {
+      return (
+        <div className="flex h-screen w-screen overflow-hidden">
+          <div className="flex-1">
+            <BackgroundInterview />
+          </div>
         </div>
-      </div>
-    );
-  }
+      );
+    }
 
-  if (phase === 'task-selection') {
-    return (
-      <div className="relative flex h-screen w-screen overflow-hidden bg-white">
-        {/* Gradient spans the full viewport so it doesn't get clipped to the centered column. */}
-        <div className="absolute top-0 left-0 right-0 h-48 bg-gradient-to-b from-indigo-50/40 to-transparent pointer-events-none" />
-        <div className="relative w-[600px] mx-auto h-full">
-          <TaskSelection />
+    if (phase === 'task-selection') {
+      return (
+        <div className="relative flex h-screen w-screen overflow-hidden bg-white">
+          {/* Gradient spans the full viewport so it doesn't get clipped to the centered column. */}
+          <div className="absolute top-0 left-0 right-0 h-48 bg-gradient-to-b from-indigo-50/40 to-transparent pointer-events-none" />
+          <div className="relative w-[600px] mx-auto h-full">
+            <TaskSelection />
+          </div>
         </div>
-      </div>
-    );
-  }
+      );
+    }
 
-  if (phase === 'task-priority') {
-    return <TaskPriority />;
-  }
+    if (phase === 'task-priority') {
+      return <TaskPriority />;
+    }
 
-  if (phase === 'workflow-kickoff') {
-    return <WorkflowKickoff />;
-  }
+    if (phase === 'workflow-kickoff') {
+      return <WorkflowKickoff />;
+    }
 
-  if (phase === 'workflow') {
-    return (
-      <ReactFlowProvider>
-        <div className="relative h-screen w-screen overflow-hidden flex">
-          <WorkflowCanvas />
-          <WorkflowMapper />
-          <MappingTour />
-        </div>
-      </ReactFlowProvider>
-    );
-  }
+    if (phase === 'workflow') {
+      return (
+        <ReactFlowProvider>
+          <div className="relative h-screen w-screen overflow-hidden flex">
+            <WorkflowCanvas />
+            <WorkflowMapper />
+            <MappingTour />
+          </div>
+        </ReactFlowProvider>
+      );
+    }
 
-  if (phase === 'final-questions') {
-    return <FinalQuestions />;
-  }
+    if (phase === 'final-questions') {
+      return <FinalQuestions />;
+    }
 
-  if (phase === 'study-complete') {
+    if (phase === 'study-complete') {
+      return <StudyComplete />;
+    }
+
+    if (phase === 'screen-out') {
+      return <ScreenOut />;
+    }
+
     return <StudyComplete />;
-  }
+  };
 
-  if (phase === 'screen-out') {
-    return <ScreenOut />;
-  }
-
-  return <StudyComplete />;
+  return (
+    <>
+      {renderPhase()}
+      <DevNav />
+    </>
+  );
 }

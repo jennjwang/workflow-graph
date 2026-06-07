@@ -270,25 +270,28 @@ Return JSON: {"categories": [{"name": "...", "description": "..."}]}`,
 // final task list reflects what they actually said rather than what's typical
 // for the role. Output is plain task names; the generator turns them into
 // MECE upper-level buckets in the next step.
-const INTERVIEW_TASK_EXTRACTOR_PROMPT = `You read a short background interview between a researcher and a participant about their job, and extract the WORK ACTIVITIES the participant EXPLICITLY mentioned.
+const INTERVIEW_TASK_EXTRACTOR_PROMPT = `Extract the distinct recurring work tasks this person performs in their paid job.
 
-GROUND TRUTH ONLY. Only include activities the participant actually named — do not infer, do not extrapolate from job title, do not pad with role-typical activities they didn't mention. If they said "I sometimes review PRs", include it. If they said "I work in product" but never named what they do, do not invent "review PRs" for them.
+Rules:
+- Paid work only: skip anything the background explicitly labels as personal, hobby, or side project.
+- Faithful to the text: extract tasks at the granularity they appear. Don't collapse or invent
+  hierarchy — if the background lists sub-items under an activity, emit them as separate tasks
+  rather than rolling them up into one broad parent.
+- Real task: each must describe a concrete activity — not a goal or outcome ("reduce coding time",
+  "be more productive"), a role/headcount description ("lead a team of 8"), or a schedule/time item
+  ("work from home", "start at 9 AM", "finish by 7 PM").
+- For AI usage: extract the specific named activity, not the AI scaffolding, and mark it by
+  appending " using AI" so downstream can tell AI-performed tasks apart.
+  "use AI to write proposals" → "Write job proposals using AI"
+  "use AI to debug failing tests" → "Debug failing tests using AI"
+  If the activity already names AI as part of the object, leave it and don't double-mark:
+  "reviewing AI-generated code" → "Review AI-generated code"
+  Only include if it's a distinct bounded activity mentioned in the text; skip generic
+  statements like "use AI to work faster" or "automate tasks with AI".
+- Form: Action → Object → to <Purpose/Result>. Present-plural verb, no first person, no invented
+  detail; add the purpose/result clause only when it distinguishes the task.
 
-ONE ACTIVITY PER ITEM. Split compound phrases — "Check emails and answer them" becomes two items: "Check emails" and "Answer emails". Compound items are not allowed.
-
-KEEP THE PARTICIPANT'S WORDING. Use their verbs and nouns. If they say "wiring tickets", don't translate to "Closing JIRA tickets". Trim filler ("I usually try to", "kind of", "you know") but preserve their substantive terminology.
-
-VERB-LED, 2–8 WORDS. Each item starts with a verb and reads as an action. Title-case-ish is fine; no trailing period.
-
-NO META, NO ROLES, NO FEELINGS. Skip:
-  - Self-descriptors ("I am a software developer", "I work at a startup").
-  - Tenure ("for 5 years", "since 2022").
-  - Emotional/attitudinal statements ("I love my job", "I find debugging hard").
-  - Tool affordances on their own ("I use Slack", "I have an IDE") — only include them if paired with a clear activity ("Coordinate over Slack" yes, "I use Slack" no).
-
-NO DEDUPLICATION ACROSS PARAPHRASES YOU'RE UNSURE ABOUT. If the participant said "review code" once and "do code reviews" once, treat them as the same — keep only one. But if they distinguish two activities ("review PRs" vs. "review design docs"), keep both.
-
-Return ONLY valid JSON: {"tasks": ["..."]}.`;
+Return ONLY a JSON object: {"tasks": ["task 1", "task 2", ...]}.`;
 
 app.post('/api/extract-interview-tasks', async (req, res) => {
   const { backgroundTranscript = [], userProfile } = req.body;
@@ -318,7 +321,7 @@ app.post('/api/extract-interview-tasks', async (req, res) => {
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: INTERVIEW_TASK_EXTRACTOR_PROMPT },
-        { role: 'user', content: `${profileBlock}Interview transcript:\n\n${turns}\n\nExtract the work activities the participant explicitly named.` },
+        { role: 'user', content: `${profileBlock}Background:\n\n${turns}\n\nExtract the distinct recurring paid-work tasks per the rules.` },
       ],
     });
     const parsed = JSON.parse(response.choices[0].message.content);
@@ -1496,6 +1499,29 @@ function isMateriallyEmpty(d) {
   if (d.experienceRating != null) return false;
   return true;
 }
+
+// Read a previously-saved session snapshot so the SPA can rehydrate after a
+// reload. Filename mirrors the POST handler: `${externalId}_${sessionId}.json`
+// when externalId is set, else `${sessionId}.json`.
+app.get('/api/session', async (req, res) => {
+  const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId : '';
+  if (!sessionId || !/^[A-Za-z0-9_-]{1,64}$/.test(sessionId)) {
+    return res.status(400).json({ error: 'invalid sessionId' });
+  }
+  const rawExtId = typeof req.query.externalId === 'string' ? req.query.externalId : '';
+  const safeExtId = rawExtId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+  const baseName = safeExtId ? `${safeExtId}_${sessionId}` : sessionId;
+  const filePath = path.join(SESSIONS_DIR, `${baseName}.json`);
+  try {
+    const raw = await fs.readFile(filePath, 'utf-8');
+    const data = JSON.parse(raw);
+    res.json({ found: true, data });
+  } catch (err) {
+    if (err.code === 'ENOENT') return res.json({ found: false });
+    console.error('[session] read failed:', err);
+    res.status(500).json({ error: 'read failed' });
+  }
+});
 
 app.post('/api/session', async (req, res) => {
   const { sessionId, ...rest } = req.body;

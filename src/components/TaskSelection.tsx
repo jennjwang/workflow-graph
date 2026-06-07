@@ -7,6 +7,7 @@ import {
   transcribeAudio,
 } from "../lib/api";
 import { useWorkflowStore } from "../store";
+import { BONUS_ENABLED } from "../lib/bonus";
 import { TaskAiUse, TaskItem, TaskRecency } from "../types";
 
 // Hard cap on the picker list (real tasks + spliced attention checks). Also
@@ -121,8 +122,12 @@ export function TaskSelection() {
 
   // Dev shortcut: ?dev=task-selection&review=1 jumps straight to the
   // "What else fills your week?" review screen with seeded confirmed tasks.
+  // ?dev=task-selection&card=1 instead lands on the single per-task review card
+  // (the confirm/edit/AI-use step) with seeded unreviewed tasks to click through.
   const devSkipToReview =
     new URLSearchParams(window.location.search).get("review") === "1";
+  const devSkipToCard =
+    new URLSearchParams(window.location.search).get("card") === "1";
 
   const DEV_REVIEW_SEED: TaskItem[] = [
     {
@@ -162,16 +167,22 @@ export function TaskSelection() {
     },
   ];
 
+  // Same tasks, but unreviewed, so the per-task card shows the action buttons.
+  const DEV_CARD_SEED: TaskItem[] = DEV_REVIEW_SEED.map((t) => ({
+    ...t,
+    status: "unreviewed",
+  }));
+
   const [tasks, setTasks] = useState<TaskItem[]>(
-    devSkipToReview ? DEV_REVIEW_SEED : [],
+    devSkipToCard ? DEV_CARD_SEED : devSkipToReview ? DEV_REVIEW_SEED : [],
   );
   const [currentIdx, setCurrentIdx] = useState(
-    devSkipToReview ? DEV_REVIEW_SEED.length : 0,
+    !devSkipToCard && devSkipToReview ? DEV_REVIEW_SEED.length : 0,
   );
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">(
-    devSkipToReview ? "ready" : "loading",
+    devSkipToReview || devSkipToCard ? "ready" : "loading",
   );
-  const [showIntro, setShowIntro] = useState(!devSkipToReview);
+  const [showIntro, setShowIntro] = useState(!devSkipToReview && !devSkipToCard);
   const [showBonusToast, setShowBonusToast] = useState(false);
   const [lastBonusDelta, setLastBonusDelta] = useState(0);
 
@@ -218,7 +229,7 @@ export function TaskSelection() {
   // set of tasks for this role. Faster (one LLM call instead of N+1) and the model handles
   // breadth on its own when told to.
   useEffect(() => {
-    if (devSkipToReview) return; // dev shortcut: tasks are already seeded
+    if (devSkipToReview || devSkipToCard) return; // dev shortcut: tasks are already seeded
     async function load() {
       try {
         // First pass: pull the activities the participant explicitly mentioned
@@ -432,30 +443,35 @@ export function TaskSelection() {
       .filter((t) => t.status === "confirmed" || t.status === "edited")
       .map((t) => t.name);
 
-    // Freeze the bonus the participant earned at submit time.
+    // Freeze the bonus the participant earned at submit time. Char counts are
+    // still recorded as activity metadata, but when the bonus feature is off
+    // every earned amount is forced to $0.
     const finalEditChars = totalEditChars(allTasks);
-    const finalEditEarned = Math.min(
-      finalEditChars * EDIT_BONUS_PER_CHAR_USD,
-      EDIT_BONUS_MAX_USD,
-    );
+    const finalEditEarned = BONUS_ENABLED
+      ? Math.min(finalEditChars * EDIT_BONUS_PER_CHAR_USD, EDIT_BONUS_MAX_USD)
+      : 0;
     const finalEditCapped =
+      BONUS_ENABLED &&
       finalEditChars * EDIT_BONUS_PER_CHAR_USD >= EDIT_BONUS_MAX_USD;
     const finalAddCount = finalExtras.length;
-    const finalAddEarned = Math.min(
-      finalAddCount * ADD_BONUS_PER_TASK_USD,
-      ADD_BONUS_MAX_USD,
-    );
+    const finalAddEarned = BONUS_ENABLED
+      ? Math.min(finalAddCount * ADD_BONUS_PER_TASK_USD, ADD_BONUS_MAX_USD)
+      : 0;
     const finalAddCapped =
+      BONUS_ENABLED &&
       finalAddCount * ADD_BONUS_PER_TASK_USD >= ADD_BONUS_MAX_USD;
     const finalAiHowSoChars = allTasks.reduce((sum, t) => {
       if (t.isAttentionCheck) return sum;
       return sum + (t.aiHowSo?.length ?? 0);
     }, 0);
-    const finalAiHowSoEarned = Math.min(
-      finalAiHowSoChars * AI_HOWSO_BONUS_PER_CHAR_USD,
-      AI_HOWSO_BONUS_MAX_USD,
-    );
+    const finalAiHowSoEarned = BONUS_ENABLED
+      ? Math.min(
+          finalAiHowSoChars * AI_HOWSO_BONUS_PER_CHAR_USD,
+          AI_HOWSO_BONUS_MAX_USD,
+        )
+      : 0;
     const finalAiHowSoCapped =
+      BONUS_ENABLED &&
       finalAiHowSoChars * AI_HOWSO_BONUS_PER_CHAR_USD >= AI_HOWSO_BONUS_MAX_USD;
 
     setSelectedTasks(confirmed);
@@ -503,13 +519,15 @@ export function TaskSelection() {
       {/* Top gradient is rendered by the parent (App.tsx) so it spans the full viewport. */}
 
       {/* Bonus toast — shows the per-edit character delta */}
-      <div
-        className={`absolute top-4 right-4 z-50 transition-all duration-300 ${showBonusToast ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-2 pointer-events-none"}`}
-      >
-        <div className="flex items-center gap-1.5 px-3 py-2 bg-amber-400 text-amber-900 text-xs font-semibold rounded-full shadow-md">
-          ★ +{lastBonusDelta} char{lastBonusDelta !== 1 ? "s" : ""} edited
+      {BONUS_ENABLED && (
+        <div
+          className={`absolute top-4 right-4 z-50 transition-all duration-300 ${showBonusToast ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-2 pointer-events-none"}`}
+        >
+          <div className="flex items-center gap-1.5 px-3 py-2 bg-amber-400 text-amber-900 text-xs font-semibold rounded-full shadow-md">
+            ★ +{lastBonusDelta} char{lastBonusDelta !== 1 ? "s" : ""} edited
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Header */}
       <div className="relative z-10 px-8 pt-8 pb-5 shrink-0">
@@ -517,7 +535,7 @@ export function TaskSelection() {
           <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400">
             Part 2 of {totalParts} — Task Coverage
           </p>
-          {!isExhausted && (editChars > 0 || aiHowSoChars > 0) && (
+          {BONUS_ENABLED && !isExhausted && (editChars > 0 || aiHowSoChars > 0) && (
             <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
               ★ {formatUsd(editEarnedUsd + aiHowSoEarnedUsd)}
               {editCapped && aiHowSoCapped ? " (max)" : ""}
@@ -656,27 +674,29 @@ function IntroScreen({ onStart, totalParts }: { onStart: () => void; totalParts:
                 </p>
               </div>
             </div>
-            <div
-              className="px-5 py-4 rounded-xl border border-amber-200 bg-amber-50 animate-fadeSlideUp"
-              style={{ animationDelay: "320ms" }}
-            >
-              <div className="text-sm leading-[1.6]">
-                <p className="font-semibold text-amber-700 mb-1.5">
-                  Edit bonus
-                </p>
-                <p className="text-slate-700">
-                  Edit any task to make it more personalized to your work. We'll
-                  give you a bonus for each character you change.
-                </p>
-                <p className="mt-2.5 text-amber-800">
-                  <span className="font-semibold">
-                    {formatUsd(EDIT_BONUS_PER_CHAR_USD * 1000)} per 1,000
-                    characters
-                  </span>{" "}
-                  changed, up to {formatUsd(EDIT_BONUS_MAX_USD)}.
-                </p>
+            {BONUS_ENABLED && (
+              <div
+                className="px-5 py-4 rounded-xl border border-amber-200 bg-amber-50 animate-fadeSlideUp"
+                style={{ animationDelay: "320ms" }}
+              >
+                <div className="text-sm leading-[1.6]">
+                  <p className="font-semibold text-amber-700 mb-1.5">
+                    Edit bonus
+                  </p>
+                  <p className="text-slate-700">
+                    Edit any task to make it more personalized to your work.
+                    We'll give you a bonus for each character you change.
+                  </p>
+                  <p className="mt-2.5 text-amber-800">
+                    <span className="font-semibold">
+                      {formatUsd(EDIT_BONUS_PER_CHAR_USD * 1000)} per 1,000
+                      characters
+                    </span>{" "}
+                    changed, up to {formatUsd(EDIT_BONUS_MAX_USD)}.
+                  </p>
+                </div>
               </div>
-            </div>
+            )}
             <div
               className="px-5 py-4 rounded-xl border border-amber-200 bg-amber-50 animate-fadeSlideUp"
               style={{ animationDelay: "370ms" }}
@@ -689,13 +709,15 @@ function IntroScreen({ onStart, totalParts }: { onStart: () => void; totalParts:
                   For tasks where you use AI, tell us how — what you use it for,
                   in what context. The more specific, the better.
                 </p>
-                <p className="mt-2.5 text-amber-800">
-                  <span className="font-semibold">
-                    {formatUsd(AI_HOWSO_BONUS_PER_CHAR_USD * 1000)} per 1,000
-                    characters
-                  </span>{" "}
-                  on AI-use descriptions.
-                </p>
+                {BONUS_ENABLED && (
+                  <p className="mt-2.5 text-amber-800">
+                    <span className="font-semibold">
+                      {formatUsd(AI_HOWSO_BONUS_PER_CHAR_USD * 1000)} per 1,000
+                      characters
+                    </span>{" "}
+                    on AI-use descriptions.
+                  </p>
+                )}
               </div>
             </div>
           </div>
@@ -1369,19 +1391,23 @@ function ReviewAndAddScreen({
           <h3 className="text-[1.35rem] font-light text-slate-800 leading-snug tracking-tight">
             What else fills your week?
           </h3>
-          <span className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-50 border border-amber-200 text-xs font-medium text-amber-700 whitespace-nowrap">
-            {formatUsd(addEarnedUsd)}
-            {addCapped ? " (max)" : ""}
-          </span>
+          {BONUS_ENABLED && (
+            <span className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-50 border border-amber-200 text-xs font-medium text-amber-700 whitespace-nowrap">
+              {formatUsd(addEarnedUsd)}
+              {addCapped ? " (max)" : ""}
+            </span>
+          )}
         </div>
         <p className="text-sm text-slate-500 mt-3 leading-relaxed">
           We almost certainly missed something. Add the tasks that didn't make
           our list.
         </p>
-        <p className="text-xs text-amber-700 mt-3">
-          Earn {formatUsd(ADD_BONUS_PER_TASK_USD)} for each task you add, up to{" "}
-          {formatUsd(ADD_BONUS_MAX_USD)}.
-        </p>
+        {BONUS_ENABLED && (
+          <p className="text-xs text-amber-700 mt-3">
+            Earn {formatUsd(ADD_BONUS_PER_TASK_USD)} for each task you add, up to{" "}
+            {formatUsd(ADD_BONUS_MAX_USD)}.
+          </p>
+        )}
 
         <div className="mt-4 relative">
           <textarea
