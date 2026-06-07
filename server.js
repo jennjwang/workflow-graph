@@ -6,6 +6,7 @@ import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import { UPPER_LEVEL_TASKS_SYSTEM_PROMPT, SUBTASK_WORKER_SYSTEM_PROMPT } from './prompts/task-generator.js';
+import { retrieveExemplarBlock } from './lib/retrieval.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -378,6 +379,11 @@ app.post('/api/generate-tasks', async (req, res) => {
     // verb-led activity. The set is mutually exclusive and collectively exhaustive
     // over the role's typical week. Each task will later be decomposed into 3–5
     // concrete sub-steps, so we deliberately avoid sub-step granularity here.
+    // Optional retrieval grounding: inject real task statements from the best-
+    // matching corpus occupation. Fail-open (empty block) when disabled/unconfigured.
+    const { block: exemplarBlock, occupations: matchedOccupations, count: exemplarCount } =
+      await retrieveExemplarBlock({ jobTitle, responsibilities, typicalWeek });
+
     const response = await client.chat.completions.create({
       model: MODEL,
       temperature: 0.7,
@@ -389,7 +395,7 @@ app.post('/api/generate-tasks', async (req, res) => {
         },
         {
           role: 'user',
-          content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${aiUsage ? `\nAI usage: ${aiUsage}` : ''}${groundingBlock}${priorBlock}\nGenerate the upper-level tasks.`,
+          content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${aiUsage ? `\nAI usage: ${aiUsage}` : ''}${exemplarBlock}${groundingBlock}${priorBlock}\nGenerate the upper-level tasks.`,
         },
       ],
     });
@@ -398,7 +404,7 @@ app.post('/api/generate-tasks', async (req, res) => {
     // Log the generator's inputs and outputs together so we can audit grounding
     // failures end-to-end (e.g. "did the generator repeat something that was in
     // interviewTasks?") without having to crack open the saved session JSON.
-    console.log(`[generate-tasks] role=${jobTitle} interviewTasks=${interviewTasks.length} generated=${generated.length}`);
+    console.log(`[generate-tasks] role=${jobTitle} interviewTasks=${interviewTasks.length} generated=${generated.length} retrieval=${exemplarCount > 0 ? `${matchedOccupations.join('|')} (${exemplarCount})` : 'off/empty'}`);
     if (interviewTasks.length > 0) {
       console.log('  interviewTasks (grounding — should NOT be repeated):');
       for (const t of interviewTasks) console.log(`    ◦ ${t}`);
@@ -466,6 +472,11 @@ app.post('/api/generate-tasks-stream', async (req, res) => {
 OUTPUT FORMAT — STREAMING (overrides any earlier JSON instructions):
 Emit ONE JSON object per line. Each line: {"name":"<task name>"}. Separate with newlines. NO outer array, NO commas between objects, NO surrounding {"tasks":[...]}. Just one object per line. Emit them as you decide on them — don't pre-buffer the full set.`;
 
+    // Optional retrieval grounding (see /api/generate-tasks). Runs before the
+    // stream opens, so it adds to time-to-first-token; fail-open on any error.
+    const { block: exemplarBlock, occupations: matchedOccupations, count: exemplarCount } =
+      await retrieveExemplarBlock({ jobTitle, responsibilities, typicalWeek });
+
     const stream = await client.chat.completions.create({
       model: MODEL,
       temperature: 0.7,
@@ -474,7 +485,7 @@ Emit ONE JSON object per line. Each line: {"name":"<task name>"}. Separate with 
         { role: 'system', content: streamingSystem },
         {
           role: 'user',
-          content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${aiUsage ? `\nAI usage: ${aiUsage}` : ''}${groundingBlock}${priorBlock}\nGenerate the upper-level tasks.`,
+          content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${aiUsage ? `\nAI usage: ${aiUsage}` : ''}${exemplarBlock}${groundingBlock}${priorBlock}\nGenerate the upper-level tasks.`,
         },
       ],
     });
@@ -509,7 +520,7 @@ Emit ONE JSON object per line. Each line: {"name":"<task name>"}. Separate with 
     }
     if (buffer.trim()) emitLine(buffer);
 
-    console.log(`[generate-tasks-stream] role=${jobTitle} interviewTasks=${interviewTasks.length} emitted=${emitted}`);
+    console.log(`[generate-tasks-stream] role=${jobTitle} interviewTasks=${interviewTasks.length} emitted=${emitted} retrieval=${exemplarCount > 0 ? `${matchedOccupations.join('|')} (${exemplarCount})` : 'off/empty'}`);
     sendEvent('done', { total: emitted });
     res.end();
   } catch (err) {

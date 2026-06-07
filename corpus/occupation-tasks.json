@@ -1,0 +1,39 @@
+[
+  {
+    "occupation": "Postsecondary Researcher / PhD Student",
+    "statements": [
+      "Read recent papers in the field to keep current with the literature.",
+      "Design experiments to test specific research hypotheses.",
+      "Write and debug code to run analyses or simulations.",
+      "Analyze experimental results and check them against expectations.",
+      "Draft sections of papers for conference or journal submission.",
+      "Prepare figures and tables to present findings in a manuscript.",
+      "Present research updates at lab meetings and seminars.",
+      "Meet with an advisor to discuss research direction and progress.",
+      "Mentor junior students on their research projects.",
+      "Review submissions for conferences or journals as a peer reviewer."
+    ]
+  },
+  {
+    "occupation": "Automotive Service Technician",
+    "statements": [
+      "Diagnose mechanical and electrical problems in customer vehicles.",
+      "Service brake systems on customer vehicles during scheduled visits.",
+      "Perform routine oil changes and fluid checks.",
+      "Replace worn tires and rotate them as part of maintenance.",
+      "Road-test vehicles to confirm repairs before returning them.",
+      "Record completed work and parts used in the shop system."
+    ]
+  },
+  {
+    "occupation": "Barista / Cafe Worker",
+    "statements": [
+      "Open the cafe and set up equipment for the morning shift.",
+      "Pull espresso shots and steam milk to build drinks.",
+      "Take and ring up customer orders at the counter.",
+      "Restock pastries, cups, and supplies during the shift.",
+      "Clean the espresso machine and counters at end of day.",
+      "Count the till and reconcile cash at closeout."
+    ]
+  }
+]
