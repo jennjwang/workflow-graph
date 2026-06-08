@@ -790,12 +790,26 @@ function formatHours(n: number): string {
   return Number.isInteger(n) ? `${n}` : `${n.toFixed(1)}`;
 }
 
-// Blue → violet → magenta gradient across N segments. The same function colors
-// both the stacked bar segment and its legend dot, so they stay in sync.
-function segmentColor(i: number, n: number): string {
-  const t = n <= 1 ? 0 : i / (n - 1);
-  const hue = 222 + t * 108; // 222 (indigo-blue) → 330 (pink)
-  return `hsl(${hue}, 68%, 62%)`;
+// Curated categorical palette — distinct enough to match a bar segment to its
+// row, but harmonious rather than a full-spectrum rainbow. Cycles if there are
+// more tasks than colors. The same color drives the segment, the row's dot, and
+// the slider fill.
+const TASK_PALETTE = [
+  "#6366f1", // indigo
+  "#0ea5e9", // sky
+  "#14b8a6", // teal
+  "#f59e0b", // amber
+  "#f43f5e", // rose
+  "#8b5cf6", // violet
+  "#10b981", // emerald
+  "#fb7185", // pink
+  "#3b82f6", // blue
+  "#a855f7", // purple
+  "#f97316", // orange
+  "#06b6d4", // cyan
+];
+function segmentColor(i: number): string {
+  return TASK_PALETTE[i % TASK_PALETTE.length];
 }
 
 // Upper bound for the per-task slider. The −/+ stepper can still push past this
@@ -824,19 +838,23 @@ function HoursSliderRow({
   const commit = (v: number) => onChange(Math.max(0, Math.round(v * 2) / 2));
 
   const stepBtn =
-    "w-10 h-10 shrink-0 rounded-xl border border-slate-200 text-slate-400 hover:border-indigo-300 hover:text-indigo-500 hover:bg-indigo-50 active:scale-95 transition flex items-center justify-center text-xl leading-none";
+    "w-8 h-8 shrink-0 rounded-lg border border-slate-200 text-slate-400 hover:border-indigo-300 hover:text-indigo-500 hover:bg-indigo-50 active:scale-95 transition flex items-center justify-center text-base leading-none";
 
   return (
-    <div className="py-4">
-      <p className="text-[15px] font-medium text-slate-800">
-        {name}
+    <div className="py-2">
+      <p className="flex items-center gap-2 text-sm font-medium text-slate-700">
+        <span
+          className="w-2 h-2 rounded-full shrink-0 ring-2 ring-white shadow-sm"
+          style={{ background: color }}
+        />
+        <span>{name}</span>
         {badge && (
-          <span className="ml-2 text-[10px] font-semibold uppercase tracking-wider text-indigo-400 align-middle">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-indigo-400">
             {badge}
           </span>
         )}
       </p>
-      <div className="mt-3 flex items-center gap-5">
+      <div className="mt-1.5 flex items-center gap-4">
         <input
           type="range"
           min={0}
@@ -853,7 +871,7 @@ function HoursSliderRow({
           }
           className="hours-slider flex-1 min-w-0 cursor-pointer"
         />
-        <div className="shrink-0 flex items-center gap-3">
+        <div className="shrink-0 flex items-center gap-2">
           <button
             type="button"
             aria-label={`Decrease hours for ${name}`}
@@ -862,8 +880,8 @@ function HoursSliderRow({
           >
             −
           </button>
-          <div className="w-12 text-center">
-            <span className="text-lg font-medium text-slate-800 tabular-nums">
+          <div className="w-11 text-center">
+            <span className="text-base font-medium text-slate-800 tabular-nums">
               {hours === undefined ? "—" : formatHours(hours)}
             </span>
             <span className="ml-0.5 text-xs text-slate-400">h</span>
@@ -948,8 +966,8 @@ function HoursSummaryScreen({
             Your week at a glance
           </h2>
           <p className="text-sm text-slate-500 mt-2 leading-relaxed">
-            Drag a bar for a quick estimate, then use −/+ to fine-tune to the
-            half hour.
+            Here's how your hours add up across tasks. Drag a bar for a quick
+            estimate, then use −/+ to fine-tune to the half hour.
           </p>
 
           {/* Total pill + stacked breakdown bar */}
@@ -974,7 +992,7 @@ function HoursSummaryScreen({
                       className="flex items-center justify-center text-white text-sm font-semibold border-r-[3px] border-white last:border-r-0 overflow-hidden whitespace-nowrap transition-[width] duration-300 ease-out"
                       style={{
                         width: `${pct}%`,
-                        background: segmentColor(i, n),
+                        background: segmentColor(i),
                         textShadow: "0 1px 2px rgba(15,23,42,0.18)",
                       }}
                       title={`${it.name}: ${formatHours(it.hours ?? 0)}h`}
@@ -998,7 +1016,7 @@ function HoursSummaryScreen({
                 key={it.key}
                 name={it.name}
                 hours={it.hours}
-                color={segmentColor(i, n)}
+                color={segmentColor(i)}
                 badge={it.badge}
                 onChange={it.onChange}
               />
@@ -1006,8 +1024,21 @@ function HoursSummaryScreen({
           </div>
 
           {hint && (
-            <p className="mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-              {hint}
+            <p className="mt-4 flex items-start gap-2 text-sm leading-relaxed text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+              <svg
+                className="w-4 h-4 mt-0.5 shrink-0 text-amber-500"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                <line x1="12" y1="9" x2="12" y2="13" />
+                <line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+              <span>{hint}</span>
             </p>
           )}
 
