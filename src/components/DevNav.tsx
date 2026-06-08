@@ -23,6 +23,7 @@ const PAGES: Page[] = [
   { phase: 'background', label: 'Background interview' },
   { phase: 'task-selection', label: 'Task selection (review)' },
   { phase: 'task-selection', label: 'Task selection (task card)', params: { card: '1' } },
+  { phase: 'task-selection', label: 'Task selection (hours summary)', params: { hours: '1' } },
   { phase: 'task-priority', label: 'Task priority' },
   { phase: 'workflow-kickoff', label: 'Workflow kickoff' },
   { phase: 'workflow', label: 'Workflow canvas' },
@@ -33,7 +34,7 @@ const PAGES: Page[] = [
 
 // Query keys that are sub-page selectors — wiped before applying an entry's own
 // params so switching pages never leaves a stale selector behind.
-const SUBPAGE_KEYS = ['card'];
+const SUBPAGE_KEYS = ['card', 'hours'];
 
 function hrefFor(page: Page): string {
   const params = new URLSearchParams(window.location.search);
@@ -46,12 +47,14 @@ function hrefFor(page: Page): string {
   return `${window.location.pathname}?${params.toString()}`;
 }
 
-// Is this entry the one currently showing? Match phase plus its sub-page params.
+// Is this entry the one currently showing? Match phase plus every sub-page key,
+// so e.g. task-selection's review / card / hours entries don't all light up.
 function isActive(page: Page, phase: Phase): boolean {
   if (page.phase !== phase) return false;
   const search = new URLSearchParams(window.location.search);
-  const hasCard = search.get('card') === '1';
-  return (page.params?.card === '1') === hasCard;
+  return SUBPAGE_KEYS.every(
+    (k) => (page.params?.[k] === '1') === (search.get(k) === '1'),
+  );
 }
 
 export function DevNav() {
