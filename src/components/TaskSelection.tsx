@@ -798,13 +798,13 @@ function segmentColor(i: number, n: number): string {
   return `hsl(${hue}, 68%, 62%)`;
 }
 
-// Upper bound for the per-task slider. The number input can still exceed this
+// Upper bound for the per-task slider. The −/+ stepper can still push past this
 // (the slider just pegs at max) so it never caps what a participant can enter.
 const SLIDER_MAX = 40;
 
-// One editable task row: color swatch, name, a slider, and a number input —
-// both bound to the same value. Keeps the number field's raw text locally so it
-// can be empty / mid-typing without the parent forcing it back to a number.
+// One editable task row: task name on top, then a colored slider for a quick
+// estimate plus a −/value/+ stepper to fine-tune to the half hour. The slider's
+// filled track is the task's color (set via --fill/--pct in index.css).
 function HoursSliderRow({
   name,
   hours,
@@ -818,63 +818,65 @@ function HoursSliderRow({
   badge?: string;
   onChange: (hours: number | undefined) => void;
 }) {
-  const [text, setText] = useState(
-    hours === undefined ? "" : formatHours(hours),
-  );
-  // Slider always reflects the committed value (clamped to its range).
-  const sliderValue = Math.min(Math.max(hours ?? 0, 0), SLIDER_MAX);
-  // Dragging the slider commits a number and syncs the text field with it.
-  const commitFromSlider = (v: number) => {
-    onChange(v);
-    setText(formatHours(v));
-  };
+  const current = hours ?? 0;
+  const sliderValue = Math.min(Math.max(current, 0), SLIDER_MAX);
+  // Commit a clean half-hour value, never below zero.
+  const commit = (v: number) => onChange(Math.max(0, Math.round(v * 2) / 2));
+
+  const stepBtn =
+    "w-10 h-10 shrink-0 rounded-xl border border-slate-200 text-slate-400 hover:border-indigo-300 hover:text-indigo-500 hover:bg-indigo-50 active:scale-95 transition flex items-center justify-center text-xl leading-none";
 
   return (
-    <div className="group flex items-center gap-3.5 px-3 -mx-3 py-2.5 rounded-xl hover:bg-white/70 transition-colors">
-      <span
-        className="w-2.5 h-2.5 rounded-full shrink-0 ring-2 ring-white shadow-sm"
-        style={{ background: color }}
-      />
-      <p
-        className="w-40 shrink-0 text-sm text-slate-600 group-hover:text-slate-800 truncate transition-colors"
-        title={name}
-      >
+    <div className="py-4">
+      <p className="text-[15px] font-medium text-slate-800">
         {name}
         {badge && (
-          <span className="ml-1.5 text-[10px] font-semibold uppercase tracking-wider text-indigo-400">
+          <span className="ml-2 text-[10px] font-semibold uppercase tracking-wider text-indigo-400 align-middle">
             {badge}
           </span>
         )}
       </p>
-      <input
-        type="range"
-        min={0}
-        max={SLIDER_MAX}
-        step={0.5}
-        value={sliderValue}
-        onChange={(e) => commitFromSlider(parseFloat(e.target.value))}
-        style={{ color }}
-        className="hours-slider flex-1 min-w-0 cursor-pointer"
-      />
-      <div className="shrink-0 flex items-center gap-1">
+      <div className="mt-3 flex items-center gap-5">
         <input
-          type="number"
+          type="range"
           min={0}
+          max={SLIDER_MAX}
           step={0.5}
-          inputMode="decimal"
-          value={text}
-          onChange={(e) => {
-            const v = e.target.value;
-            setText(v);
-            const parsed = parseFloat(v);
-            onChange(
-              Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined,
-            );
-          }}
-          placeholder="—"
-          className="w-12 px-1.5 py-1 text-sm text-right tabular-nums text-slate-700 placeholder:text-slate-300 bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 transition"
+          value={sliderValue}
+          onChange={(e) => commit(parseFloat(e.target.value))}
+          style={
+            {
+              color,
+              "--fill": color,
+              "--pct": `${(sliderValue / SLIDER_MAX) * 100}%`,
+            } as React.CSSProperties
+          }
+          className="hours-slider flex-1 min-w-0 cursor-pointer"
         />
-        <span className="text-xs text-slate-400">h</span>
+        <div className="shrink-0 flex items-center gap-3">
+          <button
+            type="button"
+            aria-label={`Decrease hours for ${name}`}
+            onClick={() => commit(current - 0.5)}
+            className={stepBtn}
+          >
+            −
+          </button>
+          <div className="w-12 text-center">
+            <span className="text-lg font-medium text-slate-800 tabular-nums">
+              {hours === undefined ? "—" : formatHours(hours)}
+            </span>
+            <span className="ml-0.5 text-xs text-slate-400">h</span>
+          </div>
+          <button
+            type="button"
+            aria-label={`Increase hours for ${name}`}
+            onClick={() => commit(current + 0.5)}
+            className={stepBtn}
+          >
+            +
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -946,65 +948,32 @@ function HoursSummaryScreen({
             Your week at a glance
           </h2>
           <p className="text-sm text-slate-500 mt-2 leading-relaxed">
-            Here's how your hours add up across tasks. Adjust any that look off.
+            Drag a bar for a quick estimate, then use −/+ to fine-tune to the
+            half hour.
           </p>
 
-          {/* Total + stacked bar + per-task sliders — one combined block */}
-          <div className="mt-6 p-6 rounded-3xl bg-gradient-to-b from-white to-slate-50/60 border border-slate-200/70 shadow-[0_1px_3px_rgba(15,23,42,0.04),0_8px_24px_-12px_rgba(79,70,229,0.12)]">
-            {/* Total headline */}
-            <div className="flex items-baseline justify-between">
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-[2.75rem] leading-none font-light tracking-tight text-indigo-600 tabular-nums">
-                  {formatHours(total)}
-                </span>
-                <span className="text-xl font-light text-indigo-300">h</span>
-              </div>
-              <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-                {taskCount} task{taskCount !== 1 ? "s" : ""} · per week
-              </span>
-            </div>
+          {/* Total pill */}
+          <div className="mt-6 px-6 py-4 rounded-2xl bg-indigo-50/70">
+            <span className="text-3xl font-semibold text-indigo-600 tabular-nums align-middle">
+              {formatHours(total)}
+            </span>
+            <span className="ml-2 text-sm text-slate-500 align-middle">
+              hours / week across {taskCount} task{taskCount !== 1 ? "s" : ""}
+            </span>
+          </div>
 
-            {/* Stacked proportional bar */}
-            <div className="mt-5 flex w-full h-16 rounded-2xl overflow-hidden bg-slate-100 ring-1 ring-inset ring-slate-200/70">
-              {total > 0 ? (
-                items.map((it, i) => {
-                  const pct = ((it.hours ?? 0) / total) * 100;
-                  if (pct <= 0) return null;
-                  return (
-                    <div
-                      key={it.key}
-                      className="flex items-center justify-center text-white text-sm font-semibold border-r-[3px] border-white last:border-r-0 overflow-hidden whitespace-nowrap transition-[width] duration-300 ease-out"
-                      style={{
-                        width: `${pct}%`,
-                        background: segmentColor(i, n),
-                        textShadow: "0 1px 2px rgba(15,23,42,0.18)",
-                      }}
-                      title={`${it.name}: ${formatHours(it.hours ?? 0)}h`}
-                    >
-                      {pct >= 7 ? formatHours(it.hours ?? 0) : ""}
-                    </div>
-                  );
-                })
-              ) : (
-                <div className="flex items-center justify-center w-full text-xs text-slate-400">
-                  Enter hours below to see your week
-                </div>
-              )}
-            </div>
-
-            {/* Per-task rows — slider + number input, colors matched to the bar */}
-            <div className="mt-6 pt-5 border-t border-slate-200/60 space-y-0.5">
-              {items.map((it, i) => (
-                <HoursSliderRow
-                  key={it.key}
-                  name={it.name}
-                  hours={it.hours}
-                  color={segmentColor(i, n)}
-                  badge={it.badge}
-                  onChange={it.onChange}
-                />
-              ))}
-            </div>
+          {/* Per-task rows — colored slider + −/value/+ stepper */}
+          <div className="mt-4 divide-y divide-slate-100">
+            {items.map((it, i) => (
+              <HoursSliderRow
+                key={it.key}
+                name={it.name}
+                hours={it.hours}
+                color={segmentColor(i, n)}
+                badge={it.badge}
+                onChange={it.onChange}
+              />
+            ))}
           </div>
 
           {hint && (

@@ -18,15 +18,26 @@ html, body, #root {
   background: transparent;
   color: var(--tw-ring-color, #6366f1); /* fallback; thumb uses accent-color */
 }
+/* Track is filled with the row's color up to the current value (--pct), then
+   slate for the remainder. --fill / --pct are set inline per row. */
 .hours-slider::-webkit-slider-runnable-track {
   height: 6px;
   border-radius: 9999px;
-  background: #e2e8f0; /* slate-200 */
+  background: linear-gradient(
+    to right,
+    var(--fill, #6366f1) var(--pct, 0%),
+    #e2e8f0 var(--pct, 0%)
+  );
 }
 .hours-slider::-moz-range-track {
   height: 6px;
   border-radius: 9999px;
   background: #e2e8f0;
+}
+.hours-slider::-moz-range-progress {
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--fill, #6366f1);
 }
 .hours-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
