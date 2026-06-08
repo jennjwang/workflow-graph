@@ -18,6 +18,7 @@ export interface TaskItem {
   recency?: TaskRecency;
   aiUse?: TaskAiUse;
   aiHowSo?: string;
+  hoursPerWeek?: number;       // self-reported hours spent on this task in a typical week (confirmed tasks only)
   edits?: TaskEdit[];          // full chronological history of edits made to this task
   isAttentionCheck?: boolean;  // tasks from clearly unrelated occupations; expected answer is "no"
   addedByParticipant?: boolean; // tasks the participant typed in on the all-done screen

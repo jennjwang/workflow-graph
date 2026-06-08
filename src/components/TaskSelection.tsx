@@ -340,7 +340,7 @@ export function TaskSelection() {
     }
   };
 
-  const advance = (answer: "yes" | "no") => {
+  const advance = (answer: "yes" | "no", meta?: { hoursPerWeek: number }) => {
     const reviewedTask = tasks[currentIdx];
     setTasks((prev) =>
       prev.map((t, i) => {
@@ -349,6 +349,7 @@ export function TaskSelection() {
         return {
           ...t,
           status: t.status === "edited" ? "edited" : "confirmed",
+          hoursPerWeek: meta?.hoursPerWeek,
         };
       }),
     );
@@ -730,7 +731,7 @@ interface TaskReviewCardProps {
   taskIdx: number;
   isLast: boolean;
   onSaveEdit: (idx: number, name: string) => void;
-  onAdvance: (answer: "yes" | "no") => void;
+  onAdvance: (answer: "yes" | "no", meta?: { hoursPerWeek: number }) => void;
 }
 
 function TaskReviewCard({
@@ -741,6 +742,10 @@ function TaskReviewCard({
   onAdvance,
 }: TaskReviewCardProps) {
   const [primaryAnswer, setPrimaryAnswer] = useState<"yes" | "no" | null>(null);
+  // Self-reported hours/week on this task — only collected when "I do this".
+  // Stored as the raw input string so the field can be empty mid-typing; parsed
+  // to a number on continue.
+  const [hoursInput, setHoursInput] = useState("");
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(task.name);
   // One-time nudge on the very first task pointing at the editable name.
@@ -753,11 +758,19 @@ function TaskReviewCard({
     if (editing || primaryAnswer) setShowEditNudge(false);
   }, [editing, primaryAnswer]);
 
-  const canContinue = primaryAnswer !== null;
+  const hoursValue = parseFloat(hoursInput);
+  const hoursValid = Number.isFinite(hoursValue) && hoursValue >= 0;
+  // "No" continues immediately; "Yes" requires a valid hours figure.
+  const canContinue =
+    primaryAnswer === "no" || (primaryAnswer === "yes" && hoursValid);
 
   const handleContinue = () => {
     if (!canContinue) return;
-    onAdvance(primaryAnswer!);
+    if (primaryAnswer === "no") {
+      onAdvance("no");
+    } else {
+      onAdvance("yes", { hoursPerWeek: hoursValue });
+    }
   };
 
   const startEdit = () => {
@@ -886,13 +899,42 @@ function TaskReviewCard({
         ].map(({ value, label, active, inactive }) => (
           <button
             key={value}
-            onClick={() => setPrimaryAnswer(value)}
+            onClick={() => {
+              setPrimaryAnswer(value);
+              if (value === "no") setHoursInput("");
+            }}
             className={`flex-1 py-3 rounded-2xl border text-sm font-medium transition-all active:scale-[0.98] ${primaryAnswer === value ? active : `bg-white border-slate-200 text-slate-600 ${inactive}`}`}
           >
             {label}
           </button>
         ))}
       </div>
+
+      {/* Hours follow-up — only when the participant does this task */}
+      {primaryAnswer === "yes" && (
+        <div className="space-y-3 animate-fadeSlideIn">
+          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+            In a typical week, how many hours do you spend on this?
+          </p>
+          <div className="flex items-center gap-3">
+            <input
+              type="number"
+              min={0}
+              step={0.5}
+              inputMode="decimal"
+              autoFocus
+              value={hoursInput}
+              onChange={(e) => setHoursInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && canContinue) handleContinue();
+              }}
+              placeholder="e.g. 3"
+              className="w-28 px-3.5 py-2.5 text-sm text-slate-700 placeholder:text-slate-300 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 transition"
+            />
+            <span className="text-sm text-slate-500">hours / week</span>
+          </div>
+        </div>
+      )}
 
       {/* Continue */}
       {primaryAnswer !== null && (
