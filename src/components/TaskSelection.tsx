@@ -607,7 +607,7 @@ export function TaskSelection() {
       {/* Task area */}
       <div
         className={`relative z-10 flex-1 flex flex-col min-h-0 overflow-y-auto
-        ${isExhausted ? "justify-start pt-6 pb-12 px-4 sm:px-6" : "pt-14 pb-12 px-8"}`}
+        ${isExhausted ? "justify-start pt-6 pb-12 px-4 sm:px-6" : "justify-center px-8"}`}
       >
         {loading ? (
           <div className="flex justify-center">
