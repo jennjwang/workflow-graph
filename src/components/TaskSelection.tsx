@@ -921,8 +921,7 @@ function HoursSummaryScreen({
             Your week at a glance
           </h2>
           <p className="text-sm text-slate-500 mt-2 leading-relaxed">
-            Here's how the hours you entered add up across your tasks. Adjust any
-            that don't look right.
+            Here's how your hours add up across tasks. Adjust any that look off.
           </p>
 
           {/* Total headline */}
