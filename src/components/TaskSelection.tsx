@@ -798,10 +798,14 @@ function segmentColor(i: number, n: number): string {
   return `hsl(${hue}, 68%, 62%)`;
 }
 
-// One editable legend entry: color swatch, task name, and a compact hours input.
-// Keeps the raw input text locally so the field can be empty / mid-typing without
-// the parent forcing it back to a number.
-function LegendRow({
+// Upper bound for the per-task slider. The number input can still exceed this
+// (the slider just pegs at max) so it never caps what a participant can enter.
+const SLIDER_MAX = 40;
+
+// One editable task row: color swatch, name, a slider, and a number input —
+// both bound to the same value. Keeps the number field's raw text locally so it
+// can be empty / mid-typing without the parent forcing it back to a number.
+function HoursSliderRow({
   name,
   hours,
   color,
@@ -817,14 +821,22 @@ function LegendRow({
   const [text, setText] = useState(
     hours === undefined ? "" : formatHours(hours),
   );
+  // Slider always reflects the committed value (clamped to its range).
+  const sliderValue = Math.min(Math.max(hours ?? 0, 0), SLIDER_MAX);
+  // Dragging the slider commits a number and syncs the text field with it.
+  const commitFromSlider = (v: number) => {
+    onChange(v);
+    setText(formatHours(v));
+  };
+
   return (
-    <div className="flex items-center gap-2.5 py-1.5">
+    <div className="flex items-center gap-3 py-2.5">
       <span
         className="w-2.5 h-2.5 rounded-sm shrink-0"
         style={{ background: color }}
       />
       <p
-        className="flex-1 min-w-0 text-sm text-slate-700 truncate"
+        className="w-44 shrink-0 text-sm text-slate-700 truncate"
         title={name}
       >
         {name}
@@ -834,6 +846,16 @@ function LegendRow({
           </span>
         )}
       </p>
+      <input
+        type="range"
+        min={0}
+        max={SLIDER_MAX}
+        step={0.5}
+        value={sliderValue}
+        onChange={(e) => commitFromSlider(parseFloat(e.target.value))}
+        style={{ accentColor: color }}
+        className="flex-1 min-w-0 cursor-pointer"
+      />
       <input
         type="number"
         min={0}
@@ -960,10 +982,10 @@ function HoursSummaryScreen({
               )}
             </div>
 
-            {/* Legend — editable */}
-            <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-x-8">
+            {/* Per-task rows — slider + number input, colors matched to the bar */}
+            <div className="mt-5 pt-4 border-t border-slate-200/70 divide-y divide-slate-100">
               {items.map((it, i) => (
-                <LegendRow
+                <HoursSliderRow
                   key={it.key}
                   name={it.name}
                   hours={it.hours}
