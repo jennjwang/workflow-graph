@@ -8,3 +8,51 @@ html, body, #root {
   padding: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
+
+/* Hours-summary sliders: rounded track + soft round thumb. The thumb color is
+   driven per-row by the element's `accent-color` (set inline to match the bar
+   segment), so currentColor here picks it up. */
+.hours-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  color: var(--tw-ring-color, #6366f1); /* fallback; thumb uses accent-color */
+}
+.hours-slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 9999px;
+  background: #e2e8f0; /* slate-200 */
+}
+.hours-slider::-moz-range-track {
+  height: 6px;
+  border-radius: 9999px;
+  background: #e2e8f0;
+}
+.hours-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  margin-top: -5px; /* center the 16px thumb on the 6px track */
+  width: 16px;
+  height: 16px;
+  border-radius: 9999px;
+  background: #fff;
+  border: 3px solid currentColor;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.2);
+  cursor: pointer;
+  transition: transform 0.12s ease;
+}
+.hours-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 9999px;
+  background: #fff;
+  border: 3px solid currentColor;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.2);
+  cursor: pointer;
+}
+.hours-slider:hover::-webkit-slider-thumb {
+  transform: scale(1.12);
+}
+.hours-slider:focus {
+  outline: none;
+}
