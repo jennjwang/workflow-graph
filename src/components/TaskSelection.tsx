@@ -943,7 +943,7 @@ function HoursSummaryScreen({
       </div>
 
       <div className="relative z-10 flex-1 flex flex-col min-h-0 overflow-y-auto justify-start pb-12 px-4 sm:px-8">
-        <div className="w-full max-w-2xl mx-auto animate-fadeSlideIn">
+        <div className="w-full max-w-4xl mx-auto animate-fadeSlideIn">
           <h2 className="text-[1.5rem] font-light text-slate-800 leading-snug tracking-tight">
             Your week at a glance
           </h2>
@@ -952,14 +952,43 @@ function HoursSummaryScreen({
             half hour.
           </p>
 
-          {/* Total pill */}
-          <div className="mt-6 px-6 py-4 rounded-2xl bg-indigo-50/70">
-            <span className="text-3xl font-semibold text-indigo-600 tabular-nums align-middle">
-              {formatHours(total)}
-            </span>
-            <span className="ml-2 text-sm text-slate-500 align-middle">
-              hours / week across {taskCount} task{taskCount !== 1 ? "s" : ""}
-            </span>
+          {/* Total pill + stacked breakdown bar */}
+          <div className="mt-6 px-6 py-5 rounded-2xl bg-indigo-50/70">
+            <div>
+              <span className="text-3xl font-semibold text-indigo-600 tabular-nums align-middle">
+                {formatHours(total)}
+              </span>
+              <span className="ml-2 text-sm text-slate-500 align-middle">
+                hours / week across {taskCount} task{taskCount !== 1 ? "s" : ""}
+              </span>
+            </div>
+
+            <div className="mt-4 flex w-full h-12 rounded-xl overflow-hidden bg-indigo-100/60 ring-1 ring-inset ring-indigo-200/50">
+              {total > 0 ? (
+                items.map((it, i) => {
+                  const pct = ((it.hours ?? 0) / total) * 100;
+                  if (pct <= 0) return null;
+                  return (
+                    <div
+                      key={it.key}
+                      className="flex items-center justify-center text-white text-sm font-semibold border-r-[3px] border-white last:border-r-0 overflow-hidden whitespace-nowrap transition-[width] duration-300 ease-out"
+                      style={{
+                        width: `${pct}%`,
+                        background: segmentColor(i, n),
+                        textShadow: "0 1px 2px rgba(15,23,42,0.18)",
+                      }}
+                      title={`${it.name}: ${formatHours(it.hours ?? 0)}h`}
+                    >
+                      {pct >= 6 ? formatHours(it.hours ?? 0) : ""}
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="flex items-center justify-center w-full text-xs text-slate-400">
+                  Set hours below to see your week
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Per-task rows — colored slider + −/value/+ stepper */}
