@@ -124,10 +124,14 @@ export function TaskSelection() {
   // "What else fills your week?" review screen with seeded confirmed tasks.
   // ?dev=task-selection&card=1 instead lands on the single per-task review card
   // (the confirm/edit/AI-use step) with seeded unreviewed tasks to click through.
+  // ?dev=task-selection&hours=1 lands on the "Your week at a glance" hours
+  // summary with seeded confirmed tasks that already carry hours.
   const devSkipToReview =
     new URLSearchParams(window.location.search).get("review") === "1";
   const devSkipToCard =
     new URLSearchParams(window.location.search).get("card") === "1";
+  const devSkipToHours =
+    new URLSearchParams(window.location.search).get("hours") === "1";
 
   const DEV_REVIEW_SEED: TaskItem[] = [
     {
@@ -173,16 +177,33 @@ export function TaskSelection() {
     status: "unreviewed",
   }));
 
+  // Same confirmed tasks, but with varied hours so the summary's distribution
+  // bars and weekly total render something meaningful.
+  const DEV_HOURS_SEED: TaskItem[] = DEV_REVIEW_SEED.map((t, i) => ({
+    ...t,
+    hoursPerWeek: [8, 5, 2, 6, 3, 4, 1.5][i] ?? 2,
+  }));
+
   const [tasks, setTasks] = useState<TaskItem[]>(
-    devSkipToCard ? DEV_CARD_SEED : devSkipToReview ? DEV_REVIEW_SEED : [],
+    devSkipToCard
+      ? DEV_CARD_SEED
+      : devSkipToHours
+        ? DEV_HOURS_SEED
+        : devSkipToReview
+          ? DEV_REVIEW_SEED
+          : [],
   );
   const [currentIdx, setCurrentIdx] = useState(
-    !devSkipToCard && devSkipToReview ? DEV_REVIEW_SEED.length : 0,
+    !devSkipToCard && (devSkipToReview || devSkipToHours)
+      ? DEV_REVIEW_SEED.length
+      : 0,
   );
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">(
-    devSkipToReview || devSkipToCard ? "ready" : "loading",
+    devSkipToReview || devSkipToCard || devSkipToHours ? "ready" : "loading",
   );
-  const [showIntro, setShowIntro] = useState(!devSkipToReview && !devSkipToCard);
+  const [showIntro, setShowIntro] = useState(
+    !devSkipToReview && !devSkipToCard && !devSkipToHours,
+  );
   const [showBonusToast, setShowBonusToast] = useState(false);
   const [lastBonusDelta, setLastBonusDelta] = useState(0);
 
@@ -191,8 +212,15 @@ export function TaskSelection() {
   // edits[] reflects when the participant actually typed it, not when they
   // hit Submit. (Submitting an 11-task batch used to stamp all 11 with the
   // same millisecond.)
-  const [extraTasks, setExtraTasks] = useState<{ name: string; addedAt: number }[]>([]);
+  const [extraTasks, setExtraTasks] = useState<
+    { name: string; addedAt: number; hoursPerWeek?: number }[]
+  >([]);
   const [extraInput, setExtraInput] = useState("");
+
+  // After the review/add screen, participants confirm how their indicated hours
+  // are distributed across the week before the response is finalized. The
+  // hours=1 dev shortcut opens directly on it.
+  const [showHoursSummary, setShowHoursSummary] = useState(devSkipToHours);
 
   const bonusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -229,7 +257,7 @@ export function TaskSelection() {
   // set of tasks for this role. Faster (one LLM call instead of N+1) and the model handles
   // breadth on its own when told to.
   useEffect(() => {
-    if (devSkipToReview || devSkipToCard) return; // dev shortcut: tasks are already seeded
+    if (devSkipToReview || devSkipToCard || devSkipToHours) return; // dev shortcut: tasks are already seeded
     async function load() {
       try {
         // First pass: pull the activities the participant explicitly mentioned
@@ -341,7 +369,7 @@ export function TaskSelection() {
     }
   };
 
-  const advance = (answer: "yes" | "no") => {
+  const advance = (answer: "yes" | "no", meta?: { hoursPerWeek: number }) => {
     const reviewedTask = tasks[currentIdx];
     setTasks((prev) =>
       prev.map((t, i) => {
@@ -350,6 +378,7 @@ export function TaskSelection() {
         return {
           ...t,
           status: t.status === "edited" ? "edited" : "confirmed",
+          hoursPerWeek: meta?.hoursPerWeek,
         };
       }),
     );
@@ -392,17 +421,36 @@ export function TaskSelection() {
     setExtraTasks((prev) => prev.filter((_, i) => i !== idx));
   };
 
-  const proceed = (pendingExtra?: string) => {
-    // If the participant clicked Submit with un-added draft text in the input,
-    // commit it here. (Doing this in handleSubmit via setExtraTasks would race
-    // with this function reading the stale closure.) That task is timestamped
-    // at this moment; everything else uses the moment-of-add timestamps
-    // captured when each was originally typed.
+  // Step 1 of finishing: commit any un-added draft task, then move to the
+  // hours-distribution confirmation screen (instead of finalizing directly).
+  const goToHoursSummary = (pendingExtra?: string) => {
     const trimmedPending = pendingExtra?.trim() ?? "";
-    const finalExtras =
-      trimmedPending && !extraTasks.some((e) => e.name === trimmedPending)
-        ? [...extraTasks, { name: trimmedPending, addedAt: Date.now() }]
-        : extraTasks;
+    if (trimmedPending && !extraTasks.some((e) => e.name === trimmedPending)) {
+      setExtraTasks((prev) => [
+        ...prev,
+        { name: trimmedPending, addedAt: Date.now() },
+      ]);
+    }
+    setShowHoursSummary(true);
+  };
+
+  // Edit a confirmed picker task's hours from the summary screen.
+  const setTaskHours = (idx: number, hours: number | undefined) => {
+    setTasks((prev) =>
+      prev.map((t, i) => (i === idx ? { ...t, hoursPerWeek: hours } : t)),
+    );
+  };
+
+  // Edit an added task's hours from the summary screen.
+  const setExtraHours = (idx: number, hours: number | undefined) => {
+    setExtraTasks((prev) =>
+      prev.map((e, i) => (i === idx ? { ...e, hoursPerWeek: hours } : e)),
+    );
+  };
+
+  // Step 2: finalize the response after the participant confirms their hours.
+  const finalize = () => {
+    const finalExtras = extraTasks;
 
     // Tasks the participant typed in get appended as confirmed, flagged as participant-added.
     const extraItems: TaskItem[] = finalExtras.map((e) => ({
@@ -411,6 +459,7 @@ export function TaskSelection() {
       status: "confirmed",
       category: "__participant_added__",
       addedByParticipant: true,
+      hoursPerWeek: e.hoursPerWeek,
       edits: [
         { from: "", to: e.name, charsChanged: e.name.length, timestamp: e.addedAt },
       ],
@@ -492,6 +541,28 @@ export function TaskSelection() {
     return <IntroScreen onStart={() => setShowIntro(false)} totalParts={totalParts} />;
   }
 
+  if (showHoursSummary) {
+    // Indices into `tasks` are preserved so inline edits map back to the right
+    // confirmed picker task; added tasks are edited against extraTasks order.
+    const confirmedPickerTasks = tasks
+      .map((t, idx) => ({ t, idx }))
+      .filter(
+        ({ t }) =>
+          (t.status === "confirmed" || t.status === "edited") &&
+          !t.isAttentionCheck,
+      );
+    return (
+      <HoursSummaryScreen
+        totalParts={totalParts}
+        confirmedPickerTasks={confirmedPickerTasks}
+        extraTasks={extraTasks}
+        onSetTaskHours={setTaskHours}
+        onSetExtraHours={setExtraHours}
+        onConfirm={finalize}
+      />
+    );
+  }
+
   return (
     <div className="flex flex-col h-full bg-transparent relative overflow-hidden">
       {/* Top gradient is rendered by the parent (App.tsx) so it spans the full viewport. */}
@@ -533,11 +604,10 @@ export function TaskSelection() {
         </div>
       </div>
 
-      {/* Task area — top-aligned for the review screen (lots of content),
-          centered for the per-task review (single card). */}
+      {/* Task area */}
       <div
         className={`relative z-10 flex-1 flex flex-col min-h-0 overflow-y-auto
-        ${isExhausted ? "justify-start pt-6 pb-12 px-4 sm:px-6" : "justify-center px-8"}`}
+        ${isExhausted ? "justify-start pt-6 pb-12 px-4 sm:px-6" : "pt-14 pb-12 px-8"}`}
       >
         {loading ? (
           <div className="flex justify-center">
@@ -580,7 +650,7 @@ export function TaskSelection() {
             onRemoveExtra={removeExtraTask}
             addEarnedUsd={addEarnedUsd}
             addCapped={addCapped}
-            onSubmit={proceed}
+            onSubmit={goToHoursSummary}
           />
         ) : currentTask ? (
           <TaskReviewCard
@@ -598,7 +668,7 @@ export function TaskSelection() {
       {canEarlyExit && !isExhausted && (
         <div className="relative z-10 px-8 pb-8 pt-4 border-t border-slate-100 shrink-0">
           <button
-            onClick={() => proceed()}
+            onClick={() => goToHoursSummary()}
             className="w-full text-sm text-slate-400 hover:text-slate-600 transition py-1"
           >
             Done — continue with {confirmedCount} task
@@ -724,6 +794,289 @@ function IntroScreen({ onStart, totalParts }: { onStart: () => void; totalParts:
   );
 }
 
+// ── Hours distribution summary ──────────────────────────────────────────────────
+
+// Reference point for the plausibility hint — a conventional full-time week.
+const FULL_WEEK_HOURS = 40;
+
+function formatHours(n: number): string {
+  // Drop the trailing ".0" but keep halves etc. (e.g. 3, 3.5, 10).
+  return Number.isInteger(n) ? `${n}` : `${n.toFixed(1)}`;
+}
+
+// Curated categorical palette — distinct enough to match a bar segment to its
+// row, but harmonious rather than a full-spectrum rainbow. Cycles if there are
+// more tasks than colors. The same color drives the segment, the row's dot, and
+// the slider fill.
+const TASK_PALETTE = [
+  "#6366f1", // indigo
+  "#0ea5e9", // sky
+  "#14b8a6", // teal
+  "#f59e0b", // amber
+  "#f43f5e", // rose
+  "#8b5cf6", // violet
+  "#10b981", // emerald
+  "#fb7185", // pink
+  "#3b82f6", // blue
+  "#a855f7", // purple
+  "#f97316", // orange
+  "#06b6d4", // cyan
+];
+function segmentColor(i: number): string {
+  return TASK_PALETTE[i % TASK_PALETTE.length];
+}
+
+// Upper bound for the per-task slider. The −/+ stepper can still push past this
+// (the slider just pegs at max) so it never caps what a participant can enter.
+const SLIDER_MAX = 40;
+
+// One editable task row: task name on top, then a colored slider for a quick
+// estimate plus a −/value/+ stepper to fine-tune to the half hour. The slider's
+// filled track is the task's color (set via --fill/--pct in index.css).
+function HoursSliderRow({
+  name,
+  hours,
+  color,
+  badge,
+  onChange,
+}: {
+  name: string;
+  hours: number | undefined;
+  color: string;
+  badge?: string;
+  onChange: (hours: number | undefined) => void;
+}) {
+  const current = hours ?? 0;
+  const sliderValue = Math.min(Math.max(current, 0), SLIDER_MAX);
+  // Commit a clean half-hour value, never below zero.
+  const commit = (v: number) => onChange(Math.max(0, Math.round(v * 2) / 2));
+
+  const stepBtn =
+    "w-8 h-8 shrink-0 rounded-lg border border-slate-200 text-slate-400 hover:border-indigo-300 hover:text-indigo-500 hover:bg-indigo-50 active:scale-95 transition flex items-center justify-center text-base leading-none";
+
+  return (
+    <div className="py-2">
+      <p className="flex items-center gap-2 text-sm font-medium text-slate-700">
+        <span
+          className="w-2 h-2 rounded-full shrink-0 ring-2 ring-white shadow-sm"
+          style={{ background: color }}
+        />
+        <span>{name}</span>
+        {badge && (
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-indigo-400">
+            {badge}
+          </span>
+        )}
+      </p>
+      <div className="mt-1.5 flex items-center gap-4">
+        <input
+          type="range"
+          min={0}
+          max={SLIDER_MAX}
+          step={0.5}
+          value={sliderValue}
+          onChange={(e) => commit(parseFloat(e.target.value))}
+          style={
+            {
+              color,
+              "--fill": color,
+              "--pct": `${(sliderValue / SLIDER_MAX) * 100}%`,
+            } as React.CSSProperties
+          }
+          className="hours-slider flex-1 min-w-0 cursor-pointer"
+        />
+        <div className="shrink-0 flex items-center gap-2">
+          <button
+            type="button"
+            aria-label={`Decrease hours for ${name}`}
+            onClick={() => commit(current - 0.5)}
+            className={stepBtn}
+          >
+            −
+          </button>
+          <div className="w-11 text-center">
+            <span className="text-base font-medium text-slate-800 tabular-nums">
+              {hours === undefined ? "—" : formatHours(hours)}
+            </span>
+            <span className="ml-0.5 text-xs text-slate-400">h</span>
+          </div>
+          <button
+            type="button"
+            aria-label={`Increase hours for ${name}`}
+            onClick={() => commit(current + 0.5)}
+            className={stepBtn}
+          >
+            +
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HoursSummaryScreen({
+  totalParts,
+  confirmedPickerTasks,
+  extraTasks,
+  onSetTaskHours,
+  onSetExtraHours,
+  onConfirm,
+}: {
+  totalParts: number;
+  confirmedPickerTasks: { t: TaskItem; idx: number }[];
+  extraTasks: { name: string; addedAt: number; hoursPerWeek?: number }[];
+  onSetTaskHours: (idx: number, hours: number | undefined) => void;
+  onSetExtraHours: (idx: number, hours: number | undefined) => void;
+  onConfirm: () => void;
+}) {
+  // One unified list so the bar segment, total, and legend all share an order
+  // and color index.
+  const items = [
+    ...confirmedPickerTasks.map(({ t, idx }) => ({
+      key: `picker-${idx}`,
+      name: t.name,
+      hours: t.hoursPerWeek,
+      badge: undefined as string | undefined,
+      onChange: (h: number | undefined) => onSetTaskHours(idx, h),
+    })),
+    ...extraTasks.map((e, i) => ({
+      key: `extra-${i}`,
+      name: e.name,
+      hours: e.hoursPerWeek,
+      badge: "added" as string | undefined,
+      onChange: (h: number | undefined) => onSetExtraHours(i, h),
+    })),
+  ];
+  const n = items.length;
+  const total = items.reduce((s, it) => s + (it.hours ?? 0), 0);
+  const taskCount = n;
+
+  // Every listed task needs a valid figure before we let them confirm — picker
+  // tasks already collected hours during review; added tasks may still be blank.
+  const allFilled = items.every((it) => typeof it.hours === "number");
+
+  // Soft plausibility hint — never blocks, just orients them.
+  const hint =
+    total === 0
+      ? null
+      : total > FULL_WEEK_HOURS * 2
+        ? `That's more than ${FULL_WEEK_HOURS * 2} hours — more than most people work in a week. Adjust any that look off.`
+        : total > FULL_WEEK_HOURS * 1.25
+          ? `That's well above a typical ${FULL_WEEK_HOURS}-hour week. That's fine if it's accurate — just double-check.`
+          : null;
+
+  return (
+    <div className="flex flex-col h-full bg-transparent relative overflow-hidden">
+      {/* Header */}
+      <div className="relative z-10 px-8 pt-8 pb-5 shrink-0">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-4">
+          Part 2 of {totalParts} — Task Coverage
+        </p>
+      </div>
+
+      <div className="relative z-10 flex-1 flex flex-col min-h-0 overflow-y-auto justify-start pb-12 px-4 sm:px-8">
+        <div className="w-full max-w-4xl mx-auto animate-fadeSlideIn">
+          <h2 className="text-[1.5rem] font-light text-slate-800 leading-snug tracking-tight">
+            Your week at a glance
+          </h2>
+          <p className="text-sm text-slate-500 mt-2 leading-relaxed">
+            Here's how your hours add up across tasks. Drag a bar for a quick
+            estimate, then use −/+ to fine-tune to the half hour.
+          </p>
+
+          {/* Total pill + stacked breakdown bar */}
+          <div className="mt-6 px-6 py-5 rounded-2xl bg-indigo-50/70">
+            <div>
+              <span className="text-3xl font-semibold text-indigo-600 tabular-nums align-middle">
+                {formatHours(total)}
+              </span>
+              <span className="ml-2 text-sm text-slate-500 align-middle">
+                hours / week across {taskCount} task{taskCount !== 1 ? "s" : ""}
+              </span>
+            </div>
+
+            <div className="mt-4 flex w-full h-12 rounded-xl overflow-hidden bg-indigo-100/60 ring-1 ring-inset ring-indigo-200/50">
+              {total > 0 ? (
+                items.map((it, i) => {
+                  const pct = ((it.hours ?? 0) / total) * 100;
+                  if (pct <= 0) return null;
+                  return (
+                    <div
+                      key={it.key}
+                      className="flex items-center justify-center text-white text-sm font-semibold border-r-[3px] border-white last:border-r-0 overflow-hidden whitespace-nowrap transition-[width] duration-300 ease-out"
+                      style={{
+                        width: `${pct}%`,
+                        background: segmentColor(i),
+                        textShadow: "0 1px 2px rgba(15,23,42,0.18)",
+                      }}
+                      title={`${it.name}: ${formatHours(it.hours ?? 0)}h`}
+                    >
+                      {pct >= 6 ? formatHours(it.hours ?? 0) : ""}
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="flex items-center justify-center w-full text-xs text-slate-400">
+                  Set hours below to see your week
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Per-task rows — colored slider + −/value/+ stepper */}
+          <div className="mt-4 divide-y divide-slate-100">
+            {items.map((it, i) => (
+              <HoursSliderRow
+                key={it.key}
+                name={it.name}
+                hours={it.hours}
+                color={segmentColor(i)}
+                badge={it.badge}
+                onChange={it.onChange}
+              />
+            ))}
+          </div>
+
+          {hint && (
+            <p className="mt-4 flex items-start gap-2 text-sm leading-relaxed text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+              <svg
+                className="w-4 h-4 mt-0.5 shrink-0 text-amber-500"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                <line x1="12" y1="9" x2="12" y2="13" />
+                <line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+              <span>{hint}</span>
+            </p>
+          )}
+
+          <div className="mt-8 flex items-center justify-end gap-3">
+            {!allFilled && (
+              <p className="text-xs text-slate-400">
+                Enter hours for every task to continue.
+              </p>
+            )}
+            <button
+              onClick={onConfirm}
+              disabled={!allFilled}
+              className="shrink-0 inline-flex items-center gap-2 px-7 py-3 bg-gradient-to-br from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed text-white text-sm font-medium rounded-full transition-all active:scale-[0.98] shadow-md shadow-indigo-200/70"
+            >
+              Continue
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 // ── Single task review card ────────────────────────────────────────────────────
 
 interface TaskReviewCardProps {
@@ -731,7 +1084,7 @@ interface TaskReviewCardProps {
   taskIdx: number;
   isLast: boolean;
   onSaveEdit: (idx: number, name: string) => void;
-  onAdvance: (answer: "yes" | "no") => void;
+  onAdvance: (answer: "yes" | "no", meta?: { hoursPerWeek: number }) => void;
 }
 
 function TaskReviewCard({
@@ -741,14 +1094,27 @@ function TaskReviewCard({
   onSaveEdit,
   onAdvance,
 }: TaskReviewCardProps) {
-  const [primaryAnswer, setPrimaryAnswer] = useState<"yes" | "sort-of" | "no" | null>(null);
+  const [primaryAnswer, setPrimaryAnswer] = useState<"yes" | "no" | null>(null);
+  // Self-reported hours/week — only collected when "I do this". Stored as raw
+  // input text so the field can be empty mid-typing; parsed on continue.
+  const [hoursInput, setHoursInput] = useState("");
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(task.name);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
+  const hoursValue = parseFloat(hoursInput);
+  const hoursValid = Number.isFinite(hoursValue) && hoursValue >= 0;
+  // "No" continues immediately; "Yes" requires a valid hours figure.
+  const canContinue =
+    primaryAnswer === "no" || (primaryAnswer === "yes" && hoursValid);
+
   const handleContinue = () => {
-    if (primaryAnswer === null) return;
-    onAdvance(primaryAnswer === "no" ? "no" : "yes");
+    if (!canContinue) return;
+    if (primaryAnswer === "no") {
+      onAdvance("no");
+    } else {
+      onAdvance("yes", { hoursPerWeek: hoursValue });
+    }
   };
 
   const startEdit = () => {
@@ -773,98 +1139,120 @@ function TaskReviewCard({
   return (
     <div className="flex flex-col gap-7">
 
-      {/* ── Task name ── */}
-      <div>
-        <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-slate-400 mb-3 flex items-center gap-1.5">
-          <svg className="w-3 h-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M11 2l3 3-8 8H3v-3l8-8z" />
-          </svg>
-          Task statement · tap to edit
-        </p>
-        <div onClick={() => !editing && startEdit()} className="cursor-text select-none">
-          {editing ? (
-            <textarea
-              ref={inputRef}
-              className="w-full text-[1.55rem] font-bold text-slate-800 bg-transparent border-b-2 border-indigo-400 focus:outline-none pb-1 resize-none overflow-hidden leading-snug tracking-tight"
-              value={editValue}
-              rows={1}
-              onChange={(e) => {
-                setEditValue(e.target.value);
-                e.target.style.height = "auto";
-                e.target.style.height = e.target.scrollHeight + "px";
-              }}
-              onBlur={commitEdit}
-              onClick={(e) => e.stopPropagation()}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") { e.preventDefault(); commitEdit(); }
-                if (e.key === "Escape") { setEditing(false); setEditValue(task.name); }
-              }}
-            />
-          ) : (
-            <p className="text-[1.55rem] font-bold text-slate-800 leading-snug tracking-tight border-b-2 border-dashed border-slate-200 pb-0.5 hover:border-indigo-300 transition-colors duration-150">
+      {/* Task name */}
+      <div
+        onClick={() => !editing && startEdit()}
+        className="cursor-text select-none pb-1"
+      >
+        {editing ? (
+          <textarea
+            ref={inputRef}
+            className="w-full text-2xl font-light text-slate-800 bg-transparent border-b-2 border-indigo-300 focus:outline-none pb-1 resize-none overflow-hidden leading-snug"
+            value={editValue}
+            rows={1}
+            onChange={(e) => {
+              setEditValue(e.target.value);
+              e.target.style.height = "auto";
+              e.target.style.height = e.target.scrollHeight + "px";
+            }}
+            onBlur={commitEdit}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") { e.preventDefault(); commitEdit(); }
+              if (e.key === "Escape") { setEditing(false); setEditValue(task.name); }
+            }}
+          />
+        ) : (
+          <div className="flex items-start gap-3">
+            <p className="text-2xl font-light text-slate-800 leading-snug flex-1">
               {task.name}
             </p>
-          )}
-        </div>
-      </div>
-
-      {/* ── Answer ── */}
-      <div className="space-y-4">
-        <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-slate-400">
-          Does this describe your work?
-        </p>
-
-        <div className="flex gap-2">
-          {(
-            [
-              { value: "yes",     label: "Yes, I do this",
-                active:   "bg-indigo-600 border-indigo-600 text-white shadow-sm shadow-indigo-200",
-                inactive: "hover:border-indigo-300 hover:text-indigo-600" },
-              { value: "sort-of", label: "Sort of",
-                active:   "bg-emerald-500 border-emerald-500 text-white shadow-sm shadow-emerald-200",
-                inactive: "hover:border-emerald-300 hover:text-emerald-600" },
-              { value: "no",      label: "Not me",
-                active:   "bg-slate-100 border-slate-300 text-slate-600",
-                inactive: "hover:border-slate-300 hover:text-slate-600" },
-            ] as { value: "yes" | "sort-of" | "no"; label: string; active: string; inactive: string }[]
-          ).map(({ value, label, active, inactive }) => (
-            <button
-              key={value}
-              onClick={() => setPrimaryAnswer(value)}
-              className={`flex-1 py-2.5 rounded-xl border text-sm font-medium transition-all duration-150 active:scale-[0.97] ${
-                primaryAnswer === value
-                  ? active
-                  : `bg-white border-slate-200 text-slate-500 ${inactive}`
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {/* "Sort of" nudge — stays visible once selected, even during editing */}
-        {primaryAnswer === "sort-of" && (
-          <div
-            onClick={() => !editing && startEdit()}
-            className={`flex items-start gap-3 px-4 py-3.5 rounded-xl bg-amber-50 border border-amber-200 ${editing ? "cursor-default" : "cursor-text"} animate-fadeSlideIn`}
-          >
-            <svg className="w-4 h-4 mt-0.5 shrink-0 text-amber-500" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M11 2l3 3-8 8H3v-3l8-8z" />
-            </svg>
-            <p className="text-sm text-amber-700 leading-relaxed">
-              {editing
-                ? "Great — reword it so it reflects how you actually do this."
-                : <><span className="font-semibold text-amber-800">Make it yours.</span> Tap the title above and reword it in your own terms.</>}
-            </p>
+            <span className="mt-1 shrink-0 flex items-center justify-center w-8 h-8 rounded-full bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-500 transition-colors">
+              <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M11 2l3 3-8 8H3v-3l8-8z" />
+              </svg>
+            </span>
           </div>
         )}
       </div>
+
+      {/* Buttons */}
+      <div className="flex gap-3">
+        {(
+          [
+            { value: "yes", label: "I do this",
+              active:   "bg-indigo-600 border-indigo-600 text-white shadow-sm shadow-indigo-200",
+              inactive: "hover:border-indigo-200 hover:text-indigo-600" },
+            { value: "no",  label: "I don't do this",
+              active:   "bg-slate-100 border-slate-300 text-slate-700",
+              inactive: "hover:border-slate-300" },
+          ] as { value: "yes" | "no"; label: string; active: string; inactive: string }[]
+        ).map(({ value, label, active, inactive }) => (
+          <button
+            key={value}
+            onClick={() => {
+              setPrimaryAnswer(value);
+              if (value === "no") setHoursInput("");
+            }}
+            className={`flex-1 py-3 rounded-2xl border text-sm font-medium transition-all active:scale-[0.98] ${
+              primaryAnswer === value
+                ? active
+                : `bg-white border-slate-200 text-slate-600 ${inactive}`
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Hours follow-up — only when the participant does this task */}
+      {primaryAnswer === "yes" && (
+        <div className="space-y-5 pt-2 animate-fadeSlideIn">
+          <p className="text-base font-normal text-slate-500">
+            In a typical week, how many hours do you spend on this?
+          </p>
+          <div className="flex items-center gap-3">
+            <input
+              type="number"
+              min={0}
+              step={0.5}
+              inputMode="decimal"
+              value={hoursInput}
+              onChange={(e) => setHoursInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && canContinue) handleContinue();
+              }}
+              placeholder="e.g. 3"
+              className="w-28 px-3.5 py-2.5 text-sm text-slate-700 placeholder:text-slate-300 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 transition"
+            />
+            <span className="text-sm text-slate-500">hours / week</span>
+          </div>
+        </div>
+      )}
+
+      {/* Nudge — shown on confirm, encourages editing */}
+      {primaryAnswer === "yes" && (
+        <div
+          onClick={() => !editing && startEdit()}
+          className={`flex items-start gap-3 px-4 py-3.5 rounded-xl bg-amber-50 border border-amber-200 ${editing ? "cursor-default" : "cursor-text"} animate-fadeSlideIn`}
+        >
+          <svg className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-500" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M11 2l3 3-8 8H3v-3l8-8z" />
+          </svg>
+          <p className="text-sm text-amber-700 leading-relaxed">
+            {editing
+              ? "Great — reword it so it reflects how you actually do this."
+              : <><span className="font-semibold text-amber-800">Make it yours.</span> Click the title above and reword it in your own terms.</>}
+          </p>
+        </div>
+      )}
 
       {/* Continue */}
       {primaryAnswer !== null && (
         <button
           onClick={handleContinue}
-          className="self-end px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-xl transition-all active:scale-[0.98]"
+          disabled={!canContinue}
+          className="self-end px-5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-30 text-white text-sm font-medium rounded-xl transition-all active:scale-[0.98]"
         >
           {isLast ? "Done →" : "Continue →"}
         </button>
