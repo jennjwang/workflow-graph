@@ -186,8 +186,14 @@ export function TaskSelection() {
   // edits[] reflects when the participant actually typed it, not when they
   // hit Submit. (Submitting an 11-task batch used to stamp all 11 with the
   // same millisecond.)
-  const [extraTasks, setExtraTasks] = useState<{ name: string; addedAt: number }[]>([]);
+  const [extraTasks, setExtraTasks] = useState<
+    { name: string; addedAt: number; hoursPerWeek?: number }[]
+  >([]);
   const [extraInput, setExtraInput] = useState("");
+
+  // After the review/add screen, participants confirm how their indicated hours
+  // are distributed across the week before the response is finalized.
+  const [showHoursSummary, setShowHoursSummary] = useState(false);
 
   const bonusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -378,17 +384,36 @@ export function TaskSelection() {
     setExtraTasks((prev) => prev.filter((_, i) => i !== idx));
   };
 
-  const proceed = (pendingExtra?: string) => {
-    // If the participant clicked Submit with un-added draft text in the input,
-    // commit it here. (Doing this in handleSubmit via setExtraTasks would race
-    // with this function reading the stale closure.) That task is timestamped
-    // at this moment; everything else uses the moment-of-add timestamps
-    // captured when each was originally typed.
+  // Step 1 of finishing: commit any un-added draft task, then move to the
+  // hours-distribution confirmation screen (instead of finalizing directly).
+  const goToHoursSummary = (pendingExtra?: string) => {
     const trimmedPending = pendingExtra?.trim() ?? "";
-    const finalExtras =
-      trimmedPending && !extraTasks.some((e) => e.name === trimmedPending)
-        ? [...extraTasks, { name: trimmedPending, addedAt: Date.now() }]
-        : extraTasks;
+    if (trimmedPending && !extraTasks.some((e) => e.name === trimmedPending)) {
+      setExtraTasks((prev) => [
+        ...prev,
+        { name: trimmedPending, addedAt: Date.now() },
+      ]);
+    }
+    setShowHoursSummary(true);
+  };
+
+  // Edit a confirmed picker task's hours from the summary screen.
+  const setTaskHours = (idx: number, hours: number | undefined) => {
+    setTasks((prev) =>
+      prev.map((t, i) => (i === idx ? { ...t, hoursPerWeek: hours } : t)),
+    );
+  };
+
+  // Edit an added task's hours from the summary screen.
+  const setExtraHours = (idx: number, hours: number | undefined) => {
+    setExtraTasks((prev) =>
+      prev.map((e, i) => (i === idx ? { ...e, hoursPerWeek: hours } : e)),
+    );
+  };
+
+  // Step 2: finalize the response after the participant confirms their hours.
+  const finalize = () => {
+    const finalExtras = extraTasks;
 
     // Tasks the participant typed in get appended as confirmed, flagged as participant-added.
     const extraItems: TaskItem[] = finalExtras.map((e) => ({
@@ -397,6 +422,7 @@ export function TaskSelection() {
       status: "confirmed",
       category: "__participant_added__",
       addedByParticipant: true,
+      hoursPerWeek: e.hoursPerWeek,
       edits: [
         { from: "", to: e.name, charsChanged: e.name.length, timestamp: e.addedAt },
       ],
@@ -476,6 +502,28 @@ export function TaskSelection() {
 
   if (showIntro) {
     return <IntroScreen onStart={() => setShowIntro(false)} totalParts={totalParts} />;
+  }
+
+  if (showHoursSummary) {
+    // Indices into `tasks` are preserved so inline edits map back to the right
+    // confirmed picker task; added tasks are edited against extraTasks order.
+    const confirmedPickerTasks = tasks
+      .map((t, idx) => ({ t, idx }))
+      .filter(
+        ({ t }) =>
+          (t.status === "confirmed" || t.status === "edited") &&
+          !t.isAttentionCheck,
+      );
+    return (
+      <HoursSummaryScreen
+        totalParts={totalParts}
+        confirmedPickerTasks={confirmedPickerTasks}
+        extraTasks={extraTasks}
+        onSetTaskHours={setTaskHours}
+        onSetExtraHours={setExtraHours}
+        onConfirm={finalize}
+      />
+    );
   }
 
   return (
@@ -566,7 +614,7 @@ export function TaskSelection() {
             onRemoveExtra={removeExtraTask}
             addEarnedUsd={addEarnedUsd}
             addCapped={addCapped}
-            onSubmit={proceed}
+            onSubmit={goToHoursSummary}
           />
         ) : currentTask ? (
           <TaskReviewCard
@@ -584,7 +632,7 @@ export function TaskSelection() {
       {canEarlyExit && !isExhausted && (
         <div className="relative z-10 px-8 pb-8 pt-4 border-t border-slate-100 shrink-0">
           <button
-            onClick={() => proceed()}
+            onClick={() => goToHoursSummary()}
             className="w-full text-sm text-slate-400 hover:text-slate-600 transition py-1"
           >
             Done — continue with {confirmedCount} task
@@ -704,6 +752,208 @@ function IntroScreen({ onStart, totalParts }: { onStart: () => void; totalParts:
               <polyline points="13 6 19 12 13 18" />
             </svg>
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Hours distribution summary ──────────────────────────────────────────────────
+
+// Reference point for the plausibility hint — a conventional full-time week.
+const FULL_WEEK_HOURS = 40;
+
+function formatHours(n: number): string {
+  // Drop the trailing ".0" but keep halves etc. (e.g. 3, 3.5, 10).
+  return Number.isInteger(n) ? `${n}` : `${n.toFixed(1)}`;
+}
+
+// One editable row. Keeps the raw input text locally so the field can be empty
+// or mid-typing without the parent forcing it back to a number.
+function HoursRow({
+  name,
+  hours,
+  maxHours,
+  badge,
+  onChange,
+}: {
+  name: string;
+  hours: number | undefined;
+  maxHours: number;
+  badge?: string;
+  onChange: (hours: number | undefined) => void;
+}) {
+  const [text, setText] = useState(
+    hours === undefined ? "" : formatHours(hours),
+  );
+  const pct =
+    hours !== undefined && maxHours > 0
+      ? Math.max((hours / maxHours) * 100, hours > 0 ? 4 : 0)
+      : 0;
+
+  return (
+    <div className="flex items-center gap-3 py-2">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <p className="text-sm text-slate-800 leading-snug truncate">{name}</p>
+          {badge && (
+            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-indigo-500">
+              {badge}
+            </span>
+          )}
+        </div>
+        <div className="mt-1.5 h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-violet-400 transition-all duration-300"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      </div>
+      <div className="shrink-0 flex items-center gap-1.5">
+        <input
+          type="number"
+          min={0}
+          step={0.5}
+          inputMode="decimal"
+          value={text}
+          onChange={(e) => {
+            const v = e.target.value;
+            setText(v);
+            const parsed = parseFloat(v);
+            onChange(Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined);
+          }}
+          placeholder="—"
+          className="w-16 px-2 py-1.5 text-sm text-right text-slate-700 placeholder:text-slate-300 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 transition"
+        />
+        <span className="text-xs text-slate-400 w-7">hrs</span>
+      </div>
+    </div>
+  );
+}
+
+function HoursSummaryScreen({
+  totalParts,
+  confirmedPickerTasks,
+  extraTasks,
+  onSetTaskHours,
+  onSetExtraHours,
+  onConfirm,
+}: {
+  totalParts: number;
+  confirmedPickerTasks: { t: TaskItem; idx: number }[];
+  extraTasks: { name: string; addedAt: number; hoursPerWeek?: number }[];
+  onSetTaskHours: (idx: number, hours: number | undefined) => void;
+  onSetExtraHours: (idx: number, hours: number | undefined) => void;
+  onConfirm: () => void;
+}) {
+  const pickerHours = confirmedPickerTasks.map(({ t }) => t.hoursPerWeek ?? 0);
+  const extraHours = extraTasks.map((e) => e.hoursPerWeek ?? 0);
+  const total =
+    pickerHours.reduce((s, h) => s + h, 0) +
+    extraHours.reduce((s, h) => s + h, 0);
+  const maxHours = Math.max(0, ...pickerHours, ...extraHours);
+  const taskCount = confirmedPickerTasks.length + extraTasks.length;
+
+  // Every listed task needs a valid figure before we let them confirm — picker
+  // tasks already collected hours during review; added tasks may still be blank.
+  const allFilled =
+    confirmedPickerTasks.every(({ t }) => typeof t.hoursPerWeek === "number") &&
+    extraTasks.every((e) => typeof e.hoursPerWeek === "number");
+
+  // Soft plausibility hint — never blocks, just orients them.
+  const hint =
+    total === 0
+      ? null
+      : total > FULL_WEEK_HOURS * 2
+        ? `That's more than ${FULL_WEEK_HOURS * 2} hours — more than most people work in a week. Adjust any that look off.`
+        : total > FULL_WEEK_HOURS * 1.25
+          ? `That's well above a typical ${FULL_WEEK_HOURS}-hour week. That's fine if it's accurate — just double-check.`
+          : null;
+
+  return (
+    <div className="flex flex-col h-full bg-transparent relative overflow-hidden">
+      {/* Header */}
+      <div className="relative z-10 px-8 pt-8 pb-5 shrink-0">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-4">
+          Part 2 of {totalParts} — Task Coverage
+        </p>
+      </div>
+
+      <div className="relative z-10 flex-1 flex flex-col min-h-0 overflow-y-auto justify-start pb-12 px-4 sm:px-8">
+        <div className="w-full max-w-2xl mx-auto animate-fadeSlideIn">
+          <h2 className="text-[1.5rem] font-light text-slate-800 leading-snug tracking-tight">
+            Your week at a glance
+          </h2>
+          <p className="text-sm text-slate-500 mt-2 leading-relaxed">
+            Here's how the hours you entered add up across your tasks. Adjust any
+            that don't look right.
+          </p>
+
+          {/* Total headline */}
+          <div className="mt-6 flex items-baseline gap-2 px-5 py-4 rounded-2xl bg-indigo-50/60 border border-indigo-100">
+            <span className="text-3xl font-light text-indigo-700">
+              {formatHours(total)}
+            </span>
+            <span className="text-sm text-indigo-500">
+              hours / week across {taskCount} task{taskCount !== 1 ? "s" : ""}
+            </span>
+          </div>
+
+          {hint && (
+            <p className="mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              {hint}
+            </p>
+          )}
+
+          {/* Distribution rows */}
+          <div className="mt-6 divide-y divide-slate-100">
+            {confirmedPickerTasks.map(({ t, idx }) => (
+              <HoursRow
+                key={`picker-${idx}`}
+                name={t.name}
+                hours={t.hoursPerWeek}
+                maxHours={maxHours}
+                onChange={(h) => onSetTaskHours(idx, h)}
+              />
+            ))}
+            {extraTasks.map((e, i) => (
+              <HoursRow
+                key={`extra-${i}`}
+                name={e.name}
+                hours={e.hoursPerWeek}
+                maxHours={maxHours}
+                badge="added"
+                onChange={(h) => onSetExtraHours(i, h)}
+              />
+            ))}
+          </div>
+
+          <div className="mt-8 flex items-center justify-end gap-3">
+            {!allFilled && (
+              <p className="text-xs text-slate-400">
+                Enter hours for every task to continue.
+              </p>
+            )}
+            <button
+              onClick={onConfirm}
+              disabled={!allFilled}
+              className="shrink-0 inline-flex items-center gap-2 px-7 py-3 bg-gradient-to-br from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed text-white text-sm font-medium rounded-full transition-all active:scale-[0.98] shadow-md shadow-indigo-200/70"
+            >
+              Looks right — continue
+              <svg
+                className="w-4 h-4"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <line x1="5" y1="12" x2="19" y2="12" />
+                <polyline points="12 5 19 12 12 19" />
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
     </div>
