@@ -119,10 +119,14 @@ export function TaskSelection() {
   // "What else fills your week?" review screen with seeded confirmed tasks.
   // ?dev=task-selection&card=1 instead lands on the single per-task review card
   // (the confirm/edit/AI-use step) with seeded unreviewed tasks to click through.
+  // ?dev=task-selection&hours=1 lands on the "Your week at a glance" hours
+  // summary with seeded confirmed tasks that already carry hours.
   const devSkipToReview =
     new URLSearchParams(window.location.search).get("review") === "1";
   const devSkipToCard =
     new URLSearchParams(window.location.search).get("card") === "1";
+  const devSkipToHours =
+    new URLSearchParams(window.location.search).get("hours") === "1";
 
   const DEV_REVIEW_SEED: TaskItem[] = [
     {
@@ -168,16 +172,33 @@ export function TaskSelection() {
     status: "unreviewed",
   }));
 
+  // Same confirmed tasks, but with varied hours so the summary's distribution
+  // bars and weekly total render something meaningful.
+  const DEV_HOURS_SEED: TaskItem[] = DEV_REVIEW_SEED.map((t, i) => ({
+    ...t,
+    hoursPerWeek: [8, 5, 2, 6, 3, 4, 1.5][i] ?? 2,
+  }));
+
   const [tasks, setTasks] = useState<TaskItem[]>(
-    devSkipToCard ? DEV_CARD_SEED : devSkipToReview ? DEV_REVIEW_SEED : [],
+    devSkipToCard
+      ? DEV_CARD_SEED
+      : devSkipToHours
+        ? DEV_HOURS_SEED
+        : devSkipToReview
+          ? DEV_REVIEW_SEED
+          : [],
   );
   const [currentIdx, setCurrentIdx] = useState(
-    !devSkipToCard && devSkipToReview ? DEV_REVIEW_SEED.length : 0,
+    !devSkipToCard && (devSkipToReview || devSkipToHours)
+      ? DEV_REVIEW_SEED.length
+      : 0,
   );
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">(
-    devSkipToReview || devSkipToCard ? "ready" : "loading",
+    devSkipToReview || devSkipToCard || devSkipToHours ? "ready" : "loading",
   );
-  const [showIntro, setShowIntro] = useState(!devSkipToReview && !devSkipToCard);
+  const [showIntro, setShowIntro] = useState(
+    !devSkipToReview && !devSkipToCard && !devSkipToHours,
+  );
   const [showBonusToast, setShowBonusToast] = useState(false);
   const [lastBonusDelta, setLastBonusDelta] = useState(0);
 
@@ -192,8 +213,9 @@ export function TaskSelection() {
   const [extraInput, setExtraInput] = useState("");
 
   // After the review/add screen, participants confirm how their indicated hours
-  // are distributed across the week before the response is finalized.
-  const [showHoursSummary, setShowHoursSummary] = useState(false);
+  // are distributed across the week before the response is finalized. The
+  // hours=1 dev shortcut opens directly on it.
+  const [showHoursSummary, setShowHoursSummary] = useState(devSkipToHours);
 
   const bonusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -230,7 +252,7 @@ export function TaskSelection() {
   // set of tasks for this role. Faster (one LLM call instead of N+1) and the model handles
   // breadth on its own when told to.
   useEffect(() => {
-    if (devSkipToReview || devSkipToCard) return; // dev shortcut: tasks are already seeded
+    if (devSkipToReview || devSkipToCard || devSkipToHours) return; // dev shortcut: tasks are already seeded
     async function load() {
       try {
         // simple-LLM baseline: the participant's interview-mentioned activities
@@ -1148,8 +1170,8 @@ function TaskReviewCard({
 
       {/* Hours follow-up — only when the participant does this task */}
       {primaryAnswer === "yes" && (
-        <div className="space-y-3 animate-fadeSlideIn">
-          <p className="text-base font-medium text-slate-700">
+        <div className="space-y-5 pt-2 animate-fadeSlideIn">
+          <p className="text-base font-normal text-slate-500">
             In a typical week, how many hours do you spend on this?
           </p>
           <div className="flex items-center gap-3">
