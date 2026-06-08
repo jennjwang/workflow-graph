@@ -790,65 +790,66 @@ function formatHours(n: number): string {
   return Number.isInteger(n) ? `${n}` : `${n.toFixed(1)}`;
 }
 
-// One editable row. Keeps the raw input text locally so the field can be empty
-// or mid-typing without the parent forcing it back to a number.
-function HoursRow({
+// Blue → violet → magenta gradient across N segments. The same function colors
+// both the stacked bar segment and its legend dot, so they stay in sync.
+function segmentColor(i: number, n: number): string {
+  const t = n <= 1 ? 0 : i / (n - 1);
+  const hue = 222 + t * 108; // 222 (indigo-blue) → 330 (pink)
+  return `hsl(${hue}, 68%, 62%)`;
+}
+
+// One editable legend entry: color swatch, task name, and a compact hours input.
+// Keeps the raw input text locally so the field can be empty / mid-typing without
+// the parent forcing it back to a number.
+function LegendRow({
   name,
   hours,
-  maxHours,
+  color,
   badge,
   onChange,
 }: {
   name: string;
   hours: number | undefined;
-  maxHours: number;
+  color: string;
   badge?: string;
   onChange: (hours: number | undefined) => void;
 }) {
   const [text, setText] = useState(
     hours === undefined ? "" : formatHours(hours),
   );
-  const pct =
-    hours !== undefined && maxHours > 0
-      ? Math.max((hours / maxHours) * 100, hours > 0 ? 4 : 0)
-      : 0;
-
   return (
-    <div className="flex items-center gap-3 py-2">
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <p className="text-sm text-slate-800 leading-snug truncate">{name}</p>
-          {badge && (
-            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-indigo-500">
-              {badge}
-            </span>
-          )}
-        </div>
-        <div className="mt-1.5 h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
-          <div
-            className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-violet-400 transition-all duration-300"
-            style={{ width: `${pct}%` }}
-          />
-        </div>
-      </div>
-      <div className="shrink-0 flex items-center gap-1.5">
-        <input
-          type="number"
-          min={0}
-          step={0.5}
-          inputMode="decimal"
-          value={text}
-          onChange={(e) => {
-            const v = e.target.value;
-            setText(v);
-            const parsed = parseFloat(v);
-            onChange(Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined);
-          }}
-          placeholder="—"
-          className="w-16 px-2 py-1.5 text-sm text-right text-slate-700 placeholder:text-slate-300 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 transition"
-        />
-        <span className="text-xs text-slate-400 w-7">hrs</span>
-      </div>
+    <div className="flex items-center gap-2.5 py-1.5">
+      <span
+        className="w-2.5 h-2.5 rounded-sm shrink-0"
+        style={{ background: color }}
+      />
+      <p
+        className="flex-1 min-w-0 text-sm text-slate-700 truncate"
+        title={name}
+      >
+        {name}
+        {badge && (
+          <span className="ml-1.5 text-[10px] font-semibold uppercase tracking-wider text-indigo-400">
+            {badge}
+          </span>
+        )}
+      </p>
+      <input
+        type="number"
+        min={0}
+        step={0.5}
+        inputMode="decimal"
+        value={text}
+        onChange={(e) => {
+          const v = e.target.value;
+          setText(v);
+          const parsed = parseFloat(v);
+          onChange(Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined);
+        }}
+        placeholder="—"
+        className="w-14 px-2 py-1 text-sm text-right text-slate-700 placeholder:text-slate-300 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 transition"
+      />
+      <span className="text-xs text-slate-400 w-3">h</span>
     </div>
   );
 }
@@ -868,19 +869,31 @@ function HoursSummaryScreen({
   onSetExtraHours: (idx: number, hours: number | undefined) => void;
   onConfirm: () => void;
 }) {
-  const pickerHours = confirmedPickerTasks.map(({ t }) => t.hoursPerWeek ?? 0);
-  const extraHours = extraTasks.map((e) => e.hoursPerWeek ?? 0);
-  const total =
-    pickerHours.reduce((s, h) => s + h, 0) +
-    extraHours.reduce((s, h) => s + h, 0);
-  const maxHours = Math.max(0, ...pickerHours, ...extraHours);
-  const taskCount = confirmedPickerTasks.length + extraTasks.length;
+  // One unified list so the bar segment, total, and legend all share an order
+  // and color index.
+  const items = [
+    ...confirmedPickerTasks.map(({ t, idx }) => ({
+      key: `picker-${idx}`,
+      name: t.name,
+      hours: t.hoursPerWeek,
+      badge: undefined as string | undefined,
+      onChange: (h: number | undefined) => onSetTaskHours(idx, h),
+    })),
+    ...extraTasks.map((e, i) => ({
+      key: `extra-${i}`,
+      name: e.name,
+      hours: e.hoursPerWeek,
+      badge: "added" as string | undefined,
+      onChange: (h: number | undefined) => onSetExtraHours(i, h),
+    })),
+  ];
+  const n = items.length;
+  const total = items.reduce((s, it) => s + (it.hours ?? 0), 0);
+  const taskCount = n;
 
   // Every listed task needs a valid figure before we let them confirm — picker
   // tasks already collected hours during review; added tasks may still be blank.
-  const allFilled =
-    confirmedPickerTasks.every(({ t }) => typeof t.hoursPerWeek === "number") &&
-    extraTasks.every((e) => typeof e.hoursPerWeek === "number");
+  const allFilled = items.every((it) => typeof it.hours === "number");
 
   // Soft plausibility hint — never blocks, just orients them.
   const hint =
@@ -910,14 +923,56 @@ function HoursSummaryScreen({
             Here's how your hours add up across tasks. Adjust any that look off.
           </p>
 
-          {/* Total headline */}
-          <div className="mt-6 flex items-baseline gap-2 px-5 py-4 rounded-2xl bg-indigo-50/60 border border-indigo-100">
-            <span className="text-3xl font-light text-indigo-700">
-              {formatHours(total)}
-            </span>
-            <span className="text-sm text-indigo-500">
-              hours / week across {taskCount} task{taskCount !== 1 ? "s" : ""}
-            </span>
+          {/* Total + stacked distribution bar + legend — one combined block */}
+          <div className="mt-6 px-5 py-5 rounded-2xl bg-slate-50/70 border border-slate-100">
+            {/* Total headline */}
+            <div className="flex items-baseline gap-2.5">
+              <span className="text-3xl font-semibold text-indigo-600">
+                {formatHours(total)} h
+              </span>
+              <span className="text-sm text-slate-400">
+                weekly total across {taskCount} task
+                {taskCount !== 1 ? "s" : ""}
+              </span>
+            </div>
+
+            {/* Stacked proportional bar */}
+            <div className="mt-4 flex w-full h-14 rounded-xl overflow-hidden bg-slate-100">
+              {total > 0 ? (
+                items.map((it, i) => {
+                  const pct = ((it.hours ?? 0) / total) * 100;
+                  if (pct <= 0) return null;
+                  return (
+                    <div
+                      key={it.key}
+                      className="flex items-center justify-center text-white text-sm font-medium border-r-2 border-white last:border-r-0 overflow-hidden whitespace-nowrap"
+                      style={{ width: `${pct}%`, background: segmentColor(i, n) }}
+                      title={`${it.name}: ${formatHours(it.hours ?? 0)}h`}
+                    >
+                      {pct >= 7 ? formatHours(it.hours ?? 0) : ""}
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="flex items-center justify-center w-full text-xs text-slate-400">
+                  Enter hours below to see your week
+                </div>
+              )}
+            </div>
+
+            {/* Legend — editable */}
+            <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-x-8">
+              {items.map((it, i) => (
+                <LegendRow
+                  key={it.key}
+                  name={it.name}
+                  hours={it.hours}
+                  color={segmentColor(i, n)}
+                  badge={it.badge}
+                  onChange={it.onChange}
+                />
+              ))}
+            </div>
           </div>
 
           {hint && (
@@ -925,29 +980,6 @@ function HoursSummaryScreen({
               {hint}
             </p>
           )}
-
-          {/* Distribution rows */}
-          <div className="mt-6 divide-y divide-slate-100">
-            {confirmedPickerTasks.map(({ t, idx }) => (
-              <HoursRow
-                key={`picker-${idx}`}
-                name={t.name}
-                hours={t.hoursPerWeek}
-                maxHours={maxHours}
-                onChange={(h) => onSetTaskHours(idx, h)}
-              />
-            ))}
-            {extraTasks.map((e, i) => (
-              <HoursRow
-                key={`extra-${i}`}
-                name={e.name}
-                hours={e.hoursPerWeek}
-                maxHours={maxHours}
-                badge="added"
-                onChange={(h) => onSetExtraHours(i, h)}
-              />
-            ))}
-          </div>
 
           <div className="mt-8 flex items-center justify-end gap-3">
             {!allFilled && (
