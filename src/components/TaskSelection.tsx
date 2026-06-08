@@ -1137,7 +1137,7 @@ function TaskReviewCard({
   };
 
   return (
-    <div className="flex flex-col gap-7">
+    <div className="flex flex-col gap-6">
 
       {/* Task name */}
       <div
@@ -1224,7 +1224,7 @@ function TaskReviewCard({
 
       {/* Hours follow-up — only when the participant does this task */}
       {primaryAnswer === "yes" && (
-        <div className="space-y-5 pt-2 animate-fadeSlideIn">
+        <div className="space-y-3 animate-fadeSlideIn">
           <p className="text-base font-normal text-slate-500">
             In a typical week, how many hours do you spend on this?
           </p>
