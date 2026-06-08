@@ -830,13 +830,13 @@ function HoursSliderRow({
   };
 
   return (
-    <div className="flex items-center gap-3 py-2.5">
+    <div className="group flex items-center gap-3.5 px-3 -mx-3 py-2.5 rounded-xl hover:bg-white/70 transition-colors">
       <span
-        className="w-2.5 h-2.5 rounded-sm shrink-0"
+        className="w-2.5 h-2.5 rounded-full shrink-0 ring-2 ring-white shadow-sm"
         style={{ background: color }}
       />
       <p
-        className="w-44 shrink-0 text-sm text-slate-700 truncate"
+        className="w-40 shrink-0 text-sm text-slate-600 group-hover:text-slate-800 truncate transition-colors"
         title={name}
       >
         {name}
@@ -853,25 +853,29 @@ function HoursSliderRow({
         step={0.5}
         value={sliderValue}
         onChange={(e) => commitFromSlider(parseFloat(e.target.value))}
-        style={{ accentColor: color }}
-        className="flex-1 min-w-0 cursor-pointer"
+        style={{ color }}
+        className="hours-slider flex-1 min-w-0 cursor-pointer"
       />
-      <input
-        type="number"
-        min={0}
-        step={0.5}
-        inputMode="decimal"
-        value={text}
-        onChange={(e) => {
-          const v = e.target.value;
-          setText(v);
-          const parsed = parseFloat(v);
-          onChange(Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined);
-        }}
-        placeholder="—"
-        className="w-14 px-2 py-1 text-sm text-right text-slate-700 placeholder:text-slate-300 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 transition"
-      />
-      <span className="text-xs text-slate-400 w-3">h</span>
+      <div className="shrink-0 flex items-center gap-1">
+        <input
+          type="number"
+          min={0}
+          step={0.5}
+          inputMode="decimal"
+          value={text}
+          onChange={(e) => {
+            const v = e.target.value;
+            setText(v);
+            const parsed = parseFloat(v);
+            onChange(
+              Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined,
+            );
+          }}
+          placeholder="—"
+          className="w-12 px-1.5 py-1 text-sm text-right tabular-nums text-slate-700 placeholder:text-slate-300 bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 transition"
+        />
+        <span className="text-xs text-slate-400">h</span>
+      </div>
     </div>
   );
 }
@@ -945,21 +949,23 @@ function HoursSummaryScreen({
             Here's how your hours add up across tasks. Adjust any that look off.
           </p>
 
-          {/* Total + stacked distribution bar + legend — one combined block */}
-          <div className="mt-6 px-5 py-5 rounded-2xl bg-slate-50/70 border border-slate-100">
+          {/* Total + stacked bar + per-task sliders — one combined block */}
+          <div className="mt-6 p-6 rounded-3xl bg-gradient-to-b from-white to-slate-50/60 border border-slate-200/70 shadow-[0_1px_3px_rgba(15,23,42,0.04),0_8px_24px_-12px_rgba(79,70,229,0.12)]">
             {/* Total headline */}
-            <div className="flex items-baseline gap-2.5">
-              <span className="text-3xl font-semibold text-indigo-600">
-                {formatHours(total)} h
-              </span>
-              <span className="text-sm text-slate-400">
-                weekly total across {taskCount} task
-                {taskCount !== 1 ? "s" : ""}
+            <div className="flex items-baseline justify-between">
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-[2.75rem] leading-none font-light tracking-tight text-indigo-600 tabular-nums">
+                  {formatHours(total)}
+                </span>
+                <span className="text-xl font-light text-indigo-300">h</span>
+              </div>
+              <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                {taskCount} task{taskCount !== 1 ? "s" : ""} · per week
               </span>
             </div>
 
             {/* Stacked proportional bar */}
-            <div className="mt-4 flex w-full h-14 rounded-xl overflow-hidden bg-slate-100">
+            <div className="mt-5 flex w-full h-16 rounded-2xl overflow-hidden bg-slate-100 ring-1 ring-inset ring-slate-200/70">
               {total > 0 ? (
                 items.map((it, i) => {
                   const pct = ((it.hours ?? 0) / total) * 100;
@@ -967,8 +973,12 @@ function HoursSummaryScreen({
                   return (
                     <div
                       key={it.key}
-                      className="flex items-center justify-center text-white text-sm font-medium border-r-2 border-white last:border-r-0 overflow-hidden whitespace-nowrap"
-                      style={{ width: `${pct}%`, background: segmentColor(i, n) }}
+                      className="flex items-center justify-center text-white text-sm font-semibold border-r-[3px] border-white last:border-r-0 overflow-hidden whitespace-nowrap transition-[width] duration-300 ease-out"
+                      style={{
+                        width: `${pct}%`,
+                        background: segmentColor(i, n),
+                        textShadow: "0 1px 2px rgba(15,23,42,0.18)",
+                      }}
                       title={`${it.name}: ${formatHours(it.hours ?? 0)}h`}
                     >
                       {pct >= 7 ? formatHours(it.hours ?? 0) : ""}
@@ -983,7 +993,7 @@ function HoursSummaryScreen({
             </div>
 
             {/* Per-task rows — slider + number input, colors matched to the bar */}
-            <div className="mt-5 pt-4 border-t border-slate-200/70 divide-y divide-slate-100">
+            <div className="mt-6 pt-5 border-t border-slate-200/60 space-y-0.5">
               {items.map((it, i) => (
                 <HoursSliderRow
                   key={it.key}
