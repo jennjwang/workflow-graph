@@ -1205,6 +1205,23 @@ function TaskReviewCard({
         ))}
       </div>
 
+      {/* Nudge — shown on confirm, encourages editing */}
+      {primaryAnswer === "yes" && (
+        <div
+          onClick={() => !editing && startEdit()}
+          className={`flex items-start gap-3 px-4 py-3.5 rounded-xl bg-amber-50 border border-amber-200 ${editing ? "cursor-default" : "cursor-text"} animate-fadeSlideIn`}
+        >
+          <svg className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-500" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M11 2l3 3-8 8H3v-3l8-8z" />
+          </svg>
+          <p className="text-sm text-amber-700 leading-relaxed">
+            {editing
+              ? "Great — reword it so it reflects how you actually do this."
+              : <><span className="font-semibold text-amber-800">Make it yours.</span> Click the title above and reword it in your own terms.</>}
+          </p>
+        </div>
+      )}
+
       {/* Hours follow-up — only when the participant does this task */}
       {primaryAnswer === "yes" && (
         <div className="space-y-5 pt-2 animate-fadeSlideIn">
@@ -1227,23 +1244,6 @@ function TaskReviewCard({
             />
             <span className="text-sm text-slate-500">hours / week</span>
           </div>
-        </div>
-      )}
-
-      {/* Nudge — shown on confirm, encourages editing */}
-      {primaryAnswer === "yes" && (
-        <div
-          onClick={() => !editing && startEdit()}
-          className={`flex items-start gap-3 px-4 py-3.5 rounded-xl bg-amber-50 border border-amber-200 ${editing ? "cursor-default" : "cursor-text"} animate-fadeSlideIn`}
-        >
-          <svg className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-500" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M11 2l3 3-8 8H3v-3l8-8z" />
-          </svg>
-          <p className="text-sm text-amber-700 leading-relaxed">
-            {editing
-              ? "Great — reword it so it reflects how you actually do this."
-              : <><span className="font-semibold text-amber-800">Make it yours.</span> Click the title above and reword it in your own terms.</>}
-          </p>
         </div>
       )}
 
