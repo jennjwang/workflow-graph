@@ -1163,7 +1163,7 @@ function TaskReviewCard({
       {/* Hours follow-up — only when the participant does this task */}
       {primaryAnswer === "yes" && (
         <div className="space-y-3 animate-fadeSlideIn">
-          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+          <p className="text-base font-medium text-slate-700">
             In a typical week, how many hours do you spend on this?
           </p>
           <div className="flex items-center gap-3">
