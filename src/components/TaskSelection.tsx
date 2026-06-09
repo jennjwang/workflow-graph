@@ -5,10 +5,16 @@ import {
   extractInterviewTasks,
   recordScreenOut,
   transcribeAudio,
+  postTaskResponse,
 } from "../lib/api";
 import { useWorkflowStore } from "../store";
 import { BONUS_ENABLED } from "../lib/bonus";
 import { TaskItem } from "../types";
+
+// Master switch for the hours feature: the per-task "how many hours" question
+// AND the "Your week at a glance" summary screen. Flip to false to drop both —
+// the flow then goes review/add → finalize with no hours collected.
+const HOURS_ENABLED = true;
 
 // Hard cap on the picker list (real tasks + spliced attention checks). Also
 // the progress-bar denominator so the bar reflects actual rating progress.
@@ -284,14 +290,14 @@ export function TaskSelection() {
         // Linear indexing into the (already shuffled) FALLBACK_ATTENTION_CHECKS
         // guarantees no repeats within a session.
         let realCount = 0;
-        const onTask = (name: string) => {
+        const onTask = (name: string, id?: string) => {
           realCount += 1;
           setTasks((prev) => {
             // Stop appending once we've hit the visible cap (real + checks).
             if (prev.length >= MAX_TASKS) return prev;
             const next: TaskItem[] = [
               ...prev,
-              { name, originalName: name, status: "unreviewed" },
+              { name, originalName: name, bankId: id, status: "unreviewed" },
             ];
             // Splice in an attention check after every Nth real task.
             if (realCount % ATTENTION_CHECK_INTERVAL === 0) {
@@ -369,11 +375,20 @@ export function TaskSelection() {
     }
   };
 
-  const advance = (
-    answer: "yes" | "no",
-    meta?: { hoursPerWeek: number; tools: string },
-  ) => {
+  const advance = (answer: "yes" | "no", meta?: { hoursPerWeek: number }) => {
     const reviewedTask = tasks[currentIdx];
+
+    // Active-learning write-back: record confirm/deny for bank-sourced tasks (the loop).
+    // Best-effort/fire-and-forget. Skip attention checks and participant-added tasks (no bankId).
+    if (reviewedTask?.bankId && !reviewedTask.isAttentionCheck) {
+      const sid = useWorkflowStore.getState().sessionId;
+      postTaskResponse({
+        participant: prolific.pid || sid,
+        task: reviewedTask.bankId,
+        response: answer === "yes" ? "confirm" : "deny",
+      });
+    }
+
     setTasks((prev) =>
       prev.map((t, i) => {
         if (i !== currentIdx) return t;
@@ -382,7 +397,6 @@ export function TaskSelection() {
           ...t,
           status: t.status === "edited" ? "edited" : "confirmed",
           hoursPerWeek: meta?.hoursPerWeek,
-          tools: meta?.tools?.trim() || undefined,
         };
       }),
     );
@@ -426,8 +440,14 @@ export function TaskSelection() {
   };
 
   // Step 1 of finishing: commit any un-added draft task, then move to the
-  // hours-distribution confirmation screen (instead of finalizing directly).
+  // hours-distribution confirmation screen. When the hours feature is off, skip
+  // the summary and finalize directly (passing the pending task through so it's
+  // still captured).
   const goToHoursSummary = (pendingExtra?: string) => {
+    if (!HOURS_ENABLED) {
+      finalize(pendingExtra);
+      return;
+    }
     const trimmedPending = pendingExtra?.trim() ?? "";
     if (trimmedPending && !extraTasks.some((e) => e.name === trimmedPending)) {
       setExtraTasks((prev) => [
@@ -452,9 +472,15 @@ export function TaskSelection() {
     );
   };
 
-  // Step 2: finalize the response after the participant confirms their hours.
-  const finalize = () => {
-    const finalExtras = extraTasks;
+  // Step 2: finalize the response. Called from the hours summary's Continue, or
+  // directly from goToHoursSummary when the hours feature is off (in which case
+  // a pending un-added draft task may still need committing here).
+  const finalize = (pendingExtra?: string) => {
+    const trimmedPending = pendingExtra?.trim() ?? "";
+    const finalExtras =
+      trimmedPending && !extraTasks.some((e) => e.name === trimmedPending)
+        ? [...extraTasks, { name: trimmedPending, addedAt: Date.now() }]
+        : extraTasks;
 
     // Tasks the participant typed in get appended as confirmed, flagged as participant-added.
     const extraItems: TaskItem[] = finalExtras.map((e) => ({
@@ -1088,10 +1114,7 @@ interface TaskReviewCardProps {
   taskIdx: number;
   isLast: boolean;
   onSaveEdit: (idx: number, name: string) => void;
-  onAdvance: (
-    answer: "yes" | "no",
-    meta?: { hoursPerWeek: number; tools: string },
-  ) => void;
+  onAdvance: (answer: "yes" | "no", meta?: { hoursPerWeek: number }) => void;
 }
 
 function TaskReviewCard({
@@ -1102,28 +1125,28 @@ function TaskReviewCard({
   onAdvance,
 }: TaskReviewCardProps) {
   const [primaryAnswer, setPrimaryAnswer] = useState<"yes" | "no" | null>(null);
-  // Self-reported hours/week — only collected when "I do this". Stored as raw
-  // input text so the field can be empty mid-typing; parsed on continue.
+  // Self-reported hours/week — only collected when "I do this" and the hours
+  // feature is on. Stored as raw input text so the field can be empty
+  // mid-typing; parsed on continue.
   const [hoursInput, setHoursInput] = useState("");
-  // Tools/software used for this task — optional free text, only on "I do this".
-  const [toolsInput, setToolsInput] = useState("");
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(task.name);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const hoursValue = parseFloat(hoursInput);
   const hoursValid = Number.isFinite(hoursValue) && hoursValue >= 0;
-  // "No" continues immediately; "Yes" requires a valid hours figure. Tools is
-  // optional, so it doesn't gate continue.
+  // "No" continues immediately; "Yes" requires a valid hours figure only while
+  // the hours feature is on.
   const canContinue =
-    primaryAnswer === "no" || (primaryAnswer === "yes" && hoursValid);
+    primaryAnswer === "no" ||
+    (primaryAnswer === "yes" && (!HOURS_ENABLED || hoursValid));
 
   const handleContinue = () => {
     if (!canContinue) return;
     if (primaryAnswer === "no") {
       onAdvance("no");
     } else {
-      onAdvance("yes", { hoursPerWeek: hoursValue, tools: toolsInput });
+      onAdvance("yes", HOURS_ENABLED ? { hoursPerWeek: hoursValue } : undefined);
     }
   };
 
@@ -1202,10 +1225,7 @@ function TaskReviewCard({
             key={value}
             onClick={() => {
               setPrimaryAnswer(value);
-              if (value === "no") {
-                setHoursInput("");
-                setToolsInput("");
-              }
+              if (value === "no") setHoursInput("");
             }}
             className={`flex-1 py-3 rounded-2xl border text-sm font-medium transition-all active:scale-[0.98] ${
               primaryAnswer === value
@@ -1235,8 +1255,9 @@ function TaskReviewCard({
         </div>
       )}
 
-      {/* Hours follow-up — only when the participant does this task */}
-      {primaryAnswer === "yes" && (
+      {/* Hours follow-up — only when the participant does this task and the
+          hours feature is on */}
+      {HOURS_ENABLED && primaryAnswer === "yes" && (
         <div className="space-y-5 pt-5 animate-fadeSlideIn">
           <p className="text-base font-normal text-slate-500">
             In a typical week, how many hours do you spend on this?
@@ -1257,25 +1278,6 @@ function TaskReviewCard({
             />
             <span className="text-sm text-slate-500">hours / week</span>
           </div>
-        </div>
-      )}
-
-      {/* Tools follow-up — only when the participant does this task (optional) */}
-      {primaryAnswer === "yes" && (
-        <div className="space-y-2.5 pt-5 animate-fadeSlideIn">
-          <p className="text-base font-normal text-slate-500">
-            What tools do you use for this?
-          </p>
-          <input
-            type="text"
-            value={toolsInput}
-            onChange={(e) => setToolsInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && canContinue) handleContinue();
-            }}
-            placeholder="e.g. Excel, Slack, Figma"
-            className="w-full px-3.5 py-2.5 text-sm text-slate-700 placeholder:text-slate-300 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 transition"
-          />
         </div>
       )}
 
