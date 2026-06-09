@@ -356,7 +356,7 @@ export async function generateTasksForCategoryStream(
   aiUsage: string | undefined,
   responsibilities: string | undefined,
   interviewTasks: string[],
-  onTask: (name: string) => void,
+  onTask: (name: string, id?: string) => void,
 ): Promise<void> {
   const res = await fetch('/api/generate-tasks-stream', {
     method: 'POST',
@@ -380,10 +380,32 @@ export async function generateTasksForCategoryStream(
       if (!eventLine || !dataLine) continue;
       const event = eventLine.slice(7);
       const data = JSON.parse(dataLine.slice(6));
-      if (event === 'task' && typeof data?.name === 'string') onTask(data.name);
+      if (event === 'task' && typeof data?.name === 'string')
+        onTask(data.name, typeof data?.id === 'string' ? data.id : undefined);
       else if (event === 'error') throw new Error(data.error ?? 'stream error');
       else if (event === 'done') return;
     }
+  }
+}
+
+// Active-learning write-back: record a participant's confirm/deny for a BANK task, closing
+// the loop (server.js /api/task-response → Postgres `responses` → posterior). Best-effort
+// and fire-and-forget — the picker must never block or fail on it.
+export async function postTaskResponse(args: {
+  participant: string;
+  task: string;                                    // bank task id (TaskItem.bankId)
+  response: 'confirm' | 'deny';
+  aiExposure?: 'none' | 'low' | 'medium' | 'high' | null;
+  occupation?: string;
+}): Promise<void> {
+  try {
+    await fetch('/api/task-response', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...args, eligible: true }),
+    });
+  } catch {
+    /* best-effort; never block the participant flow on the write-back */
   }
 }
 

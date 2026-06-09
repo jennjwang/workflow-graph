@@ -13,6 +13,7 @@ export interface TaskEdit {
 export interface TaskItem {
   name: string;
   originalName: string;
+  bankId?: string;             // task-bank id (when this task came from the active-learning bank)
   status: TaskStatus;
   category?: string;
   recency?: TaskRecency;

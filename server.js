@@ -19,6 +19,21 @@ const MODEL = process.env.MODEL || 'gpt-4o-mini';
 // still uses MODEL because it anchors the whole session and is run only once.
 const SMALL_MODEL = process.env.SMALL_MODEL || 'gpt-4o-mini';
 
+// ── Active-learning task bank (OPTIONAL). Dormant unless TASK_BANK_OCC is set AND
+// `pg` is installed AND DATABASE_URL is configured. If any of those is missing the
+// import fails softly and the app behaves exactly as before. ──
+let taskBank = null;
+const TASK_BANK_OCC = process.env.TASK_BANK_OCC || null;
+if (TASK_BANK_OCC) {
+  try {
+    taskBank = await import('./taskBank.js');
+    console.log(`[taskBank] enabled for occupation ${TASK_BANK_OCC}`);
+  } catch (e) {
+    console.warn('[taskBank] disabled:', e.message);
+    taskBank = null;
+  }
+}
+
 // In production we mount a Cloud Storage bucket at /app/data, so write sessions there.
 const SESSIONS_DIR = process.env.SESSIONS_DIR || path.join(__dirname, 'sessions');
 const SCREEN_OUTS_DIR = path.join(SESSIONS_DIR, 'screen-outs');
@@ -428,6 +443,54 @@ app.post('/api/generate-tasks', async (req, res) => {
 // on newlines, parse each completed line, and emit an SSE `task` event per
 // parsed object. The shared UPPER_LEVEL_TASKS_SYSTEM_PROMPT still applies —
 // only the OUTPUT FORMAT instruction is overridden.
+// ── Active-learning bank helpers (only reached when taskBank is enabled) ──
+const BANK_SELECT_PROMPT = `You help tailor a task checklist for a specific software worker. You are given the worker's PROFILE (role, responsibilities, typical week, AI usage — verbatim, may ramble) and a CANDIDATE TASK BANK of software-engineering tasks. SELECT the tasks this worker plausibly does and rate how clearly the profile supports each.
+
+Use the signals differently: RESPONSIBILITIES = the scope of the job (a selected task must trace to a responsibility or clearly fall within the described role); TYPICAL WEEK = evidence of what they actually do. On conflict prefer responsibilities. EXCLUDE anything the week makes clear they do NOT do.
+
+Choose ONLY from the bank; do NOT invent or reword — refer to each by id. relevance: "high" = directly supported, "medium" = within the role but not stated, "low" = weakly supported. When unsure prefer low/medium over excluding; never select a task that contradicts the profile.
+
+Return JSON: {"selected":[{"id":"<bank id>","relevance":"high|medium|low"}]}`;
+
+async function bankSelectRelevant(profileText, bankTasks) {
+  const block = bankTasks.map(t => `  ${t.id}: ${t.statement} (${t.level ?? '?'}${t.ai ? ' [AI]' : ''})`).join('\n');
+  const resp = await client.chat.completions.create({
+    model: MODEL, temperature: 0,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: BANK_SELECT_PROMPT },
+      { role: 'user', content: `${profileText}\n\nCANDIDATE TASK BANK:\n${block}` },
+    ],
+  });
+  try { return JSON.parse(resp.choices[0].message.content).selected || []; }
+  catch { return []; }
+}
+
+// Stream the active-learning bank draw. Returns true if it handled the request (caller
+// skips LLM generation); false to fall back to generation. Fails soft on any DB error.
+async function streamFromBank({ jobTitle, responsibilities, typicalWeek, aiUsage, priorTasks = [] }, sendEvent) {
+  try {
+    const occ = TASK_BANK_OCC;
+    const bankTasks = await taskBank.loadBank(occ);
+    if (!bankTasks.length) return false;
+    const profile = `WORKER PROFILE\n  Job title / role: ${jobTitle || ''}\n  Responsibilities: ${responsibilities || ''}\n  Typical week: ${typicalWeek || ''}\n  AI usage: ${aiUsage || ''}`;
+    const selected = await bankSelectRelevant(profile, bankTasks);
+    if (!selected.length) return false;
+    const budget = Number(process.env.TASK_BANK_BUDGET || 25);
+    // null = ADAPTIVE core+tail (default); set TASK_BANK_DESCRIBE_FRAC to pin a fixed fraction.
+    const describeFrac = process.env.TASK_BANK_DESCRIBE_FRAC != null
+      ? Number(process.env.TASK_BANK_DESCRIBE_FRAC) : null;
+    const ordered = taskBank.acquire(bankTasks, selected, budget, describeFrac, priorTasks);
+    for (const t of ordered) sendEvent('task', { name: t.statement, id: t.id });
+    sendEvent('done', { total: ordered.length, source: 'bank' });
+    console.log(`[generate-tasks-stream] BANK occ=${occ} streamed=${ordered.length} (describe ${describeFrac})`);
+    return true;
+  } catch (e) {
+    console.warn('[taskBank] draw failed, falling back to generation:', e.message);
+    return false;
+  }
+}
+
 app.post('/api/generate-tasks-stream', async (req, res) => {
   const { jobTitle, typicalWeek, aiUsage, responsibilities, priorTasks = [], interviewTasks = [] } = req.body;
 
@@ -442,6 +505,12 @@ app.post('/api/generate-tasks-stream', async (req, res) => {
   };
 
   try {
+    // Active-learning bank draw (for covered occupations). Falls back to generation.
+    if (taskBank && await streamFromBank({ jobTitle, responsibilities, typicalWeek, aiUsage, priorTasks }, sendEvent)) {
+      res.end();
+      return;
+    }
+
     const priorBlock = priorTasks.length > 0
       ? `\nAlready shown (do NOT repeat or paraphrase):\n${priorTasks.map(t => `- ${t}`).join('\n')}\n`
       : '';
@@ -527,6 +596,19 @@ Emit ONE JSON object per line. Each line: {"name":"<task name>"}. Separate with 
     console.error('[generate-tasks-stream]', err);
     try { sendEvent('error', { error: err.message }); } catch {}
     res.end();
+  }
+});
+
+// Active-learning write-back: record a participant's confirm/deny (+ AI exposure) for a
+// bank task. 503 when the bank isn't enabled. eligible = was the task shown via retrieval.
+app.post('/api/task-response', async (req, res) => {
+  if (!taskBank) return res.status(503).json({ error: 'task bank not enabled' });
+  try {
+    const { participant, task, occupation, eligible = true, response, aiExposure = null } = req.body ?? {};
+    await taskBank.recordResponse({ participant, task, occupation: occupation || TASK_BANK_OCC, eligible, response, aiExposure });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
   }
 });
 
