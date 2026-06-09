@@ -46,6 +46,8 @@ function groundingBlock(covered) {
 
 const STREAM_SUFFIX = `
 
+NO REPEATS — each task you emit must be a DISTINCT activity. Before emitting a task, check it against every task you have ALREADY emitted in this list and against the covered tasks: if it is the same activity — even reworded, reordered, or at a different verb (e.g. "Write tests" vs "Create automated tests"; "Deploy changes" vs "Release updates to production") — do NOT emit it. One task per activity, never two phrasings of the same work.
+
 OUTPUT FORMAT — STREAMING (overrides any earlier JSON instructions):
 Emit ONE JSON object per line. Each line: {"name":"<task name>"}. NO outer array, NO commas between objects, NO surrounding {"tasks":[...]}. Emit them as you decide on them — don't pre-buffer the full set.`;
 

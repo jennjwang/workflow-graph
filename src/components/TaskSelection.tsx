@@ -283,8 +283,11 @@ export function TaskSelection() {
   // We skip the domain-generation step and ask the model directly for a breadth-spanning
   // set of tasks for this role. Faster (one LLM call instead of N+1) and the model handles
   // breadth on its own when told to.
+  const didLoadRef = useRef(false);
   useEffect(() => {
     if (devSkipToReview || devSkipToCard || devSkipToHours) return; // dev shortcut: tasks are already seeded
+    if (didLoadRef.current) return;  // one-shot: never re-generate (StrictMode double-invoke, re-render, re-mount)
+    didLoadRef.current = true;
     async function load() {
       try {
         // First pass: pull the activities the participant explicitly mentioned
