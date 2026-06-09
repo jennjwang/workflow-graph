@@ -7,6 +7,7 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import { UPPER_LEVEL_TASKS_SYSTEM_PROMPT, SUBTASK_WORKER_SYSTEM_PROMPT } from './prompts/task-generator.js';
 import { retrieveExemplarBlock } from './lib/retrieval.js';
+import { streamGapTasks } from './gapTasks.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -468,25 +469,60 @@ async function bankSelectRelevant(profileText, bankTasks) {
 
 // Stream the active-learning bank draw. Returns true if it handled the request (caller
 // skips LLM generation); false to fall back to generation. Fails soft on any DB error.
-async function streamFromBank({ jobTitle, responsibilities, typicalWeek, aiUsage, priorTasks = [] }, sendEvent) {
+// Stream the active-learning draw + gap-fill. Spans the whole spectrum:
+//   empty bank  → 0 drawn → pure streamGapTasks (cold-start suggestions)
+//   warm bank   → draw (active learning) + gap-fill for role coverage the bank lacks
+//                 (the gap prompt self-limits: if the draw exhausts the role, it emits ~none)
+// Drawn bank tasks carry an id (write-back records them); generated gap tasks have NO id
+// (they get harvested into the bank when answered — harvest TBD). Returns true if it handled
+// the request; false → fall back to the legacy generator (fail-soft on any DB/LLM error).
+async function streamFromBank({ jobTitle, responsibilities, typicalWeek, aiUsage,
+                                priorTasks = [], interviewTasks = [] }, sendEvent) {
   try {
     const occ = TASK_BANK_OCC;
     const bankTasks = await taskBank.loadBank(occ);
-    if (!bankTasks.length) return false;
-    const profile = `WORKER PROFILE\n  Job title / role: ${jobTitle || ''}\n  Responsibilities: ${responsibilities || ''}\n  Typical week: ${typicalWeek || ''}\n  AI usage: ${aiUsage || ''}`;
-    const selected = await bankSelectRelevant(profile, bankTasks);
-    if (!selected.length) return false;
-    const budget = Number(process.env.TASK_BANK_BUDGET || 25);
-    // null = ADAPTIVE core+tail (default); set TASK_BANK_DESCRIBE_FRAC to pin a fixed fraction.
-    const describeFrac = process.env.TASK_BANK_DESCRIBE_FRAC != null
-      ? Number(process.env.TASK_BANK_DESCRIBE_FRAC) : null;
-    const ordered = taskBank.acquire(bankTasks, selected, budget, describeFrac, priorTasks);
-    for (const t of ordered) sendEvent('task', { name: t.statement, id: t.id });
-    sendEvent('done', { total: ordered.length, source: 'bank' });
-    console.log(`[generate-tasks-stream] BANK occ=${occ} streamed=${ordered.length} (describe ${describeFrac})`);
+    const profileBlock = `WORKER PROFILE\n  Job title / role: ${jobTitle || ''}\n  Responsibilities: ${responsibilities || ''}\n  Typical week: ${typicalWeek || ''}\n  AI usage: ${aiUsage || ''}`;
+
+    // Within-draw dedup safety net: never emit the same task text twice (bank↔bank, bank↔gap,
+    // or gap↔gap), and never re-emit something already shown (priorTasks/interview). Normalizes
+    // case + trailing punctuation/space. Prompt-level MECE handles paraphrases; this catches
+    // exact/near-exact repeats the LLM or the bank itself might produce.
+    const norm = s => String(s).trim().toLowerCase().replace(/[.\s]+$/, '');
+    const seen = new Set([...priorTasks, ...interviewTasks].map(norm));
+    const fresh = (name) => { const k = norm(name); if (!k || seen.has(k)) return false; seen.add(k); return true; };
+
+    // 1) DRAW from the bank (active learning) — skipped cleanly when the bank is empty.
+    let drawn = [];
+    if (bankTasks.length) {
+      const selected = await bankSelectRelevant(profileBlock, bankTasks);
+      if (selected.length) {
+        const budget = Number(process.env.TASK_BANK_BUDGET || 25);
+        const describeFrac = process.env.TASK_BANK_DESCRIBE_FRAC != null
+          ? Number(process.env.TASK_BANK_DESCRIBE_FRAC) : null;   // null = adaptive core+tail
+        const ordered = taskBank.acquire(bankTasks, selected, budget, describeFrac, priorTasks);
+        for (const t of ordered) {
+          if (!fresh(t.statement)) continue;             // skip a near-dup bank statement
+          sendEvent('task', { name: t.statement, id: t.id });
+          drawn.push(t.statement);
+        }
+      }
+    }
+
+    // 2) GAP-FILL via the shared generator — discover role coverage the bank (+ what they
+    //    said + what's shown) does not hold. Generated tasks stream WITHOUT an id.
+    const covered = [...drawn, ...interviewTasks, ...priorTasks];
+    let nGap = 0;
+    await streamGapTasks({
+      profile: { jobTitle, responsibilities, typicalWeek, aiUsage },
+      covered,
+      onTask: (name) => { if (fresh(name)) { sendEvent('task', { name }); nGap++; } },
+    });
+
+    sendEvent('done', { total: drawn.length + nGap, source: bankTasks.length ? 'bank+gap' : 'gap' });
+    console.log(`[generate-tasks-stream] occ=${occ} bank-drawn=${drawn.length} gap=${nGap}`);
     return true;
   } catch (e) {
-    console.warn('[taskBank] draw failed, falling back to generation:', e.message);
+    console.warn('[taskBank] draw/gap failed, falling back to generation:', e.message);
     return false;
   }
 }
@@ -505,8 +541,8 @@ app.post('/api/generate-tasks-stream', async (req, res) => {
   };
 
   try {
-    // Active-learning bank draw (for covered occupations). Falls back to generation.
-    if (taskBank && await streamFromBank({ jobTitle, responsibilities, typicalWeek, aiUsage, priorTasks }, sendEvent)) {
+    // Active-learning bank draw + gap-fill (for covered occupations). Falls back to generation.
+    if (taskBank && await streamFromBank({ jobTitle, responsibilities, typicalWeek, aiUsage, priorTasks, interviewTasks }, sendEvent)) {
       res.end();
       return;
     }

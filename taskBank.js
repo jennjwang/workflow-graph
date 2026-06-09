@@ -10,12 +10,16 @@
 // Requires:  npm install pg   ·   env: DATABASE_URL   ·   ESM (matches server.js)
 import pg from 'pg';
 import fs from 'fs';
+import OpenAI from 'openai';
 const { Pool } = pg;
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const REL_W = { high: 1.0, medium: 0.6, low: 0.3 };   // relevance multiplier (the gate)
 const PRIOR_VAR = 1 / 12;                              // flat-prior variance (max ignorance)
+const EMBED_MODEL = 'text-embedding-3-small';
+const HARVEST_MATCH_SIM = Number(process.env.TASK_BANK_HARVEST_SIM || 0.6);  // cosine to merge a generated task
 const ANNEAL_PARTICIPANTS = Number(process.env.ANNEAL_PARTICIPANTS || 20);
 const RESOLVE_VAR = Number(process.env.TASK_BANK_RESOLVE_VAR || 0.02);   // a task below this is "resolved"
 const DESCRIBE_FLOOR = Number(process.env.TASK_BANK_DESCRIBE_FLOOR ?? 0.2); // always reserve this much describe
@@ -69,6 +73,51 @@ async function nParticipants(occupation) {
 async function lambdaFor(occupation) {
   const seen = await nParticipants(occupation);
   return ANNEAL_PARTICIPANTS ? Math.min(1, seen / ANNEAL_PARTICIPANTS) : 0;
+}
+
+// ── online harvest (the loop grows the bank) ─────────────────────────────────
+// A generated task the participant answered is NOT in the bank. Embed it, find the
+// nearest existing task for the occupation; if cosine >= HARVEST_MATCH_SIM it's the SAME
+// task (pool the response with it), else INSERT it as a new 'emergent' bank task. Either
+// way record the response. This dedups paraphrases across participants live (pgvector NN),
+// so the bank grows from cold start and the posterior accumulates against shared task ids.
+async function embedText(text) {
+  const r = await openai.embeddings.create({ model: EMBED_MODEL, input: text });
+  return r.data[0].embedding;
+}
+const vlit = v => `[${v.join(',')}]`;                  // pgvector literal
+
+async function harvestResponse({ participant, occupation, statement, response,
+                                 aiExposure = null, eligible = true }) {
+  if (!occupation || !statement) throw new Error('harvest needs occupation + statement');
+  const emb = await embedText(statement);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // nearest existing task for this occupation (cosine sim = 1 − distance)
+    const nn = await client.query(
+      `SELECT id, 1 - (embedding <=> $2::vector) AS sim
+         FROM tasks WHERE occupation = $1 AND embedding IS NOT NULL
+         ORDER BY embedding <=> $2::vector LIMIT 1`,
+      [occupation, vlit(emb)]);
+    let taskId, matched = false, sim = nn.rows[0]?.sim ?? null;
+    if (nn.rows[0] && Number(nn.rows[0].sim) >= HARVEST_MATCH_SIM) {
+      taskId = nn.rows[0].id; matched = true;          // pool with the existing task
+    } else {
+      taskId = 'E' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36);
+      await client.query(
+        `INSERT INTO tasks (id, occupation, statement, source, weight, status, embedding)
+         VALUES ($1,$2,$3,'emergent',1,'active',$4::vector)`,
+        [taskId, occupation, statement, vlit(emb)]);    // new emergent bank task at cold prior
+    }
+    await client.query(
+      `INSERT INTO responses (participant, task, occupation, eligible, response, ai_exposure)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [participant, taskId, occupation, eligible, response, aiExposure]);
+    await client.query('COMMIT');
+    return { taskId, matched, sim: sim == null ? null : Number(sim) };
+  } catch (e) { await client.query('ROLLBACK'); throw e; }
+  finally { client.release(); }
 }
 
 // ── write-back (the loop) ────────────────────────────────────────────────────

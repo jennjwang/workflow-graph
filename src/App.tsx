@@ -37,7 +37,7 @@ export default function App() {
   // refuses to overwrite a real snapshot with empty state, so a fast-closing
   // tab during this fetch can't clobber the file.
   useEffect(() => {
-    if (REVIEW_MODE) { setHydrating(false); return; }
+    if (REVIEW_MODE || prolificPid || externalId) { setHydrating(false); return; }
     let cancelled = false;
     fetchSession(sessionId, externalId)
       .then(snap => {

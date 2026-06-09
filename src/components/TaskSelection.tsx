@@ -14,7 +14,7 @@ import { TaskItem } from "../types";
 // Master switch for the hours feature: the per-task "how many hours" question
 // AND the "Your week at a glance" summary screen. Flip to false to drop both —
 // the flow then goes review/add → finalize with no hours collected.
-const HOURS_ENABLED = true;
+const HOURS_ENABLED = false;
 
 // Hard cap on the picker list (real tasks + spliced attention checks). Also
 // the progress-bar denominator so the bar reflects actual rating progress.
@@ -25,15 +25,28 @@ const MAX_TASKS = 15;
 // cap — finishing early now means "after the full list".
 const DONE_THRESHOLD = MAX_TASKS;
 
+// The "Make it yours" edit nudge stays hidden until the participant has passed
+// this many task cards without editing any task name. Once they edit any task,
+// the nudge stops appearing for the rest of the flow.
+const NUDGE_AFTER_UNEDITED = 3;
+
 // One attention check inserted after every N real tasks (positions N, 2N, 3N, …).
 const ATTENTION_CHECK_INTERVAL = 4;
 
 // O*NET-style fallback attention checks. Drawn from clearly unrelated
 // occupations so participants can always answer "I don't do this" honestly.
-// Shuffled once per page load so each session sees the checks in a different
-// order — within a session the picker indexes linearly so no check repeats,
-// and across sessions the rotation differs without any state to persist.
-const FALLBACK_ATTENTION_CHECKS: string[] = [
+// Fisher-Yates shuffled on every full page load (not module cache) so each
+// session sees a different order and no check repeats within a session.
+function fisherYates<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+const FALLBACK_ATTENTION_CHECKS: string[] = fisherYates([
   "Triage walk-in emergency-room patients to determine treatment priority based on presenting symptoms.",
   "Replace residential service-panel circuit breakers during scheduled electrical maintenance calls.",
   "Pull and dispense espresso shots to fulfill customer drink orders during peak café shifts.",
@@ -42,7 +55,15 @@ const FALLBACK_ATTENTION_CHECKS: string[] = [
   "Conduct routine traffic stops on patrol to enforce posted speed and equipment regulations.",
   "Cut and style hair for walk-in salon clients based on consultation and customer preference.",
   "Operate forklift equipment on a warehouse floor to move palletized inventory between zones.",
-].sort(() => Math.random() - 0.5);
+  "Weld steel structural components together on a construction site following blueprint specifications.",
+  "Muck out horse stalls and replenish bedding as part of a daily stable management routine.",
+  "Apply pesticide treatments to orchard trees using a backpack sprayer during growing season.",
+  "Fit customers for corrective lenses by performing a refraction exam and reading prescription.",
+  "Splice fiber-optic cable runs inside a telecommunications distribution frame.",
+  "Log catch weights and species data on a commercial fishing vessel after each haul.",
+  "Debone and portion raw poultry carcasses on a processing line at target yield weights.",
+  "Lay brick courses along a chalk line to construct a load-bearing exterior wall.",
+]);
 
 // Three separate bonus pools:
 //  • EDIT bonus:    per-character on tasks the participant rewords (Levenshtein distance).
@@ -280,7 +301,10 @@ export function TaskSelection() {
           });
           setInterviewExtractedTasks(interviewTasks);
         } catch (e) {
-          console.warn("[task-selection] extract failed, generating without grounding:", e);
+          console.warn(
+            "[task-selection] extract failed, generating without grounding:",
+            e,
+          );
         }
 
         // Stream tasks into the picker as they arrive — the participant can
@@ -491,7 +515,12 @@ export function TaskSelection() {
       addedByParticipant: true,
       hoursPerWeek: e.hoursPerWeek,
       edits: [
-        { from: "", to: e.name, charsChanged: e.name.length, timestamp: e.addedAt },
+        {
+          from: "",
+          to: e.name,
+          charsChanged: e.name.length,
+          timestamp: e.addedAt,
+        },
       ],
     }));
 
@@ -568,7 +597,12 @@ export function TaskSelection() {
     (loadState === "ready" && !currentTask && !isExhausted);
 
   if (showIntro) {
-    return <IntroScreen onStart={() => setShowIntro(false)} totalParts={totalParts} />;
+    return (
+      <IntroScreen
+        onStart={() => setShowIntro(false)}
+        totalParts={totalParts}
+      />
+    );
   }
 
   if (showHoursSummary) {
@@ -614,12 +648,14 @@ export function TaskSelection() {
           <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400">
             Part 2 of {totalParts} — Task Coverage
           </p>
-          {BONUS_ENABLED && !isExhausted && (editChars > 0 || aiHowSoChars > 0) && (
-            <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
-              ★ {formatUsd(editEarnedUsd + aiHowSoEarnedUsd)}
-              {editCapped && aiHowSoCapped ? " (max)" : ""}
-            </span>
-          )}
+          {BONUS_ENABLED &&
+            !isExhausted &&
+            (editChars > 0 || aiHowSoChars > 0) && (
+              <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+                ★ {formatUsd(editEarnedUsd + aiHowSoEarnedUsd)}
+                {editCapped && aiHowSoCapped ? " (max)" : ""}
+              </span>
+            )}
         </div>
         <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
           {/* Linear progress over the full picker (MAX_TASKS). isExhausted
@@ -688,6 +724,7 @@ export function TaskSelection() {
             task={currentTask}
             taskIdx={currentIdx}
             isLast={currentIdx >= tasks.length - 1}
+            hasEditedAnyTask={tasks.some((t) => (t.edits?.length ?? 0) > 0)}
             onSaveEdit={saveEdit}
             onAdvance={advance}
           />
@@ -712,7 +749,13 @@ export function TaskSelection() {
 
 // ── Intro screen ───────────────────────────────────────────────────────────────
 
-function IntroScreen({ onStart, totalParts }: { onStart: () => void; totalParts: number }) {
+function IntroScreen({
+  onStart,
+  totalParts,
+}: {
+  onStart: () => void;
+  totalParts: number;
+}) {
   return (
     <div className="flex flex-col h-full bg-transparent relative overflow-hidden">
       {/* Top gradient is rendered by the parent (App.tsx) so it spans the full viewport. */}
@@ -1106,13 +1149,13 @@ function HoursSummaryScreen({
   );
 }
 
-
 // ── Single task review card ────────────────────────────────────────────────────
 
 interface TaskReviewCardProps {
   task: TaskItem;
   taskIdx: number;
   isLast: boolean;
+  hasEditedAnyTask: boolean;
   onSaveEdit: (idx: number, name: string) => void;
   onAdvance: (answer: "yes" | "no", meta?: { hoursPerWeek: number }) => void;
 }
@@ -1121,6 +1164,7 @@ function TaskReviewCard({
   task,
   taskIdx,
   isLast,
+  hasEditedAnyTask,
   onSaveEdit,
   onAdvance,
 }: TaskReviewCardProps) {
@@ -1146,7 +1190,10 @@ function TaskReviewCard({
     if (primaryAnswer === "no") {
       onAdvance("no");
     } else {
-      onAdvance("yes", HOURS_ENABLED ? { hoursPerWeek: hoursValue } : undefined);
+      onAdvance(
+        "yes",
+        HOURS_ENABLED ? { hoursPerWeek: hoursValue } : undefined,
+      );
     }
   };
 
@@ -1171,7 +1218,6 @@ function TaskReviewCard({
 
   return (
     <div className="flex flex-col gap-7">
-
       {/* Task name */}
       <div
         onClick={() => !editing && startEdit()}
@@ -1191,8 +1237,14 @@ function TaskReviewCard({
             onBlur={commitEdit}
             onClick={(e) => e.stopPropagation()}
             onKeyDown={(e) => {
-              if (e.key === "Enter") { e.preventDefault(); commitEdit(); }
-              if (e.key === "Escape") { setEditing(false); setEditValue(task.name); }
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitEdit();
+              }
+              if (e.key === "Escape") {
+                setEditing(false);
+                setEditValue(task.name);
+              }
             }}
           />
         ) : (
@@ -1201,7 +1253,15 @@ function TaskReviewCard({
               {task.name}
             </p>
             <span className="mt-1 shrink-0 flex items-center justify-center w-8 h-8 rounded-full bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-500 transition-colors">
-              <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <svg
+                className="w-4 h-4"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
                 <path d="M11 2l3 3-8 8H3v-3l8-8z" />
               </svg>
             </span>
@@ -1213,13 +1273,25 @@ function TaskReviewCard({
       <div className="flex gap-3">
         {(
           [
-            { value: "yes", label: "I do this",
-              active:   "bg-indigo-600 border-indigo-600 text-white shadow-sm shadow-indigo-200",
-              inactive: "hover:border-indigo-200 hover:text-indigo-600" },
-            { value: "no",  label: "I don't do this",
-              active:   "bg-slate-100 border-slate-300 text-slate-700",
-              inactive: "hover:border-slate-300" },
-          ] as { value: "yes" | "no"; label: string; active: string; inactive: string }[]
+            {
+              value: "yes",
+              label: "I do this",
+              active:
+                "bg-indigo-600 border-indigo-600 text-white shadow-sm shadow-indigo-200",
+              inactive: "hover:border-indigo-200 hover:text-indigo-600",
+            },
+            {
+              value: "no",
+              label: "I don't do this",
+              active: "bg-slate-100 border-slate-300 text-slate-700",
+              inactive: "hover:border-slate-300",
+            },
+          ] as {
+            value: "yes" | "no";
+            label: string;
+            active: string;
+            inactive: string;
+          }[]
         ).map(({ value, label, active, inactive }) => (
           <button
             key={value}
@@ -1238,19 +1310,38 @@ function TaskReviewCard({
         ))}
       </div>
 
-      {/* Nudge — shown on confirm, encourages editing */}
-      {primaryAnswer === "yes" && (
+      {/* Nudge — encourages editing, but only once the participant has gone
+          several cards without editing any task (and not while editing). Once
+          they edit any task it stops appearing for the rest of the flow. */}
+      {primaryAnswer === "yes" &&
+        !hasEditedAnyTask &&
+        taskIdx >= NUDGE_AFTER_UNEDITED && (
         <div
           onClick={() => !editing && startEdit()}
           className={`flex items-start gap-3 px-4 py-3.5 rounded-xl bg-amber-50 border border-amber-200 ${editing ? "cursor-default" : "cursor-text"} animate-fadeSlideIn`}
         >
-          <svg className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-500" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <svg
+            className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-500"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
             <path d="M11 2l3 3-8 8H3v-3l8-8z" />
           </svg>
           <p className="text-sm text-amber-700 leading-relaxed">
-            {editing
-              ? "Great — reword it so it reflects how you actually do this."
-              : <><span className="font-semibold text-amber-800">Make it yours.</span> Click the title above and reword it in your own terms.</>}
+            {editing ? (
+              "Great — reword it so it reflects how you actually do this."
+            ) : (
+              <>
+                <span className="font-semibold text-amber-800">
+                  Make it yours.
+                </span>{" "}
+                Click the title above and reword it in your own terms.
+              </>
+            )}
           </p>
         </div>
       )}
@@ -1425,7 +1516,7 @@ function ReviewAndAddScreen({
             from what you confirmed and what you mentioned earlier.
           </p>
 
-          <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+          <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
             {confirmedTasks.map((t, i) => (
               <div
                 key={`${t.name}-${i}`}
@@ -1473,8 +1564,8 @@ function ReviewAndAddScreen({
         </p>
         {BONUS_ENABLED && (
           <p className="text-xs text-amber-700 mt-3">
-            Earn {formatUsd(ADD_BONUS_PER_TASK_USD)} for each task you add, up to{" "}
-            {formatUsd(ADD_BONUS_MAX_USD)}.
+            Earn {formatUsd(ADD_BONUS_PER_TASK_USD)} for each task you add, up
+            to {formatUsd(ADD_BONUS_MAX_USD)}.
           </p>
         )}
 
