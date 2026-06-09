@@ -153,81 +153,15 @@ export function TaskSelection() {
   // (the confirm/edit/AI-use step) with seeded unreviewed tasks to click through.
   // ?dev=task-selection&hours=1 lands on the "Your week at a glance" hours
   // summary with seeded confirmed tasks that already carry hours.
-  const devSkipToReview =
-    new URLSearchParams(window.location.search).get("review") === "1";
-  const devSkipToCard =
-    new URLSearchParams(window.location.search).get("card") === "1";
-  const devSkipToHours =
-    new URLSearchParams(window.location.search).get("hours") === "1";
+  const _search = new URLSearchParams(window.location.search);
+  const _devPhase = _search.get("dev") === "task-selection";
+  const devSkipToReview = _devPhase && _search.get("review") === "1" && !_search.get("card");
+  const devSkipToCard   = _devPhase && _search.get("card") === "1";
+  const devSkipToHours  = _devPhase && _search.get("hours") === "1";
 
-  const DEV_REVIEW_SEED: TaskItem[] = [
-    {
-      name: "Read recent conference papers",
-      originalName: "Read recent conference papers",
-      status: "confirmed",
-    },
-    {
-      name: "Debug research code",
-      originalName: "Debug research code",
-      status: "confirmed",
-    },
-    {
-      name: "Meet with my advisor",
-      originalName: "Meet with my advisor",
-      status: "confirmed",
-    },
-    {
-      name: "Draft a paper section",
-      originalName: "Draft a paper section",
-      status: "confirmed",
-    },
-    {
-      name: "Present updates at lab meeting",
-      originalName: "Present updates at lab meeting",
-      status: "confirmed",
-    },
-    {
-      name: "Mentor undergraduate researchers",
-      originalName: "Mentor undergraduate researchers",
-      status: "confirmed",
-    },
-    {
-      name: "Prepare figures for a manuscript",
-      originalName: "Prepare figures for a manuscript",
-      status: "confirmed",
-    },
-  ];
-
-  // Same tasks, but unreviewed, so the per-task card shows the action buttons.
-  const DEV_CARD_SEED: TaskItem[] = DEV_REVIEW_SEED.map((t) => ({
-    ...t,
-    status: "unreviewed",
-  }));
-
-  // Same confirmed tasks, but with varied hours so the summary's distribution
-  // bars and weekly total render something meaningful.
-  const DEV_HOURS_SEED: TaskItem[] = DEV_REVIEW_SEED.map((t, i) => ({
-    ...t,
-    hoursPerWeek: [8, 5, 2, 6, 3, 4, 1.5][i] ?? 2,
-  }));
-
-  const [tasks, setTasks] = useState<TaskItem[]>(
-    devSkipToCard
-      ? DEV_CARD_SEED
-      : devSkipToHours
-        ? DEV_HOURS_SEED
-        : devSkipToReview
-          ? DEV_REVIEW_SEED
-          : [],
-  );
-  const [currentIdx, setCurrentIdx] = useState(
-    !devSkipToCard && (devSkipToReview || devSkipToHours)
-      ? DEV_REVIEW_SEED.length
-      : 0,
-  );
-  const [loadState, setLoadState] = useState<"loading" | "ready" | "error">(
-    devSkipToReview || devSkipToCard || devSkipToHours ? "ready" : "loading",
-  );
+  const [tasks, setTasks] = useState<TaskItem[]>([]);
+  const [currentIdx, setCurrentIdx] = useState(0);
+  const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [showIntro, setShowIntro] = useState(
     !devSkipToReview && !devSkipToCard && !devSkipToHours,
   );
@@ -676,7 +610,7 @@ export function TaskSelection() {
       {/* Task area */}
       <div
         className={`relative z-10 flex-1 flex flex-col min-h-0 overflow-y-auto
-        ${isExhausted ? "justify-start pt-6 pb-12 px-4 sm:px-6" : "justify-center px-8"}`}
+        ${isExhausted ? "justify-start pt-6 pb-12 px-4 sm:px-6" : "px-8"}`}
       >
         {loading ? (
           <div className="flex justify-center">
@@ -1220,7 +1154,10 @@ function TaskReviewCard({
   };
 
   return (
-    <div className="flex flex-col gap-7">
+    <div className="h-full flex flex-col">
+      {/* Centered: task name + buttons — never moves */}
+      <div className="flex-1 flex flex-col justify-center gap-7 pb-4">
+
       {/* Task name */}
       <div
         onClick={() => !editing && startEdit()}
@@ -1313,9 +1250,12 @@ function TaskReviewCard({
         ))}
       </div>
 
-      {/* Nudge — encourages editing, but only once the participant has gone
-          several cards without editing any task (and not while editing). Once
-          they edit any task it stops appearing for the rest of the flow. */}
+      </div>{/* end centered section */}
+
+      {/* Bottom: nudge + continue — appears below without shifting task name */}
+      <div className="space-y-4 pb-12">
+
+      {/* Nudge */}
       {primaryAnswer === "yes" &&
         !hasEditedAnyTask &&
         taskIdx >= NUDGE_AFTER_UNEDITED && (
@@ -1385,6 +1325,8 @@ function TaskReviewCard({
           {isLast ? "Done →" : "Continue →"}
         </button>
       )}
+
+      </div>{/* end bottom section */}
     </div>
   );
 }

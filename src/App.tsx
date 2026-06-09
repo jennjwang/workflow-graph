@@ -14,13 +14,51 @@ import { fetchAppConfig, checkScreenStatus, fetchSession, saveSession, saveSessi
 // instead of being overwritten by a saved snapshot's phase.
 const REVIEW_MODE = new URLSearchParams(window.location.search).get('review') === '1';
 
+// Preset job profiles for dev testing. Add entries here to test task generation
+// with a specific background without going through the interview.
+// Usage: ?persona=frontend-engineer&review=1
+const DEV_PERSONAS: Record<string, { jobTitle: string; responsibilities: string; typicalWeek: string; aiUsage: string }> = {
+  'frontend-engineer': {
+    jobTitle: 'Frontend Engineer',
+    responsibilities: 'I build and maintain UI components and web applications. I work closely with designers and backend engineers.',
+    typicalWeek: 'Writing React components, reviewing PRs, debugging UI issues, syncing with design, writing tests.',
+    aiUsage: 'I use Copilot for boilerplate and Cursor for refactoring.',
+  },
+  'product-manager': {
+    jobTitle: 'Product Manager',
+    responsibilities: 'I define product strategy, write specs, and coordinate between engineering, design, and stakeholders.',
+    typicalWeek: 'Writing PRDs, running sprint planning, reviewing designs, talking to customers, tracking metrics.',
+    aiUsage: 'I use ChatGPT to draft requirements and summarize user research.',
+  },
+  'data-scientist': {
+    jobTitle: 'Data Scientist',
+    responsibilities: 'I build models and run analyses to inform product and business decisions.',
+    typicalWeek: 'Cleaning data, training models, writing notebooks, presenting findings, syncing with engineers.',
+    aiUsage: 'I use Claude to help write and debug Python, and to explain statistical concepts.',
+  },
+};
+
 export default function App() {
   const phase = useWorkflowStore(s => s.phase);
   const setProlific = useWorkflowStore(s => s.setProlific);
   const setPhase = useWorkflowStore(s => s.setPhase);
+  const setUserProfile = useWorkflowStore(s => s.setUserProfile);
   const prolificPid = useWorkflowStore(s => s.prolific.pid);
   const externalId = useWorkflowStore(s => s.externalId);
   const hydrateFromSnapshot = useWorkflowStore(s => s.hydrateFromSnapshot);
+
+  // Dev persona seeding: ?persona=<key>&review=1 seeds the store with a preset
+  // job profile and jumps straight to task-selection so the real generation
+  // pipeline runs without going through the background interview.
+  useEffect(() => {
+    if (!REVIEW_MODE) return;
+    const key = new URLSearchParams(window.location.search).get('persona');
+    const persona = key ? DEV_PERSONAS[key] : null;
+    if (!persona) return;
+    setUserProfile(persona);
+    setPhase('task-selection');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Brief loading window while we check whether this PID has been screened out
   // before. Prevents a flash of the welcome screen for a refresh-after-fail.
@@ -204,7 +242,7 @@ export default function App() {
         <div className="relative flex h-screen w-screen overflow-hidden bg-white">
           {/* Gradient spans the full viewport so it doesn't get clipped to the centered column. */}
           <div className="absolute top-0 left-0 right-0 h-48 bg-gradient-to-b from-indigo-50/40 to-transparent pointer-events-none" />
-          <div className="relative w-[600px] mx-auto h-full">
+          <div className="relative w-[780px] mx-auto h-full">
             <TaskSelection />
           </div>
         </div>
