@@ -369,7 +369,10 @@ export function TaskSelection() {
     }
   };
 
-  const advance = (answer: "yes" | "no", meta?: { hoursPerWeek: number }) => {
+  const advance = (
+    answer: "yes" | "no",
+    meta?: { hoursPerWeek: number; tools: string },
+  ) => {
     const reviewedTask = tasks[currentIdx];
     setTasks((prev) =>
       prev.map((t, i) => {
@@ -379,6 +382,7 @@ export function TaskSelection() {
           ...t,
           status: t.status === "edited" ? "edited" : "confirmed",
           hoursPerWeek: meta?.hoursPerWeek,
+          tools: meta?.tools?.trim() || undefined,
         };
       }),
     );
@@ -1084,7 +1088,10 @@ interface TaskReviewCardProps {
   taskIdx: number;
   isLast: boolean;
   onSaveEdit: (idx: number, name: string) => void;
-  onAdvance: (answer: "yes" | "no", meta?: { hoursPerWeek: number }) => void;
+  onAdvance: (
+    answer: "yes" | "no",
+    meta?: { hoursPerWeek: number; tools: string },
+  ) => void;
 }
 
 function TaskReviewCard({
@@ -1098,13 +1105,16 @@ function TaskReviewCard({
   // Self-reported hours/week — only collected when "I do this". Stored as raw
   // input text so the field can be empty mid-typing; parsed on continue.
   const [hoursInput, setHoursInput] = useState("");
+  // Tools/software used for this task — optional free text, only on "I do this".
+  const [toolsInput, setToolsInput] = useState("");
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(task.name);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const hoursValue = parseFloat(hoursInput);
   const hoursValid = Number.isFinite(hoursValue) && hoursValue >= 0;
-  // "No" continues immediately; "Yes" requires a valid hours figure.
+  // "No" continues immediately; "Yes" requires a valid hours figure. Tools is
+  // optional, so it doesn't gate continue.
   const canContinue =
     primaryAnswer === "no" || (primaryAnswer === "yes" && hoursValid);
 
@@ -1113,7 +1123,7 @@ function TaskReviewCard({
     if (primaryAnswer === "no") {
       onAdvance("no");
     } else {
-      onAdvance("yes", { hoursPerWeek: hoursValue });
+      onAdvance("yes", { hoursPerWeek: hoursValue, tools: toolsInput });
     }
   };
 
@@ -1192,7 +1202,10 @@ function TaskReviewCard({
             key={value}
             onClick={() => {
               setPrimaryAnswer(value);
-              if (value === "no") setHoursInput("");
+              if (value === "no") {
+                setHoursInput("");
+                setToolsInput("");
+              }
             }}
             className={`flex-1 py-3 rounded-2xl border text-sm font-medium transition-all active:scale-[0.98] ${
               primaryAnswer === value
@@ -1244,6 +1257,25 @@ function TaskReviewCard({
             />
             <span className="text-sm text-slate-500">hours / week</span>
           </div>
+        </div>
+      )}
+
+      {/* Tools follow-up — only when the participant does this task (optional) */}
+      {primaryAnswer === "yes" && (
+        <div className="space-y-2.5 pt-5 animate-fadeSlideIn">
+          <p className="text-base font-normal text-slate-500">
+            What tools do you use for this?
+          </p>
+          <input
+            type="text"
+            value={toolsInput}
+            onChange={(e) => setToolsInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && canContinue) handleContinue();
+            }}
+            placeholder="e.g. Excel, Slack, Figma"
+            className="w-full px-3.5 py-2.5 text-sm text-slate-700 placeholder:text-slate-300 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 transition"
+          />
         </div>
       )}
 
