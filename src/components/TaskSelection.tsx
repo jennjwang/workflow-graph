@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
-  generateTasksForCategoryStream,
+  generateTasksFromInterview,
   extractInterviewTasks,
   recordScreenOut,
   transcribeAudio,
@@ -231,14 +231,13 @@ export function TaskSelection() {
           });
           if (realCount === 1) setLoadState("ready");
         };
-        await generateTasksForCategoryStream(
+        await generateTasksFromInterview(
           userProfile.jobTitle,
           userProfile.typicalWeek,
-          [],
           userProfile.aiUsage,
           userProfile.responsibilities,
           interviewTasks,
-          onTask,
+          (name) => onTask(name),
         );
         // If the stream returned zero tasks (model fluke), surface an error
         // state so the participant sees something rather than a frozen loader.

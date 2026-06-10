@@ -713,20 +713,20 @@ app.post('/api/generate-tasks-from-interview', async (req, res) => {
   const { jobTitle, typicalWeek, aiUsage, responsibilities, interviewTasks = [] } = req.body;
 
   const interviewBlock = interviewTasks.length > 0
-    ? `\nHOW THIS PARTICIPANT DESCRIBES THEIR JOB (use as an anchoring signal):\n${interviewTasks.map(t => `- ${t}`).join('\n')}\n`
+    ? `\nTASKS THE PARTICIPANT EXPLICITLY MENTIONED (must appear in your output, normalized):\n${interviewTasks.map(t => `- ${t}`).join('\n')}\n`
     : '';
 
   const systemPrompt = `${UPPER_LEVEL_TASKS_SYSTEM_PROMPT}
 
 SPECIAL INSTRUCTIONS FOR THIS RUN — PARTICIPANT-ANCHORED MODE:
-You are given the activities this participant named when describing their own job. Use them as a signal about how they frame their work — their vocabulary, scope, and priorities. Your output does not need to include these tasks verbatim, but the list you generate should feel like it came from this specific person's world, not a generic role description.
+You are given the activities this participant explicitly named when describing their own job. Your output must include ALL of them, normalized to O*NET standard. Then add gap-fill tasks for anything their role clearly implies that they didn't mention.
 
-Concretely:
-- Use the participant's terms and framing where possible (their nouns, their context). If they said "code reviews" not "pull request review", prefer their language.
-- Let their scope bound yours. If they described a narrow role, don't pad with tasks outside it. If they described a broad one, reflect that breadth.
-- A participant who reads your list should recognize it as a description of their job, not a generic template for their title.
-- Apply all standard MECE rules: mutually exclusive, collectively exhaustive, O*NET granularity, no vague verbs.
-- COUNT: aim for 20–25 tasks.`;
+Rules:
+1. FILTER the interview tasks first. Apply the observable-action test from the main prompt: can you describe what the participant is physically doing in a 30-second video? If yes, normalize and include it. If the task is too vague ("do meetings", "handle stuff"), a goal/outcome ("be more productive"), or a role descriptor ("lead a team"), skip it.
+2. NORMALIZE the ones that pass: rewrite to O*NET standard (verb-led, 8–18 words, plain language, specific). Preserve the participant's intent and vocabulary — keep their nouns, tools, and context. If they said "code reviews" write "Review pull requests from teammates". If two interview tasks describe the same activity, merge them.
+3. ADD gap-fill tasks for activities clearly implied by their role and responsibilities that they didn't mention. Use the same vocabulary and framing so the full list feels coherent.
+4. Apply all standard MECE rules: mutually exclusive, collectively exhaustive, no vague verbs.
+5. COUNT: aim for 20–25 total.`;
 
   const streamingSystem = `${systemPrompt}
 

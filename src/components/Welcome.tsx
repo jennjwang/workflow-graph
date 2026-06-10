@@ -29,6 +29,18 @@ export function Welcome() {
               task list for you to review — mark what applies, reword anything
               that doesn't quite fit, and add tasks we might have missed.
             </p>
+            <p>
+              Before you begin, please review the{" "}
+              <a
+                href="https://docs.google.com/document/d/15IlS2zdtZ9z28jNMu3i8KIb3YoaeIKk2/edit?usp=sharing&ouid=115842279112732201256&rtpof=true&sd=true"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-indigo-600 hover:text-indigo-700 underline font-medium"
+              >
+                consent form
+              </a>{" "}
+              (opens in a new tab).
+            </p>
             {/* <p>
               <strong className="font-medium text-slate-700">
                 How it works:
@@ -71,9 +83,23 @@ export function Welcome() {
             </ul>
           </div>
 
+          <p className="mt-12 text-xs text-slate-500 leading-relaxed">
+            By clicking “Begin interview,” you confirm that you have read and
+            agree to the{" "}
+            <a
+              href="https://docs.google.com/document/d/15IlS2zdtZ9z28jNMu3i8KIb3YoaeIKk2/edit?usp=sharing&ouid=115842279112732201256&rtpof=true&sd=true"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-indigo-600 hover:text-indigo-700 underline font-medium"
+            >
+              consent form
+            </a>
+            .
+          </p>
+
           <button
             onClick={() => setPhase("background")}
-            className="mt-10 inline-flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-full transition-all active:scale-[0.98] shadow-sm shadow-indigo-200"
+            className="mt-4 inline-flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-full transition-all active:scale-[0.98] shadow-sm shadow-indigo-200"
           >
             Begin interview
             <svg

@@ -60,21 +60,6 @@ const QUESTIONS: {
     ],
     maxFollowups: 1,
   },
-  {
-    field: "aiUsage",
-    text: "Has AI changed your work in any way?",
-    framingNotes:
-      "Ask whether AI has changed their work in any way. Stay strictly NEUTRAL — do NOT presume they use AI or have been affected by it; a 'yes' and a 'no' must feel equally acceptable. Do NOT suggest examples. Keep it open and single-barreled.",
-    placeholder:
-      "New tasks you use AI for, or new responsibilities due to others’ AI use",
-    criteria: [
-      "The participant has addressed BOTH angles of the question: (a) whether they themselves use AI for any tasks, and (b) whether others' AI use has changed their work (e.g. verifying AI output, checking AI-generated work). A 'yes' to either angle should name something specific (a task, tool, or context). A 'no' to either angle is also valid as long as it's clear.",
-      "Cross-probe rule — if an angle hasn't been clearly addressed, follow up ONCE: \n   • If they said NO to personal AI use (or just said 'no' / 'not really' / 'I don't use AI'): the follow-up asks specifically about NEW TASKS OR RESPONSIBILITIES they've taken on because of AI — e.g. checking or verifying AI-generated work, reviewing AI output, fielding AI mistakes. Phrase it as 'new tasks or responsibilities because of AI', not as 'other people's AI use' (the former is more concrete and answerable). \n   • If they only described their own AI use (positive, e.g. 'I use ChatGPT for emails'): the follow-up asks whether they've taken on any new tasks or responsibilities because of AI — similar framing as above. \n   • If they only described impact from others (e.g. 'my team uses Copilot so I review more code'): the follow-up asks whether they themselves use AI for any of their own work. \nAfter they answer the follow-up, accept whatever they say. Write the follow-up plain and conversational, the way you'd ask a coworker. Avoid stiff noun-phrase constructions like 'X's use of AI'; prefer verb-based phrasings. Do NOT suggest specific examples inside the follow-up — keep the question open.",
-      "Once they've addressed BOTH angles (with any combination of yes/no), accept and move on — do NOT probe for more detail. Don't try to convince them otherwise, don't ask why, don't suggest examples.",
-      "Be neutral, never leading. Do NOT presume the participant uses AI or has been impacted by AI. 'No' answers to either angle are equally valid data — the follow-up only fires when an angle hasn't been addressed at all, never to push for a different answer.",
-    ],
-    maxFollowups: 1,
-  },
 ];
 
 // Closing thank-you shown after the last question, before task selection
