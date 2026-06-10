@@ -19,6 +19,9 @@ const MODEL = process.env.MODEL || 'gpt-4o-mini';
 // proposals, interviews, walker chat, etc.). The upper-level task generator
 // still uses MODEL because it anchors the whole session and is run only once.
 const SMALL_MODEL = process.env.SMALL_MODEL || 'gpt-4o-mini';
+// Model for rewording interview questions — gpt-4o-mini produced clunky/leading
+// phrasings, so this defaults to a stronger model.
+const QUESTION_MODEL = process.env.QUESTION_MODEL || 'gpt-4o';
 
 // ── Active-learning task bank (OPTIONAL). Dormant unless TASK_BANK_OCC is set AND
 // `pg` is installed AND DATABASE_URL is configured. If any of those is missing the
@@ -211,7 +214,10 @@ app.post('/api/evaluate-answer', async (req, res) => {
 - If the answer is missing concrete specifics the criterion asks for (e.g. tools, collaborators, deliverables, cadence), it counts as uncovered — probe for them.
 - Do not invent depth that isn't there: "I do meetings and emails" does not satisfy a criterion that asks for specific tools or recurring deliverables.`
       : `- Be lenient. If the answer partially or indirectly addresses a criterion, treat it as covered.
-- A vague, short, or general answer is still an answer — do NOT re-ask just to get more depth.`;
+- A vague, short, or general answer is still an answer.
+- Naming ANY real activity counts as concrete, even a broad one ("building an app", "seeing patients", "working on my startup"). Do NOT probe a named activity for more granularity or depth — never ask them to break down the one thing they named.
+- BUT still follow the specific criteria: if a criterion explicitly calls for BREADTH (e.g. several distinct activities) or for a particular angle to be addressed, and the answer hasn't met it, a single follow-up IS appropriate.
+- When in doubt about DEPTH, treat it as covered; only follow up for clearly missing breadth or an unaddressed angle the criteria call out.`;
 
     const response = await client.chat.completions.create({
       model: MODEL,
@@ -219,13 +225,18 @@ app.post('/api/evaluate-answer', async (req, res) => {
       messages: [
         {
           role: 'system',
-          content: `You are evaluating whether a participant's answer satisfies a set of coverage criteria.
+          content: `You are a skilled qualitative interviewer. Your job is twofold: judge whether a participant's answer satisfies a set of coverage criteria, and — only when it doesn't — ask the kind of follow-up a great human interviewer would ask.
 
-Rules:
+Coverage judgment:
 ${styleRules}
-- If the answer is missing specific required information, generate ONE brief, natural follow-up question targeting ONLY the most critical unmet criterion.
-- The follow-up must be one sentence, conversational, not a survey question, and must NOT ask for PII.
-- Never ask double-barreled questions (one thing at a time).
+
+When a criterion is unmet, write ONE follow-up targeting ONLY the single most critical unmet criterion, using these interviewing techniques:
+- Be genuinely RESPONSIVE to the substance of what they said. Pick up the specific thread they just opened and ask the natural next question a curious listener would ask about THAT thing. The follow-up should be different depending on what they actually said — not a fixed template with their words pasted in front. (If they say "building an app," ask about the app work itself — what part they've been focused on lately. If they say "lots of meetings," ask about the meetings — who they're with, what they're about.)
+- Briefly ACKNOWLEDGE what they shared before your question — a few words is plenty ("Got it, building an app —") — so they feel heard, then ask. Don't mechanically prefix with "You mentioned…"; weave their own words in naturally, the way someone actually in the conversation would.
+- Keep it warm and LOW PRESSURE — any one concrete thing is a perfectly good answer. NEVER sound skeptical or invalidating: don't imply they didn't really answer or have to prove themselves, and avoid challenge words like "actually" ("what did you actually do…").
+- Go after one missing handle: a single concrete detail the criterion needs — a tool, an artifact, a person they hand off to, how often it happens — not several at once.
+- Stay neutral and open. Don't suggest or imply a specific answer, don't presume facts not in evidence, don't lead toward a "right" answer. A "no" is valid data, not a gap to push on.
+- Sound like a person. One sentence, conversational, verb-based phrasing the way you'd ask a coworker — not a survey item. Never ask double-barreled questions, and never ask for PII.
 
 Return JSON: { "allCovered": boolean, "followUp": string | null }`,
         },
@@ -241,6 +252,50 @@ Return JSON: { "allCovered": boolean, "followUp": string | null }`,
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Reword the canonical interview question in natural language, preserving its
+// intent and framing, so it doesn't sound canned. Fails open to null so the
+// client falls back to the canonical static text.
+app.post('/api/interview-question', async (req, res) => {
+  const { canonicalQuestion, framingNotes = '' } = req.body;
+  try {
+    const response = await client.chat.completions.create({
+      model: QUESTION_MODEL,
+      temperature: 0.5,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: `You are a friendly interviewer running a short background interview. Reword the upcoming question in your own natural words.
+
+Rules:
+- Produce a natural, conversational variant of the canonical question that asks for the SAME information. Preserve its intent and any framing notes EXACTLY.
+- It must sound FLUENT and CRISP — like a real person actually speaking. Keep it short and clean. Avoid clunky, padded, or redundant wording (e.g. "the main duties you have in your job", "tasks you handle at your job"). Prefer "What are your main responsibilities at work?" over a longer, more awkward rephrase. If the canonical question is already natural, only lightly vary it — do not pad it.
+- One question. Do NOT add new sub-questions, do NOT make it double-barreled, do NOT ask for PII.
+- Use plain, universal language that fits ANY job (a nurse, a barista, a teacher, an engineer). Do NOT introduce words that presume seniority or a managerial role — e.g. "oversee", "manage", "lead", "in charge of", "key areas" — unless the canonical question itself used them. Never make the question sound more senior or corporate than the original.
+
+Canonical question: "${canonicalQuestion}"
+${framingNotes ? `Framing notes (MUST preserve): ${framingNotes}` : ''}
+
+Return JSON: { "question": string }`,
+        },
+        {
+          role: 'user',
+          content: `Canonical question: "${canonicalQuestion}". Produce the reworded question.`,
+        },
+      ],
+    });
+    const parsed = JSON.parse(response.choices[0].message.content);
+    const question = typeof parsed.question === 'string' && parsed.question.trim()
+      ? parsed.question.trim()
+      : null;
+    res.json({ question });
+  } catch (err) {
+    console.error(err);
+    // Fail open — the client falls back to the canonical static question.
+    res.json({ question: null });
   }
 });
 
@@ -631,6 +686,98 @@ Emit ONE JSON object per line. Each line: {"name":"<task name>"}. Separate with 
   } catch (err) {
     console.error('[generate-tasks-stream]', err);
     try { sendEvent('error', { error: err.message }); } catch {}
+    res.end();
+  }
+});
+
+// Integrated MECE generator: takes raw interview-extracted tasks and produces
+// a single unified task list. Unlike /api/generate-tasks-stream (which treats
+// interview tasks as grounding and only gap-fills), this endpoint:
+//   1. Normalizes the interview tasks to O*NET standard (rewords vague/short ones)
+//   2. Deduplicates any that describe the same activity
+//   3. Adds gap-fill tasks for categories the interview didn't cover
+//   4. Returns one flat MECE list — interview-derived + new tasks together
+// This gives participants a single coherent list to react to rather than a
+// split view where their own tasks appear in a separate bucket.
+app.post('/api/generate-tasks-from-interview', async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  const sendEvent = (event, data) => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    res.flush?.();
+  };
+
+  const { jobTitle, typicalWeek, aiUsage, responsibilities, interviewTasks = [] } = req.body;
+
+  const interviewBlock = interviewTasks.length > 0
+    ? `\nHOW THIS PARTICIPANT DESCRIBES THEIR JOB (use as an anchoring signal):\n${interviewTasks.map(t => `- ${t}`).join('\n')}\n`
+    : '';
+
+  const systemPrompt = `${UPPER_LEVEL_TASKS_SYSTEM_PROMPT}
+
+SPECIAL INSTRUCTIONS FOR THIS RUN — PARTICIPANT-ANCHORED MODE:
+You are given the activities this participant named when describing their own job. Use them as a signal about how they frame their work — their vocabulary, scope, and priorities. Your output does not need to include these tasks verbatim, but the list you generate should feel like it came from this specific person's world, not a generic role description.
+
+Concretely:
+- Use the participant's terms and framing where possible (their nouns, their context). If they said "code reviews" not "pull request review", prefer their language.
+- Let their scope bound yours. If they described a narrow role, don't pad with tasks outside it. If they described a broad one, reflect that breadth.
+- A participant who reads your list should recognize it as a description of their job, not a generic template for their title.
+- Apply all standard MECE rules: mutually exclusive, collectively exhaustive, O*NET granularity, no vague verbs.
+- COUNT: aim for 20–25 tasks.`;
+
+  const streamingSystem = `${systemPrompt}
+
+OUTPUT FORMAT: emit one task per line as JSONL. Each line must be a complete JSON object: {"name": "..."}
+No surrounding array. No markdown. No commentary. Just one {"name": "..."} per line.`;
+
+  try {
+    const { block: exemplarBlock } = await retrieveExemplarBlock({ jobTitle, responsibilities, typicalWeek });
+
+    const stream = await client.chat.completions.create({
+      model: MODEL,
+      temperature: 0.7,
+      stream: true,
+      messages: [
+        { role: 'system', content: streamingSystem },
+        { role: 'user', content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${aiUsage ? `\nAI usage: ${aiUsage}` : ''}${exemplarBlock}${interviewBlock}\nGenerate the integrated MECE task list.` },
+      ],
+    });
+
+    let buffer = '';
+    let taskCount = 0;
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta?.content ?? '';
+      buffer += delta;
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const obj = JSON.parse(trimmed);
+          if (obj.name && typeof obj.name === 'string') {
+            sendEvent('task', { name: obj.name.trim(), id: obj.id });
+            taskCount++;
+          }
+        } catch { /* incomplete line — keep buffering */ }
+      }
+    }
+    // Flush any remaining buffer
+    if (buffer.trim()) {
+      try {
+        const obj = JSON.parse(buffer.trim());
+        if (obj.name) { sendEvent('task', { name: obj.name.trim(), id: obj.id }); taskCount++; }
+      } catch { /* ignore */ }
+    }
+    console.log(`[generate-tasks-from-interview] role=${jobTitle} interviewTasks=${interviewTasks.length} emitted=${taskCount}`);
+    sendEvent('done', {});
+    res.end();
+  } catch (err) {
+    console.error('[generate-tasks-from-interview]', err);
+    sendEvent('error', { message: err.message });
     res.end();
   }
 });

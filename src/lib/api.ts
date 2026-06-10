@@ -311,6 +311,27 @@ export async function evaluateAnswer(
   return res.json();
 }
 
+// Dynamic phrasing for an opening interview question: a natural reworded variant
+// of the canonical question. Fails open to null so the interview falls back to
+// the canonical static text.
+export async function fetchInterviewQuestion(
+  canonicalQuestion: string,
+  framingNotes: string,
+): Promise<string | null> {
+  try {
+    const res = await fetch('/api/interview-question', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ canonicalQuestion, framingNotes }),
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json.question ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function generateCategories(
   jobTitle: string,
   typicalWeek: string,
@@ -382,6 +403,46 @@ export async function generateTasksForCategoryStream(
       const data = JSON.parse(dataLine.slice(6));
       if (event === 'task' && typeof data?.name === 'string')
         onTask(data.name, typeof data?.id === 'string' ? data.id : undefined);
+      else if (event === 'error') throw new Error(data.error ?? 'stream error');
+      else if (event === 'done') return;
+    }
+  }
+}
+
+// Integrated MECE generator: normalizes interview-extracted tasks to O*NET
+// standard, deduplicates, and adds gap-fill — returning one flat list.
+// Streaming version (SSE), same interface as generateTasksForCategoryStream.
+export async function generateTasksFromInterview(
+  jobTitle: string,
+  typicalWeek: string,
+  aiUsage: string | undefined,
+  responsibilities: string | undefined,
+  interviewTasks: string[],
+  onTask: (name: string) => void,
+): Promise<void> {
+  const res = await fetch('/api/generate-tasks-from-interview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jobTitle, typicalWeek, aiUsage, responsibilities, interviewTasks }),
+  });
+  if (!res.ok || !res.body) throw new Error(await res.text());
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) return;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split('\n\n');
+    buffer = parts.pop() ?? '';
+    for (const part of parts) {
+      const lines = part.split('\n');
+      const eventLine = lines.find(l => l.startsWith('event: '));
+      const dataLine = lines.find(l => l.startsWith('data: '));
+      if (!eventLine || !dataLine) continue;
+      const event = eventLine.slice(7);
+      const data = JSON.parse(dataLine.slice(6));
+      if (event === 'task' && typeof data?.name === 'string') onTask(data.name);
       else if (event === 'error') throw new Error(data.error ?? 'stream error');
       else if (event === 'done') return;
     }

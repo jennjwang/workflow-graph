@@ -18,7 +18,7 @@ const HOURS_ENABLED = false;
 
 // Hard cap on the picker list (real tasks + spliced attention checks). Also
 // the progress-bar denominator so the bar reflects actual rating progress.
-const MAX_TASKS = 15;
+const MAX_TASKS = 20;
 
 // Number of tasks the participant must rate before the "Finish early"
 // affordance unlocks. Pinned to MAX_TASKS so the threshold tracks the picker
@@ -30,40 +30,6 @@ const DONE_THRESHOLD = MAX_TASKS;
 // the nudge stops appearing for the rest of the flow.
 const NUDGE_AFTER_UNEDITED = 3;
 
-// One attention check inserted after every N real tasks (positions N, 2N, 3N, …).
-const ATTENTION_CHECK_INTERVAL = 4;
-
-// O*NET-style fallback attention checks. Drawn from clearly unrelated
-// occupations so participants can always answer "I don't do this" honestly.
-// Fisher-Yates shuffled on every full page load (not module cache) so each
-// session sees a different order and no check repeats within a session.
-function fisherYates<T>(arr: T[]): T[] {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-const FALLBACK_ATTENTION_CHECKS: string[] = fisherYates([
-  "Triage walk-in emergency-room patients to determine treatment priority based on presenting symptoms.",
-  "Replace residential service-panel circuit breakers during scheduled electrical maintenance calls.",
-  "Pull and dispense espresso shots to fulfill customer drink orders during peak café shifts.",
-  "Inspect commercial brake systems on customer vehicles to identify worn pads and rotors.",
-  "Harvest field crops by operating a combine across designated rows during the harvest window.",
-  "Conduct routine traffic stops on patrol to enforce posted speed and equipment regulations.",
-  "Cut and style hair for walk-in salon clients based on consultation and customer preference.",
-  "Operate forklift equipment on a warehouse floor to move palletized inventory between zones.",
-  "Weld steel structural components together on a construction site following blueprint specifications.",
-  "Muck out horse stalls and replenish bedding as part of a daily stable management routine.",
-  "Apply pesticide treatments to orchard trees using a backpack sprayer during growing season.",
-  "Fit customers for corrective lenses by performing a refraction exam and reading prescription.",
-  "Splice fiber-optic cable runs inside a telecommunications distribution frame.",
-  "Log catch weights and species data on a commercial fishing vessel after each haul.",
-  "Debone and portion raw poultry carcasses on a processing line at target yield weights.",
-  "Lay brick courses along a chalk line to construct a load-bearing exterior wall.",
-]);
 
 // Three separate bonus pools:
 //  • EDIT bonus:    per-character on tasks the participant rewords (Levenshtein distance).
@@ -155,13 +121,16 @@ export function TaskSelection() {
   // summary with seeded confirmed tasks that already carry hours.
   const _search = new URLSearchParams(window.location.search);
   const _devPhase = _search.get("dev") === "task-selection";
-  const devSkipToReview = _devPhase && _search.get("review") === "1" && !_search.get("card");
-  const devSkipToCard   = _devPhase && _search.get("card") === "1";
-  const devSkipToHours  = _devPhase && _search.get("hours") === "1";
+  const devSkipToReview =
+    _devPhase && _search.get("review") === "1" && !_search.get("card");
+  const devSkipToCard = _devPhase && _search.get("card") === "1";
+  const devSkipToHours = _devPhase && _search.get("hours") === "1";
 
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [currentIdx, setCurrentIdx] = useState(0);
-  const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
+  const [loadState, setLoadState] = useState<"loading" | "ready" | "error">(
+    "loading",
+  );
   const [showIntro, setShowIntro] = useState(
     !devSkipToReview && !devSkipToCard && !devSkipToHours,
   );
@@ -220,7 +189,7 @@ export function TaskSelection() {
   const didLoadRef = useRef(false);
   useEffect(() => {
     if (devSkipToReview || devSkipToCard || devSkipToHours) return; // dev shortcut: tasks are already seeded
-    if (didLoadRef.current) return;  // one-shot: never re-generate (StrictMode double-invoke, re-render, re-mount)
+    if (didLoadRef.current) return; // one-shot: never re-generate (StrictMode double-invoke, re-render, re-mount)
     didLoadRef.current = true;
     async function load() {
       try {
@@ -254,32 +223,12 @@ export function TaskSelection() {
         const onTask = (name: string, id?: string) => {
           realCount += 1;
           setTasks((prev) => {
-            // Stop appending once we've hit the visible cap (real + checks).
             if (prev.length >= MAX_TASKS) return prev;
-            const next: TaskItem[] = [
+            return [
               ...prev,
               { name, originalName: name, bankId: id, status: "unreviewed" },
             ];
-            // Splice in an attention check after every Nth real task.
-            if (realCount % ATTENTION_CHECK_INTERVAL === 0) {
-              const checkIdx = realCount / ATTENTION_CHECK_INTERVAL - 1;
-              if (
-                checkIdx < FALLBACK_ATTENTION_CHECKS.length &&
-                next.length < MAX_TASKS
-              ) {
-                const label = FALLBACK_ATTENTION_CHECKS[checkIdx];
-                next.push({
-                  name: label,
-                  originalName: label,
-                  status: "unreviewed",
-                  category: "__attention_check__",
-                  isAttentionCheck: true,
-                });
-              }
-            }
-            return next;
           });
-          // Flip to 'ready' on the first task so the picker shows immediately.
           if (realCount === 1) setLoadState("ready");
         };
         await generateTasksForCategoryStream(
@@ -613,7 +562,7 @@ export function TaskSelection() {
         ${isExhausted ? "justify-start pt-6 pb-12 px-4 sm:px-6" : "px-8"}`}
       >
         {loading ? (
-          <div className="flex justify-center">
+          <div className="flex-1 flex items-center justify-center">
             <div className="flex gap-2">
               {[0, 150, 300].map((d) => (
                 <span
@@ -656,15 +605,17 @@ export function TaskSelection() {
             onSubmit={goToHoursSummary}
           />
         ) : currentTask ? (
-          <TaskReviewCard
-            key={currentIdx}
-            task={currentTask}
-            taskIdx={currentIdx}
-            isLast={currentIdx >= tasks.length - 1}
-            hasEditedAnyTask={tasks.some((t) => (t.edits?.length ?? 0) > 0)}
-            onSaveEdit={saveEdit}
-            onAdvance={advance}
-          />
+          <div className="w-full max-w-[600px] mx-auto h-full">
+            <TaskReviewCard
+              key={currentIdx}
+              task={currentTask}
+              taskIdx={currentIdx}
+              isLast={currentIdx >= tasks.length - 1}
+              hasEditedAnyTask={tasks.some((t) => (t.edits?.length ?? 0) > 0)}
+              onSaveEdit={saveEdit}
+              onAdvance={advance}
+            />
+          </div>
         ) : null}
       </div>
 
@@ -708,30 +659,21 @@ function IntroScreen({
             className="text-[1.65rem] font-light text-slate-800 leading-snug tracking-tight animate-fadeSlideUp"
             style={{ animationDelay: "80ms" }}
           >
-            Next, we'll go through a list of tasks.
+            We built a task list from your interview.
           </h2>
           <p
             className="text-slate-500 mt-6 text-[15px] leading-[1.7] animate-fadeSlideUp"
             style={{ animationDelay: "160ms" }}
           >
-            We'll show you a list of tasks someone in your role might do at
-            work, and we'll ask you to confirm which tasks you do.
+            Based on what you just described, we've put together a list of tasks for your role. Some come directly from what you told us — others fill in gaps we think might be missing.
+          </p>
+          <p
+            className="text-slate-500 mt-4 text-[15px] leading-[1.7] animate-fadeSlideUp"
+            style={{ animationDelay: "220ms" }}
+          >
+            Confirm which tasks you actually do, and reword any that don't quite match how you'd describe them.
           </p>
           <div className="mt-12 space-y-4">
-            <div
-              className="px-5 py-4 rounded-xl border border-indigo-100 bg-indigo-50/60 animate-fadeSlideUp"
-              style={{ animationDelay: "240ms" }}
-            >
-              <div className="text-sm leading-[1.6]">
-                <p className="font-semibold text-indigo-700 mb-1.5">
-                  Attention checks
-                </p>
-                <p className="text-slate-600">
-                  A few items are mixed in to confirm you're reading carefully.
-                  Answer everything honestly.
-                </p>
-              </div>
-            </div>
             {BONUS_ENABLED && (
               <div
                 className="px-5 py-4 rounded-xl border border-amber-200 bg-amber-50 animate-fadeSlideUp"
@@ -755,29 +697,6 @@ function IntroScreen({
                 </div>
               </div>
             )}
-            <div
-              className="px-5 py-4 rounded-xl border border-amber-200 bg-amber-50 animate-fadeSlideUp"
-              style={{ animationDelay: "370ms" }}
-            >
-              <div className="text-sm leading-[1.6]">
-                <p className="font-semibold text-amber-700 mb-1.5">
-                  AI-use description
-                </p>
-                <p className="text-slate-700">
-                  For tasks where you use AI, tell us how — what you use it for,
-                  in what context. The more specific, the better.
-                </p>
-                {BONUS_ENABLED && (
-                  <p className="mt-2.5 text-amber-800">
-                    <span className="font-semibold">
-                      {formatUsd(AI_HOWSO_BONUS_PER_CHAR_USD * 1000)} per 1,000
-                      characters
-                    </span>{" "}
-                    on AI-use descriptions.
-                  </p>
-                )}
-              </div>
-            </div>
           </div>
           <button
             onClick={onStart}
@@ -1154,47 +1073,116 @@ function TaskReviewCard({
   };
 
   return (
-    <div className="h-full flex flex-col">
-      {/* Centered: task name + buttons — never moves */}
-      <div className="flex-1 flex flex-col justify-center gap-7 pb-4">
+    <div className="h-full relative">
+      {/* Centered: task name + buttons. pb reserves space for the bottom section
+          so the centering point never shifts when nudge/continue appear. */}
+      <div className="h-full flex flex-col justify-center gap-7 pb-48">
+        {/* Task name */}
+        <div
+          onClick={() => !editing && startEdit()}
+          className="cursor-text select-none pb-1"
+        >
+          {editing ? (
+            <textarea
+              ref={inputRef}
+              className="w-full text-2xl font-light text-slate-800 bg-transparent border-b-2 border-indigo-300 focus:outline-none pb-1 resize-none overflow-hidden leading-snug"
+              value={editValue}
+              rows={1}
+              onChange={(e) => {
+                setEditValue(e.target.value);
+                e.target.style.height = "auto";
+                e.target.style.height = e.target.scrollHeight + "px";
+              }}
+              onBlur={commitEdit}
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitEdit();
+                }
+                if (e.key === "Escape") {
+                  setEditing(false);
+                  setEditValue(task.name);
+                }
+              }}
+            />
+          ) : (
+            <div className="flex items-start gap-3">
+              <p className="text-2xl font-light text-slate-800 leading-snug flex-1">
+                {task.name}
+              </p>
+              <span className="mt-1 shrink-0 flex items-center justify-center w-8 h-8 rounded-full bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-500 transition-colors">
+                <svg
+                  className="w-4 h-4"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M11 2l3 3-8 8H3v-3l8-8z" />
+                </svg>
+              </span>
+            </div>
+          )}
+        </div>
 
-      {/* Task name */}
-      <div
-        onClick={() => !editing && startEdit()}
-        className="cursor-text select-none pb-1"
-      >
-        {editing ? (
-          <textarea
-            ref={inputRef}
-            className="w-full text-2xl font-light text-slate-800 bg-transparent border-b-2 border-indigo-300 focus:outline-none pb-1 resize-none overflow-hidden leading-snug"
-            value={editValue}
-            rows={1}
-            onChange={(e) => {
-              setEditValue(e.target.value);
-              e.target.style.height = "auto";
-              e.target.style.height = e.target.scrollHeight + "px";
-            }}
-            onBlur={commitEdit}
-            onClick={(e) => e.stopPropagation()}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                commitEdit();
-              }
-              if (e.key === "Escape") {
-                setEditing(false);
-                setEditValue(task.name);
-              }
-            }}
-          />
-        ) : (
-          <div className="flex items-start gap-3">
-            <p className="text-2xl font-light text-slate-800 leading-snug flex-1">
-              {task.name}
-            </p>
-            <span className="mt-1 shrink-0 flex items-center justify-center w-8 h-8 rounded-full bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-500 transition-colors">
+        {/* Buttons */}
+        <div className="flex gap-3">
+          {(
+            [
+              {
+                value: "yes",
+                label: "I do this",
+                active:
+                  "bg-indigo-600 border-indigo-600 text-white shadow-sm shadow-indigo-200",
+                inactive: "hover:border-indigo-200 hover:text-indigo-600",
+              },
+              {
+                value: "no",
+                label: "I don't do this",
+                active: "bg-slate-100 border-slate-300 text-slate-700",
+                inactive: "hover:border-slate-300",
+              },
+            ] as {
+              value: "yes" | "no";
+              label: string;
+              active: string;
+              inactive: string;
+            }[]
+          ).map(({ value, label, active, inactive }) => (
+            <button
+              key={value}
+              onClick={() => {
+                setPrimaryAnswer(value);
+                if (value === "no") setHoursInput("");
+              }}
+              className={`flex-1 py-3 rounded-2xl border text-sm font-medium transition-all active:scale-[0.98] ${
+                primaryAnswer === value
+                  ? active
+                  : `bg-white border-slate-200 text-slate-600 ${inactive}`
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {/* end centered section */}
+
+      {/* Bottom: absolutely pinned so it never affects the centered layout */}
+      <div className="absolute bottom-0 left-0 right-0 space-y-4 pb-12">
+        {/* Nudge */}
+        {primaryAnswer === "yes" &&
+          !hasEditedAnyTask &&
+          taskIdx >= NUDGE_AFTER_UNEDITED && (
+            <div
+              onClick={() => !editing && startEdit()}
+              className={`flex items-start gap-3 px-4 py-3.5 rounded-xl bg-amber-50 border border-amber-200 ${editing ? "cursor-default" : "cursor-text"} animate-fadeSlideIn`}
+            >
               <svg
-                className="w-4 h-4"
+                className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-500"
                 viewBox="0 0 16 16"
                 fill="none"
                 stroke="currentColor"
@@ -1204,129 +1192,59 @@ function TaskReviewCard({
               >
                 <path d="M11 2l3 3-8 8H3v-3l8-8z" />
               </svg>
-            </span>
+              <p className="text-sm text-amber-700 leading-relaxed">
+                {editing ? (
+                  "Great — reword it so it reflects how you actually do this."
+                ) : (
+                  <>
+                    <span className="font-semibold text-amber-800">
+                      Make it yours.
+                    </span>{" "}
+                    Click the title above and reword it in your own terms.
+                  </>
+                )}
+              </p>
+            </div>
+          )}
+
+        {/* Hours follow-up — only when the participant does this task and the
+          hours feature is on */}
+        {HOURS_ENABLED && primaryAnswer === "yes" && (
+          <div className="space-y-5 pt-5 animate-fadeSlideIn">
+            <p className="text-base font-normal text-slate-500">
+              In a typical week, how many hours do you spend on this?
+            </p>
+            <div className="flex items-center gap-3">
+              <input
+                type="number"
+                min={0}
+                step={0.5}
+                inputMode="decimal"
+                value={hoursInput}
+                onChange={(e) => setHoursInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && canContinue) handleContinue();
+                }}
+                placeholder="e.g. 3"
+                className="w-28 px-3.5 py-2.5 text-sm text-slate-700 placeholder:text-slate-300 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 transition"
+              />
+              <span className="text-sm text-slate-500">hours / week</span>
+            </div>
           </div>
         )}
-      </div>
 
-      {/* Buttons */}
-      <div className="flex gap-3">
-        {(
-          [
-            {
-              value: "yes",
-              label: "I do this",
-              active:
-                "bg-indigo-600 border-indigo-600 text-white shadow-sm shadow-indigo-200",
-              inactive: "hover:border-indigo-200 hover:text-indigo-600",
-            },
-            {
-              value: "no",
-              label: "I don't do this",
-              active: "bg-slate-100 border-slate-300 text-slate-700",
-              inactive: "hover:border-slate-300",
-            },
-          ] as {
-            value: "yes" | "no";
-            label: string;
-            active: string;
-            inactive: string;
-          }[]
-        ).map(({ value, label, active, inactive }) => (
+        {/* Continue */}
+        {primaryAnswer !== null && (
           <button
-            key={value}
-            onClick={() => {
-              setPrimaryAnswer(value);
-              if (value === "no") setHoursInput("");
-            }}
-            className={`flex-1 py-3 rounded-2xl border text-sm font-medium transition-all active:scale-[0.98] ${
-              primaryAnswer === value
-                ? active
-                : `bg-white border-slate-200 text-slate-600 ${inactive}`
-            }`}
+            onClick={handleContinue}
+            disabled={!canContinue}
+            className="self-end px-5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-30 text-white text-sm font-medium rounded-xl transition-all active:scale-[0.98]"
           >
-            {label}
+            {isLast ? "Done →" : "Continue →"}
           </button>
-        ))}
+        )}
       </div>
-
-      </div>{/* end centered section */}
-
-      {/* Bottom: nudge + continue — appears below without shifting task name */}
-      <div className="space-y-4 pb-12">
-
-      {/* Nudge */}
-      {primaryAnswer === "yes" &&
-        !hasEditedAnyTask &&
-        taskIdx >= NUDGE_AFTER_UNEDITED && (
-        <div
-          onClick={() => !editing && startEdit()}
-          className={`flex items-start gap-3 px-4 py-3.5 rounded-xl bg-amber-50 border border-amber-200 ${editing ? "cursor-default" : "cursor-text"} animate-fadeSlideIn`}
-        >
-          <svg
-            className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-500"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M11 2l3 3-8 8H3v-3l8-8z" />
-          </svg>
-          <p className="text-sm text-amber-700 leading-relaxed">
-            {editing ? (
-              "Great — reword it so it reflects how you actually do this."
-            ) : (
-              <>
-                <span className="font-semibold text-amber-800">
-                  Make it yours.
-                </span>{" "}
-                Click the title above and reword it in your own terms.
-              </>
-            )}
-          </p>
-        </div>
-      )}
-
-      {/* Hours follow-up — only when the participant does this task and the
-          hours feature is on */}
-      {HOURS_ENABLED && primaryAnswer === "yes" && (
-        <div className="space-y-5 pt-5 animate-fadeSlideIn">
-          <p className="text-base font-normal text-slate-500">
-            In a typical week, how many hours do you spend on this?
-          </p>
-          <div className="flex items-center gap-3">
-            <input
-              type="number"
-              min={0}
-              step={0.5}
-              inputMode="decimal"
-              value={hoursInput}
-              onChange={(e) => setHoursInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && canContinue) handleContinue();
-              }}
-              placeholder="e.g. 3"
-              className="w-28 px-3.5 py-2.5 text-sm text-slate-700 placeholder:text-slate-300 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 transition"
-            />
-            <span className="text-sm text-slate-500">hours / week</span>
-          </div>
-        </div>
-      )}
-
-      {/* Continue */}
-      {primaryAnswer !== null && (
-        <button
-          onClick={handleContinue}
-          disabled={!canContinue}
-          className="self-end px-5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-30 text-white text-sm font-medium rounded-xl transition-all active:scale-[0.98]"
-        >
-          {isLast ? "Done →" : "Continue →"}
-        </button>
-      )}
-
-      </div>{/* end bottom section */}
+      {/* end bottom section */}
     </div>
   );
 }

@@ -24,21 +24,19 @@ export function Welcome() {
               tools.
             </p>
             <p>
-              You'll be asked a few short questions about your role and what a
-              typical week looks like for you. After that, you'll review a list
-              of tasks and mark which ones actually apply to your work. You can
-              also edit any task whose wording doesn't fit, and at the end
-              you'll have a chance to add anything we missed (both earn a small
-              bonus).
+              You'll have a short conversation with an AI interviewer about your
+              role and a typical week. From your answers, we'll put together a
+              task list for you to review — mark what applies, reword anything
+              that doesn't quite fit, and add tasks we might have missed.
             </p>
-            <p>
+            {/* <p>
               <strong className="font-medium text-slate-700">
                 How it works:
               </strong>{" "}
               Please respond in your own words and review each task carefully. A
               few attention-check items are mixed in, so only select tasks that
               are actually part of your work.
-            </p>
+            </p> */}
           </div>
 
           <div className="mt-8 border border-slate-200 rounded-2xl p-5 bg-slate-50/50">
