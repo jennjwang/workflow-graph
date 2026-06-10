@@ -38,27 +38,29 @@ const QUESTIONS: {
     field: "responsibilities",
     text: "What are your primary responsibilities at work?",
     framingNotes:
-      "Ask what their main responsibilities or duties are — the parts of the job they're responsible for, NOT the day-to-day activities (that's a later question). Use plain wording that fits ANY job; do NOT use managerial verbs like 'oversee', 'manage', 'lead', or 'in charge of' — they presume a supervisory role that may not fit.",
+      "Ask what their main responsibilities are — the parts of the job they're responsible for, NOT the day-to-day activities (that's a later question). Keep the word 'responsibilities'; do NOT swap in 'duties', 'tasks', or 'key areas'. Use plain wording that fits ANY job; do NOT use managerial verbs like 'oversee', 'manage', 'lead', or 'in charge of'.",
     placeholder: "What you own or are accountable for",
     criteria: [
-      "The participant has named at least one primary responsibility — any level of detail counts. A short answer ('I own the team's product specs') is sufficient to satisfy this criterion.",
-      "The participant has mentioned at least one concrete responsibility, deliverable, or area they own (e.g. a function they perform, an outcome they're accountable for, a team or domain they cover).",
+      "FLOOR — the participant has named at least one primary responsibility or area they own (e.g. 'I own the team's product specs', 'I'm responsible for patient care'). If they named NONE ('a bit of everything', 'various things'), follow up asking what they're mainly responsible for.",
+      "TASKS UNDER RESPONSIBILITIES — when they've named responsibilities or areas at a high level but NOT the concrete tasks those involve, it's NOT fully covered: follow up by picking ONE responsibility they named and asking what specific tasks or activities fall under it (e.g. they say 'I'm responsible for the backend' → 'When it comes to the backend, what are the main things you actually do?'; 'I handle patient care' → 'What does patient care involve day to day for you?'). On a later turn, if OTHER responsibilities they named are still just high-level areas, you may drill into ONE more of them. Stop once the tasks under their main responsibilities are reasonably clear. If they've already described the concrete tasks under their responsibilities, this is covered. Probe ONE responsibility per turn, warmly, never skeptically.",
     ],
-    maxFollowups: 1,
+    maxFollowups: 2,
   },
   {
     field: "typicalWeek",
-    text: "Think back over this past week — what did you actually work on?",
+    text: "Think back over this past week — what did you actually work on? The more specific you can be about the tasks you do, the better.",
     framingNotes:
-      "CRITICAL — keep the critical-incident framing: anchor on what they ACTUALLY did over THIS PAST WEEK specifically (a concrete, recent week), NOT a hypothetical 'typical' week. Just ask what they worked on — do NOT ask them to go day by day or break it down by each day.",
+      "CRITICAL — keep the critical-incident framing: anchor on what they ACTUALLY did over THIS PAST WEEK specifically (a concrete, recent week), NOT a hypothetical 'typical' week. Just ask what they worked on — do NOT ask them to go day by day or break it down by each day. KEEP the closing encouragement to be as specific as possible about the tasks they do.",
     placeholder:
-      "What you actually did this past week — the meetings, the deliverables, the day-to-day",
+      "What you did this past week — meetings, deliverables, the day-to-day",
     criteria: [
-      "The participant has named at least one real activity or task they did (e.g. a meeting, a deliverable, building something, a tool they used, a person they worked with). If they named NO actual activity at all ('the usual', 'just work stuff', 'hard to say'), follow up asking what they worked on this week.",
-      "BREADTH — the participant has conveyed more than a single thing about their week. If they named only ONE activity or area (e.g. 'mostly building an app', 'just seeing patients'), follow up ONCE: first briefly ACKNOWLEDGE what they shared, then ask whether there are other tasks or activities they also do in a typical week. Do NOT push for more detail on the one activity they named — you're after the range of their week, not depth. If they've already named several distinct activities, this is covered.",
+      "FLOOR — the participant has named at least one real activity or task they did. If they named NO actual activity at all ('the usual', 'just work stuff', 'hard to say'), follow up asking what they worked on this week.",
+      "BREADTH — if they named only ONE activity or area (e.g. 'mostly building an app', 'just seeing patients'), follow up ONCE: briefly ACKNOWLEDGE it, then ask whether there are other tasks or activities they also do. Do NOT push for more detail on that one activity. If they named several distinct activities, breadth is covered.",
+      "SUBSTANCE — the answer must give a concrete sense of WHAT the work actually is, not just generic activity labels. A bare list — e.g. 'I have some zooms and a standup, I go to networking events, otherwise I write proposals and do research' — names activities but says nothing about what the proposals are FOR, what the research is ON, or what the meetings cover. When a central activity is named only as a bare label (no topic, project, client, deliverable, audience, or tool), it is NOT covered — follow up: warmly pick the SINGLE most central still-vague activity and ask what it actually involves or is about (e.g. 'What kind of proposals are you writing, and who for?' or 'What's the research on?'). Probe ONE thread per turn — never interrogate every item at once, never sound skeptical. On later turns, if other central activities they named are STILL bare labels, you may probe ONE more of them; stop once the main parts of their week are reasonably concrete. If the central activities already carry concrete substance, this is covered.",
+      "RESPONSIBILITY COVERAGE — the EARLIER context lists the responsibilities the participant named. If any responsibility or area there does NOT clearly map to a task they mentioned this week, it is NOT fully covered: follow up ONCE, warmly, asking whether they did anything on that responsibility this week (e.g. earlier they said they're responsible for hiring but never mentioned it → 'Earlier you mentioned you're responsible for hiring — did you get to any of that this week?'). Probe ONE uncovered responsibility per turn. If there is no earlier context, or every responsibility already maps to something they mentioned, this is covered.",
       "Representativeness — ONLY if the participant explicitly signals the recent week was unusual or atypical (e.g. 'last week was crazy', 'that's not a normal week', 'I was on leave/traveling'), follow up ONCE asking what a normal week usually looks like. If they give no such signal, treat the recent week as representative and do NOT ask about it — accept and move on.",
     ],
-    maxFollowups: 1,
+    maxFollowups: 3,
   },
 ];
 
@@ -68,15 +70,14 @@ const OUTRO_TEXT =
 
 // AI-interviewer intro screens, shown one at a time before the first question
 const INTRO_SCREENS = [
-  "Hi — I'm an AI interviewer designed to learn more about your work and how it's changing.",
-  "Before we start, I know it's unusual to get interviewed by an AI agent, so please answer in whatever way feels natural. I’m here to understand your work and how you think about it.",
+  "To start, an AI interviewer will ask you a few short questions about your role. We know it might be unusual to be interviewed by an AI agent, so please answer in whatever way feels natural.",
 ];
 
 // Reveals text one word at a time, each word rising and fading in (staggered).
 // Calls onDone once the last word has finished animating.
 const POP_START = 30;
-const POP_STAGGER = 32;
-const POP_FADE = 420;
+const POP_STAGGER = 58;
+const POP_FADE = 600;
 function PopInText({ text, onDone }: { text: string; onDone?: () => void }) {
   const [shown, setShown] = useState(false);
   useEffect(() => {
@@ -249,6 +250,8 @@ export function BackgroundInterview() {
   const [followUpQ, setFollowUpQ] = useState<string | null>(null);
   const [followUpCount, setFollowUpCount] = useState(0);
   const [accumulatedAnswer, setAccumulatedAnswer] = useState("");
+  // Follow-ups already asked this question, so the evaluator never repeats them
+  const [askedFollowUps, setAskedFollowUps] = useState<string[]>([]);
 
   // Live (LLM-generated) phrasing for the current question; falls back to the
   // question's canonical static text on null.
@@ -335,6 +338,7 @@ export function BackgroundInterview() {
     setFollowUpQ(null);
     setFollowUpCount(0);
     setAccumulatedAnswer("");
+    setAskedFollowUps([]);
     setInput("");
     setShowTextInput(false);
 
@@ -388,6 +392,12 @@ export function BackgroundInterview() {
     if (newFollowUpCount < q.maxFollowups) {
       setIsEvaluating(true);
       try {
+        // For the week question, give the evaluator the responsibilities the
+        // participant named earlier so it can chase any that didn't surface as a task.
+        const evalContext =
+          q.field === "typicalWeek" && answers.responsibilities.trim()
+            ? `The participant described their primary responsibilities as: "${answers.responsibilities}"`
+            : "";
         const result = await evaluateAnswer(
           q.text,
           combined,
@@ -395,11 +405,14 @@ export function BackgroundInterview() {
           q.maxFollowups,
           newFollowUpCount,
           q.evaluationStyle ?? "lenient",
+          askedFollowUps,
+          evalContext,
         );
         if (!result.allCovered && result.followUp) {
           // Show follow-up question
           setAccumulatedAnswer(combined);
           setFollowUpCount(newFollowUpCount);
+          setAskedFollowUps((prev) => [...prev, result.followUp as string]);
           setFollowUpQ(result.followUp);
           setQuestionVisible(false);
           setTimeout(() => setQuestionVisible(true), 180);
@@ -642,18 +655,20 @@ export function BackgroundInterview() {
                   <polyline points="12 5 19 12 12 19" />
                 </svg>
               </button>
-              <div className="flex gap-1.5">
-                {INTRO_SCREENS.map((_, i) => (
-                  <span
-                    key={i}
-                    className={`h-1.5 rounded-full transition-all duration-300 ${
-                      i === introStep
-                        ? "w-5 bg-indigo-400"
-                        : "w-1.5 bg-slate-200"
-                    }`}
-                  />
-                ))}
-              </div>
+              {INTRO_SCREENS.length > 1 && (
+                <div className="flex gap-1.5">
+                  {INTRO_SCREENS.map((_, i) => (
+                    <span
+                      key={i}
+                      className={`h-1.5 rounded-full transition-all duration-300 ${
+                        i === introStep
+                          ? "w-5 bg-indigo-400"
+                          : "w-1.5 bg-slate-200"
+                      }`}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           )}
 

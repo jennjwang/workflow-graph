@@ -3,3 +3,6 @@ dist/
 .env
 sessions/
 *.log
+
+# generated interview sim output
+sim_transcripts.txt

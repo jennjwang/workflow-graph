@@ -21,6 +21,11 @@ import {
 const REVIEW_MODE =
   new URLSearchParams(window.location.search).get("review") === "1";
 
+// Paste is blocked by default so participants type their own answers. Append
+// ?paste=1 to the URL to allow copy/paste (e.g. for testing).
+const ALLOW_PASTE =
+  new URLSearchParams(window.location.search).get("paste") === "1";
+
 // Preset job profiles for dev testing. Add entries here to test task generation
 // with a specific background without going through the interview.
 // Usage: ?persona=frontend-engineer&review=1
@@ -133,6 +138,7 @@ export default function App() {
   // capture-phase listener covers every <input>, <textarea>, and
   // contentEditable element across the app without touching each component.
   useEffect(() => {
+    if (ALLOW_PASTE) return; // switch: ?paste=1 leaves paste enabled
     const blockPaste = (e: ClipboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (!t) return;
@@ -317,7 +323,7 @@ export default function App() {
         <div className="relative flex h-screen w-screen overflow-hidden bg-white">
           {/* Gradient spans the full viewport so it doesn't get clipped to the centered column. */}
           <div className="absolute top-0 left-0 right-0 h-48 bg-gradient-to-b from-indigo-50/40 to-transparent pointer-events-none" />
-          <div className="relative w-[780px] mx-auto h-full">
+          <div className="relative w-full max-w-[1040px] mx-auto h-full">
             <TaskSelection />
           </div>
         </div>

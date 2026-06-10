@@ -200,7 +200,7 @@ const TOOLS = [
 ];
 
 app.post('/api/evaluate-answer', async (req, res) => {
-  const { question, answer, criteria, maxFollowups = 1, followupCount = 0, evaluationStyle = 'lenient' } = req.body;
+  const { question, answer, criteria, maxFollowups = 1, followupCount = 0, evaluationStyle = 'lenient', priorFollowUps = [], context = '' } = req.body;
   try {
     // Never follow up beyond the allowed limit
     if (followupCount >= maxFollowups) {
@@ -209,15 +209,19 @@ app.post('/api/evaluate-answer', async (req, res) => {
 
     const criteriaList = criteria.map((c, i) => `${i + 1}. ${c}`).join('\n');
 
+    // Follow-ups already asked this question — never repeat them or re-probe the
+    // same activity/thread; move to a different gap or mark covered.
+    const priorBlock = Array.isArray(priorFollowUps) && priorFollowUps.length > 0
+      ? `\n\nFollow-ups you ALREADY asked for THIS question (their answers are included above):\n${priorFollowUps.map((q, i) => `${i + 1}. ${q}`).join('\n')}\nDo NOT repeat any of these, and do NOT re-probe the same activity or thread you already asked about. If the only remaining gap is on a thread you already probed, either move to a DIFFERENT activity they named that's still vague, or mark it covered.`
+      : '';
+
     const styleRules = evaluationStyle === 'strict'
       ? `- Apply the criteria as written. A vague, generic, or one-line answer that does NOT explicitly mention the concrete details a criterion calls for is NOT covered.
 - If the answer is missing concrete specifics the criterion asks for (e.g. tools, collaborators, deliverables, cadence), it counts as uncovered — probe for them.
 - Do not invent depth that isn't there: "I do meetings and emails" does not satisfy a criterion that asks for specific tools or recurring deliverables.`
-      : `- Be lenient. If the answer partially or indirectly addresses a criterion, treat it as covered.
-- A vague, short, or general answer is still an answer.
-- Naming ANY real activity counts as concrete, even a broad one ("building an app", "seeing patients", "working on my startup"). Do NOT probe a named activity for more granularity or depth — never ask them to break down the one thing they named.
-- BUT still follow the specific criteria: if a criterion explicitly calls for BREADTH (e.g. several distinct activities) or for a particular angle to be addressed, and the answer hasn't met it, a single follow-up IS appropriate.
-- When in doubt about DEPTH, treat it as covered; only follow up for clearly missing breadth or an unaddressed angle the criteria call out.`;
+      : `- Be lenient BY DEFAULT: if the answer partially or indirectly addresses a criterion, treat it as covered, and don't invent probes the criteria don't ask for.
+- Don't reflexively ask someone to break a single named activity into sub-steps.
+- The CRITERIA are authoritative. When a criterion defines a specific condition for following up — missing breadth, an unaddressed angle, OR an answer that is only generic activity labels with no real substance (no topic, project, client, deliverable, or tool) — and the answer meets that condition, DO ask the single follow-up that criterion describes. Ask it warmly and specifically, never skeptically.`;
 
     const response = await client.chat.completions.create({
       model: MODEL,
@@ -232,7 +236,7 @@ ${styleRules}
 
 When a criterion is unmet, write ONE follow-up targeting ONLY the single most critical unmet criterion, using these interviewing techniques:
 - Be genuinely RESPONSIVE to the substance of what they said. Pick up the specific thread they just opened and ask the natural next question a curious listener would ask about THAT thing. The follow-up should be different depending on what they actually said — not a fixed template with their words pasted in front. (If they say "building an app," ask about the app work itself — what part they've been focused on lately. If they say "lots of meetings," ask about the meetings — who they're with, what they're about.)
-- Briefly ACKNOWLEDGE what they shared before your question — a few words is plenty ("Got it, building an app —") — so they feel heard, then ask. Don't mechanically prefix with "You mentioned…"; weave their own words in naturally, the way someone actually in the conversation would.
+- Make them feel heard, then ask — but VARY how you open; don't start every follow-up the same way. A brief acknowledgment like "Got it" is fine OCCASIONALLY, but don't lean on it or any single opener — most follow-ups should just weave their own words into the question and ask directly, the way someone actually in the conversation would.
 - Keep it warm and LOW PRESSURE — any one concrete thing is a perfectly good answer. NEVER sound skeptical or invalidating: don't imply they didn't really answer or have to prove themselves, and avoid challenge words like "actually" ("what did you actually do…").
 - Go after one missing handle: a single concrete detail the criterion needs — a tool, an artifact, a person they hand off to, how often it happens — not several at once.
 - Stay neutral and open. Don't suggest or imply a specific answer, don't presume facts not in evidence, don't lead toward a "right" answer. A "no" is valid data, not a gap to push on.
@@ -242,7 +246,7 @@ Return JSON: { "allCovered": boolean, "followUp": string | null }`,
         },
         {
           role: 'user',
-          content: `Question asked: "${question}"\nParticipant's answer: "${answer}"\n\nCoverage criteria:\n${criteriaList}\n\nAre all criteria satisfied? If not, what single follow-up question gets the most critical missing info?`,
+          content: `Question asked: "${question}"\nParticipant's answer: "${answer}"\n${context ? `\nEARLIER IN THE INTERVIEW:\n${context}\n` : ''}\nCoverage criteria:\n${criteriaList}${priorBlock}\n\nAre all criteria satisfied? If not, what single follow-up question gets the most critical missing info?`,
         },
       ],
     });

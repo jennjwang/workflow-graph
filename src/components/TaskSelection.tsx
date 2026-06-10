@@ -30,7 +30,6 @@ const DONE_THRESHOLD = MAX_TASKS;
 // the nudge stops appearing for the rest of the flow.
 const NUDGE_AFTER_UNEDITED = 3;
 
-
 // Three separate bonus pools:
 //  • EDIT bonus:    per-character on tasks the participant rewords (Levenshtein distance).
 //  • ADD  bonus:    flat per-task on tasks the participant types in on the all-done screen.
@@ -87,7 +86,6 @@ export function TaskSelection() {
   const {
     userProfile,
     backgroundTranscript,
-    interviewExtractedTasks,
     setSelectedTasks,
     setTaskItems,
     setBonusSnapshot,
@@ -100,7 +98,6 @@ export function TaskSelection() {
     useShallow((s) => ({
       userProfile: s.userProfile,
       backgroundTranscript: s.backgroundTranscript,
-      interviewExtractedTasks: s.interviewExtractedTasks,
       setSelectedTasks: s.setSelectedTasks,
       setTaskItems: s.setTaskItems,
       setBonusSnapshot: s.setBonusSnapshot,
@@ -131,9 +128,9 @@ export function TaskSelection() {
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">(
     "loading",
   );
-  const [showIntro, setShowIntro] = useState(
-    !devSkipToReview && !devSkipToCard && !devSkipToHours,
-  );
+  const devSkip = devSkipToReview || devSkipToCard || devSkipToHours;
+  const [showProcessing, setShowProcessing] = useState(!devSkip);
+  const [showIntro, setShowIntro] = useState(false);
   const [showBonusToast, setShowBonusToast] = useState(false);
   const [lastBonusDelta, setLastBonusDelta] = useState(0);
 
@@ -188,18 +185,18 @@ export function TaskSelection() {
   // breadth on its own when told to.
   const didLoadRef = useRef(false);
   useEffect(() => {
-    if (devSkipToReview || devSkipToCard || devSkipToHours) return; // dev shortcut: tasks are already seeded
-    if (didLoadRef.current) return; // one-shot: never re-generate (StrictMode double-invoke, re-render, re-mount)
+    if (devSkip) {
+      setShowIntro(true);
+      return;
+    }
+    if (didLoadRef.current) return;
     didLoadRef.current = true;
     async function load() {
       try {
-        // First pass: pull the activities the participant explicitly mentioned
-        // in the background interview. These get persisted (audit trail) and
-        // passed to the generator as grounding context so the generator fills
-        // gaps instead of echoing what the participant already said.
-        // Failure is non-fatal: if extraction returns nothing / errors, the
-        // generator just runs without grounding (its old behavior).
+        // Extract interview tasks — show processing screen while this runs.
+        // Enforce a minimum display of 1.2s so the screen doesn't flash.
         let interviewTasks: string[] = [];
+        const minDisplay = new Promise((r) => setTimeout(r, 1200));
         try {
           interviewTasks = await extractInterviewTasks(backgroundTranscript, {
             jobTitle: userProfile.jobTitle,
@@ -212,6 +209,9 @@ export function TaskSelection() {
             e,
           );
         }
+        await minDisplay;
+        setShowProcessing(false);
+        setShowIntro(true);
 
         // Stream tasks into the picker as they arrive — the participant can
         // start rating the first task in ~1-2s instead of waiting ~7s for the
@@ -481,6 +481,25 @@ export function TaskSelection() {
     loadState === "loading" ||
     (loadState === "ready" && !currentTask && !isExhausted);
 
+  if (showProcessing) {
+    return (
+      <div className="flex flex-col h-full items-center justify-center gap-5 px-8">
+        <div className="flex gap-2">
+          {[0, 150, 300].map((d) => (
+            <span
+              key={d}
+              className="w-2 h-2 bg-indigo-300 rounded-full animate-bounce"
+              style={{ animationDelay: `${d}ms` }}
+            />
+          ))}
+        </div>
+        <p className="text-slate-400 text-sm animate-fadeSlideIn">
+          Processing your interview…
+        </p>
+      </div>
+    );
+  }
+
   if (showIntro) {
     return (
       <IntroScreen
@@ -528,10 +547,14 @@ export function TaskSelection() {
       )}
 
       {/* Header */}
-      <div className="relative z-10 px-8 pt-8 pb-5 shrink-0">
+      <div
+        className={`relative z-10 px-8 pt-8 pb-5 shrink-0 w-full mx-auto ${
+          isExhausted ? "max-w-[1040px]" : "max-w-[780px]"
+        }`}
+      >
         <div className="flex items-center justify-between mb-4">
           <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400">
-            Part 2 of {totalParts} — Task Coverage
+            Part 2 of {totalParts} — Task Validation
           </p>
           {BONUS_ENABLED &&
             !isExhausted &&
@@ -557,8 +580,8 @@ export function TaskSelection() {
 
       {/* Task area */}
       <div
-        className={`relative z-10 flex-1 flex flex-col min-h-0 overflow-y-auto
-        ${isExhausted ? "justify-start pt-6 pb-12 px-4 sm:px-6" : "px-8"}`}
+        className={`relative z-10 flex-1 flex flex-col min-h-0 overflow-y-auto w-full mx-auto
+        ${isExhausted ? "justify-start pt-6 pb-12 px-4 sm:px-6 max-w-[1040px]" : "px-8 max-w-[780px]"}`}
       >
         {loading ? (
           <div className="flex-1 flex items-center justify-center">
@@ -593,7 +616,6 @@ export function TaskSelection() {
                 (t.status === "confirmed" || t.status === "edited") &&
                 !t.isAttentionCheck,
             )}
-            interviewExtractedTasks={interviewExtractedTasks}
             extraTasks={extraTasks}
             extraInput={extraInput}
             onExtraInputChange={setExtraInput}
@@ -620,7 +642,7 @@ export function TaskSelection() {
 
       {/* Footer — early-exit hint, only shown mid-flow (the exhausted screen has its own primary button) */}
       {canEarlyExit && !isExhausted && (
-        <div className="relative z-10 px-8 pb-8 pt-4 border-t border-slate-100 shrink-0">
+        <div className="relative z-10 px-8 pb-8 pt-4 border-t border-slate-100 shrink-0 w-full max-w-[780px] mx-auto">
           <button
             onClick={() => goToHoursSummary()}
             className="w-full text-sm text-slate-400 hover:text-slate-600 transition py-1"
@@ -652,7 +674,7 @@ function IntroScreen({
             className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-9 animate-fadeSlideUp"
             style={{ animationDelay: "0ms" }}
           >
-            Part 2 of {totalParts} — Task Coverage
+            Part 2 of {totalParts} — Task Validation
           </p>
           <h2
             className="text-[1.65rem] font-light text-slate-800 leading-snug tracking-tight animate-fadeSlideUp"
@@ -664,15 +686,32 @@ function IntroScreen({
             className="text-slate-500 mt-6 text-[15px] leading-[1.7] animate-fadeSlideUp"
             style={{ animationDelay: "160ms" }}
           >
-            Based on what you just described, we've put together a list of tasks for your role. Some come directly from what you told us — others fill in gaps we think might be missing.
+            Based on what you just described, we've put together a list of tasks
+            for your role. Some come directly from what you told us — others
+            fill in gaps we think might be missing.
           </p>
           <p
             className="text-slate-500 mt-4 text-[15px] leading-[1.7] animate-fadeSlideUp"
             style={{ animationDelay: "220ms" }}
           >
-            Confirm which tasks you actually do, and reword any that don't quite match how you'd describe them.
+            Confirm which tasks you actually do, and reword any that don't quite
+            match how you'd describe them.
           </p>
-          <div className="mt-12 space-y-4">
+          <div
+            className="mt-6 px-5 py-4 rounded-xl border border-indigo-100 bg-indigo-50/60 animate-fadeSlideUp"
+            style={{ animationDelay: "280ms" }}
+          >
+            <p className="text-sm font-semibold text-indigo-700 mb-1.5">
+              Editing the task statements
+            </p>
+            <p className="text-sm text-slate-600 leading-relaxed">
+              No one understands your work better than you do. You will have the
+              chance to reword tasks to match how you'd actually describe them.
+              This helps us understand your role in a way that standardized
+              descriptions might miss.
+            </p>
+          </div>
+          <div className="mt-6 space-y-4">
             {BONUS_ENABLED && (
               <div
                 className="px-5 py-4 rounded-xl border border-amber-200 bg-amber-50 animate-fadeSlideUp"
@@ -898,7 +937,7 @@ function HoursSummaryScreen({
       {/* Header */}
       <div className="relative z-10 px-8 pt-8 pb-5 shrink-0">
         <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-4">
-          Part 2 of {totalParts} — Task Coverage
+          Part 2 of {totalParts} — Task Validation
         </p>
       </div>
 
@@ -1024,13 +1063,16 @@ function TaskReviewCard({
   onAdvance,
 }: TaskReviewCardProps) {
   const [primaryAnswer, setPrimaryAnswer] = useState<"yes" | "no" | null>(null);
-  // Self-reported hours/week — only collected when "I do this" and the hours
-  // feature is on. Stored as raw input text so the field can be empty
-  // mid-typing; parsed on continue.
   const [hoursInput, setHoursInput] = useState("");
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(task.name);
+  const [showCoachMark, setShowCoachMark] = useState(taskIdx === 0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Dismiss coach mark once they interact with anything
+  useEffect(() => {
+    if (editing || primaryAnswer !== null) setShowCoachMark(false);
+  }, [editing, primaryAnswer]);
 
   const hoursValue = parseFloat(hoursInput);
   const hoursValid = Number.isFinite(hoursValue) && hoursValue >= 0;
@@ -1077,10 +1119,7 @@ function TaskReviewCard({
           so the centering point never shifts when nudge/continue appear. */}
       <div className="h-full flex flex-col justify-center gap-7 pb-48">
         {/* Task name */}
-        <div
-          onClick={() => !editing && startEdit()}
-          className="cursor-text select-none pb-1"
-        >
+        <div className="pb-1">
           {editing ? (
             <textarea
               ref={inputRef}
@@ -1093,7 +1132,6 @@ function TaskReviewCard({
                 e.target.style.height = e.target.scrollHeight + "px";
               }}
               onBlur={commitEdit}
-              onClick={(e) => e.stopPropagation()}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
@@ -1110,22 +1148,54 @@ function TaskReviewCard({
               <p className="text-2xl font-light text-slate-800 leading-snug flex-1">
                 {task.name}
               </p>
-              <span className="mt-1 shrink-0 flex items-center justify-center w-8 h-8 rounded-full bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-500 transition-colors">
-                <svg
-                  className="w-4 h-4"
-                  viewBox="0 0 16 16"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+              {/* Pencil button — only edit trigger */}
+              <div className="relative mt-1 shrink-0">
+                {showCoachMark && (
+                  <span className="absolute inset-0 rounded-full bg-indigo-400 opacity-30 animate-ping" />
+                )}
+                <button
+                  type="button"
+                  onClick={startEdit}
+                  className="relative flex items-center justify-center w-8 h-8 rounded-full bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-500 transition-colors"
+                  aria-label="Edit task"
                 >
-                  <path d="M11 2l3 3-8 8H3v-3l8-8z" />
-                </svg>
-              </span>
+                  <svg
+                    className="w-4 h-4"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M11 2l3 3-8 8H3v-3l8-8z" />
+                  </svg>
+                </button>
+              </div>
             </div>
           )}
         </div>
+
+        {/* Coach mark callout — first card only */}
+        {showCoachMark && (
+          <div className="animate-fadeSlideIn flex items-start gap-2.5 px-4 py-3 rounded-xl bg-indigo-50 border border-indigo-100 -mt-2">
+            <svg
+              className="w-3.5 h-3.5 mt-0.5 shrink-0 text-indigo-400"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M11 2l3 3-8 8H3v-3l8-8z" />
+            </svg>
+            <p className="text-sm text-indigo-700 leading-relaxed">
+              <span className="font-semibold">Use the pencil to edit the statement.</span>{" "}
+              Add specifics, remove what doesn't fit, or rewrite it in your own words.
+            </p>
+          </div>
+        )}
 
         {/* Buttons */}
         <div className="flex gap-3">
@@ -1156,6 +1226,12 @@ function TaskReviewCard({
               onClick={() => {
                 setPrimaryAnswer(value);
                 if (value === "no") setHoursInput("");
+                if (!HOURS_ENABLED) {
+                  setTimeout(
+                    () => onAdvance(value === "no" ? "no" : "yes"),
+                    220,
+                  );
+                }
               }}
               className={`flex-1 py-3 rounded-2xl border text-sm font-medium transition-all active:scale-[0.98] ${
                 primaryAnswer === value
@@ -1232,8 +1308,8 @@ function TaskReviewCard({
           </div>
         )}
 
-        {/* Continue */}
-        {primaryAnswer !== null && (
+        {/* Continue — only needed when hours follow-up is active */}
+        {HOURS_ENABLED && primaryAnswer !== null && (
           <button
             onClick={handleContinue}
             disabled={!canContinue}
@@ -1254,7 +1330,6 @@ type RecordState = "idle" | "recording" | "transcribing";
 
 function ReviewAndAddScreen({
   confirmedTasks,
-  interviewExtractedTasks,
   extraTasks,
   extraInput,
   onExtraInputChange,
@@ -1265,7 +1340,6 @@ function ReviewAndAddScreen({
   onSubmit,
 }: {
   confirmedTasks: TaskItem[];
-  interviewExtractedTasks: string[];
   extraTasks: { name: string; addedAt: number }[];
   extraInput: string;
   onExtraInputChange: (v: string) => void;
@@ -1275,20 +1349,7 @@ function ReviewAndAddScreen({
   addCapped: boolean;
   onSubmit: (pendingExtra?: string) => void;
 }) {
-  // Merge in the activities extracted from the background interview, deduped
-  // (case-insensitive + trim) against the explicitly confirmed tasks. Anything
-  // the participant described but that didn't surface via the review flow still
-  // shows up here so the "tasks so far" picture is complete.
-  const seenNames = new Set(
-    confirmedTasks.map((t) => t.name.trim().toLowerCase()),
-  );
-  const extractedOnly = interviewExtractedTasks.filter((name) => {
-    const key = name.trim().toLowerCase();
-    if (!key || seenNames.has(key)) return false;
-    seenNames.add(key);
-    return true;
-  });
-  const totalDisplayedSoFar = confirmedTasks.length + extractedOnly.length;
+  const totalDisplayedSoFar = confirmedTasks.length;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [recordState, setRecordState] = useState<RecordState>("idle");
   const [recordError, setRecordError] = useState<string | null>(null);
@@ -1375,10 +1436,10 @@ function ReviewAndAddScreen({
           </h3>
           <p className="text-sm text-slate-500 mt-1.5">
             {totalDisplayedSoFar} task{totalDisplayedSoFar !== 1 ? "s" : ""}{" "}
-            from what you confirmed and what you mentioned earlier.
+            from your interview so far.
           </p>
 
-          <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+          <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
             {confirmedTasks.map((t, i) => (
               <div
                 key={`${t.name}-${i}`}
@@ -1390,17 +1451,6 @@ function ReviewAndAddScreen({
                     edited
                   </span>
                 )}
-              </div>
-            ))}
-            {extractedOnly.map((name, i) => (
-              <div
-                key={`extracted-${name}-${i}`}
-                className="px-4 py-3 rounded-xl bg-white border border-slate-200 hover:border-indigo-200 hover:shadow-sm transition"
-              >
-                <p className="text-sm text-slate-800 leading-snug">{name}</p>
-                <span className="mt-1.5 inline-block text-[10px] font-semibold uppercase tracking-wider text-indigo-500">
-                  from interview
-                </span>
               </div>
             ))}
           </div>
