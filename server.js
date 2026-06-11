@@ -5,7 +5,8 @@ import { createReadStream } from 'fs';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
-import { buildUpperLevelTasksPrompt, SUBTASK_WORKER_SYSTEM_PROMPT } from './prompts/task-generator.js';
+import { SUBTASK_WORKER_SYSTEM_PROMPT, INTERVIEW_TASK_EXTRACTOR_PROMPT, mentionedTasksBlock, buildAnchoredTaskSystemPrompt } from './prompts/task-generator.js';
+import { evaluateAnswerMessages, rewordQuestionMessages } from './prompts/interview.js';
 import { retrieveExemplarBlock } from './lib/retrieval.js';
 import { streamGapTasks } from './gapTasks.js';
 
@@ -207,54 +208,10 @@ app.post('/api/evaluate-answer', async (req, res) => {
       return res.json({ allCovered: true, followUp: null });
     }
 
-    const criteriaList = criteria.map((c, i) => `${i + 1}. ${c}`).join('\n');
-
-    // Minimum follow-ups: ask at least this many even when criteria are already
-    // met — the extra one digs a little deeper into a task they mentioned.
-    const minBlock = minFollowups > followupCount
-      ? `\n\nMINIMUM FOLLOW-UPS: you must ask at least ${minFollowups} follow-up(s) for this question and have asked ${followupCount} so far. So EVEN IF every criterion is already satisfied, you still need to ask one more — a natural, curious follow-up that digs a little deeper into the single most interesting or central task they mentioned (what it involves, how they go about it, what it's for). When you do this, set "allCovered" to false and provide the followUp.`
-      : '';
-
-    // The full interview conversation so far — lets the interviewer ask the next
-    // question as a natural continuation rather than a templated probe.
-    const convoBlock = conversation && conversation.trim()
-      ? `\n\nTHE CONVERSATION SO FAR (the whole interview, most recent last):\n${conversation.trim()}\n`
-      : '';
-
-    const styleRules = evaluationStyle === 'strict'
-      ? `- Apply the criteria as written. A vague, generic, or one-line answer that does NOT explicitly mention the concrete details a criterion calls for is NOT covered.
-- If the answer is missing concrete specifics the criterion asks for (e.g. tools, collaborators, deliverables, cadence), it counts as uncovered — probe for them.
-- Do not invent depth that isn't there: "I do meetings and emails" does not satisfy a criterion that asks for specific tools or recurring deliverables.`
-      : `- Be lenient BY DEFAULT: if the answer partially or indirectly addresses a criterion, treat it as covered, and don't invent probes the criteria don't ask for.
-- Don't reflexively ask someone to break a single named activity into sub-steps.
-- The CRITERIA are authoritative. When a criterion defines a specific condition for following up — missing breadth, an unaddressed angle, OR an answer that is only generic activity labels with no real substance (no topic, project, client, deliverable, or tool) — and the answer meets that condition, DO ask the single follow-up that criterion describes. Ask it warmly and specifically, never skeptically.`;
-
     const response = await client.chat.completions.create({
       model: MODEL,
       response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'system',
-          content: `You are a skilled qualitative interviewer, mid-conversation with a participant about their work. Your job is twofold: judge whether their answer to the CURRENT question satisfies its coverage criteria, and — only when it doesn't — ask the natural next follow-up, as a real interviewer continuing THIS conversation.
-
-Coverage judgment:
-${styleRules}
-
-When a criterion is unmet, write ONE follow-up targeting the single most critical unmet criterion. Above all, it must feel like a natural continuation of the conversation you've been having — NOT a standalone probe:
-- USE THE WHOLE CONVERSATION. You can see everything said so far. Build on it. Reference earlier things naturally when it helps ("earlier you said you're responsible for hiring — did any of that come up?"). A real interviewer remembers what they've already been told and doesn't ask in a vacuum.
-- NEVER repeat a question you've already asked, and never re-probe a thread you already covered. If a gap remains only on something you already asked about, move to a different gap or mark it covered.
-- VARY how you open — do NOT start follow-ups the same way. "Got it" or "You mentioned…" are fine very occasionally but you're badly overusing them; most of the time just fold their own words into the question and ask directly, the way a person actually mid-chat would.
-- Be RESPONSIVE to the specific thing they just said — pick up that thread, ask what a curious listener would naturally ask next. Different answer → different question, not a template.
-- Warm and LOW PRESSURE. Any one concrete thing is a fine answer. NEVER sound skeptical or invalidating; avoid challenge words like "actually". A "no" is valid data.
-- One sentence, conversational, no double-barreled questions, no PII.
-
-Return JSON: { "allCovered": boolean, "followUp": string | null }`,
-        },
-        {
-          role: 'user',
-          content: `${convoBlock}\nThe CURRENT question is: "${question}"\nTheir answer to it (so far): "${answer}"\n\nCoverage criteria for the current question:\n${criteriaList}${minBlock}\n\nAre all criteria satisfied? If not (or if the minimum follow-ups above haven't been met), what is the single most natural follow-up to ask next, continuing this conversation?`,
-        },
-      ],
+      messages: evaluateAnswerMessages({ question, answer, criteria, conversation, followupCount, minFollowups, evaluationStyle }),
     });
 
     const result = JSON.parse(response.choices[0].message.content);
@@ -275,27 +232,7 @@ app.post('/api/interview-question', async (req, res) => {
       model: QUESTION_MODEL,
       temperature: 0.5,
       response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'system',
-          content: `You are a friendly interviewer running a short background interview. Reword the upcoming question in your own natural words.
-
-Rules:
-- Produce a natural, conversational variant of the canonical question that asks for the SAME information. Preserve its intent and any framing notes EXACTLY.
-- It must sound FLUENT and CRISP — like a real person actually speaking. Keep it short and clean. Avoid clunky, padded, or redundant wording (e.g. "the main duties you have in your job", "tasks you handle at your job"). Prefer "What are your main responsibilities at work?" over a longer, more awkward rephrase. If the canonical question is already natural, only lightly vary it — do not pad it.
-- One question. Do NOT add new sub-questions, do NOT make it double-barreled, do NOT ask for PII.
-- Use plain, universal language that fits ANY job (a nurse, a barista, a teacher, an engineer). Do NOT introduce words that presume seniority or a managerial role — e.g. "oversee", "manage", "lead", "in charge of", "key areas" — unless the canonical question itself used them. Never make the question sound more senior or corporate than the original.
-
-Canonical question: "${canonicalQuestion}"
-${framingNotes ? `Framing notes (MUST preserve): ${framingNotes}` : ''}
-
-Return JSON: { "question": string }`,
-        },
-        {
-          role: 'user',
-          content: `Canonical question: "${canonicalQuestion}". Produce the reworded question.`,
-        },
-      ],
+      messages: rewordQuestionMessages({ canonicalQuestion, framingNotes }),
     });
     const parsed = JSON.parse(response.choices[0].message.content);
     const question = typeof parsed.question === 'string' && parsed.question.trim()
@@ -314,28 +251,6 @@ Return JSON: { "question": string }`,
 // final task list reflects what they actually said rather than what's typical
 // for the role. Output is plain task names; the generator turns them into
 // MECE upper-level buckets in the next step.
-const INTERVIEW_TASK_EXTRACTOR_PROMPT = `Extract the distinct recurring work tasks this person performs in their paid job.
-
-Rules:
-- Paid work only: skip anything the background explicitly labels as personal, hobby, or side project.
-- Faithful to the text: extract tasks at the granularity they appear. Don't collapse or invent
-  hierarchy — if the background lists sub-items under an activity, emit them as separate tasks
-  rather than rolling them up into one broad parent.
-- Real task: each must describe a concrete activity — not a goal or outcome ("reduce coding time",
-  "be more productive"), a role/headcount description ("lead a team of 8"), or a schedule/time item
-  ("work from home", "start at 9 AM", "finish by 7 PM").
-- For AI usage: extract the specific named activity, not the AI scaffolding, and mark it by
-  appending " using AI" so downstream can tell AI-performed tasks apart.
-  "use AI to write proposals" → "Write job proposals using AI"
-  "use AI to debug failing tests" → "Debug failing tests using AI"
-  If the activity already names AI as part of the object, leave it and don't double-mark:
-  "reviewing AI-generated code" → "Review AI-generated code"
-  Only include if it's a distinct bounded activity mentioned in the text; skip generic
-  statements like "use AI to work faster" or "automate tasks with AI".
-- Form: Action → Object → to <Purpose/Result>. Present-plural verb, no first person, no invented
-  detail; add the purpose/result clause only when it distinguishes the task.
-
-Return ONLY a JSON object: {"tasks": ["task 1", "task 2", ...]}.`;
 
 app.post('/api/extract-interview-tasks', async (req, res) => {
   const { backgroundTranscript = [], userProfile } = req.body;
@@ -408,23 +323,8 @@ app.post('/api/generate-tasks-from-interview', async (req, res) => {
   // Target list size — passed from the client so it tracks the picker's cap.
   const targetCount = Number.isFinite(+count) && +count > 0 ? Math.round(+count) : 22;
 
-  const interviewBlock = interviewTasks.length > 0
-    ? `\nTASKS THE PARTICIPANT EXPLICITLY MENTIONED (every one must be COVERED by exactly one task in your output — absorbed/merged as needed, never copied in verbatim or dropped):\n${interviewTasks.map(t => `- ${t}`).join('\n')}\n`
-    : '';
-
-  const systemPrompt = `${buildUpperLevelTasksPrompt({ anchored: true, count: targetCount })}
-
-SPECIAL INSTRUCTIONS FOR THIS RUN — PARTICIPANT-ANCHORED MODE:
-You are given the activities this participant explicitly named when describing their own job. They were extracted FAITHFULLY at whatever granularity they happened to be said — so the list is usually a mix of broad activities and fine sub-steps, and some items overlap each other. Your job is to produce ONE clean MECE upper-level list that COVERS all of them.
-
-MECE IS THE MASTER CONSTRAINT. The mentioned tasks are evidence to be covered, NOT items to copy in verbatim:
-1. FILTER first. Apply the observable-action test: if you can't describe what they're physically doing in a 30-second video — too vague ("do meetings", "handle stuff"), a goal/outcome ("be more productive"), or a role descriptor ("lead a team") — drop it.
-2. COVER, don't paste. Every mentioned task that passes the filter must map to EXACTLY ONE task in your output. That does NOT mean it appears verbatim: roll fine sub-steps UP into the broader O*NET-level category that contains them, and MERGE mentioned tasks that are the same activity. (E.g. "Review code" + "Approve PRs" → one "Review and approve teammates' code changes"; "Run vision screenings" + "Run hearing screenings" → "Run student health screenings".) Nothing they said is lost — but it may be ABSORBED into a broader task rather than standing alone.
-3. NO OVERLAP AMONG THE MENTIONED TASKS EITHER. Apply the three overlap patterns to THEM, not just to gap-fill: same activity / different AUDIENCE, same activity / different INPUT, same activity / different STAGE. If two mentioned tasks fail the test ("could the same minute of their day be described by both?"), they belong to ONE output task.
-4. NORMALIZE to O*NET standard: verb-led, 8–18 words, plain language, specific. Preserve their vocabulary — keep their nouns, tools, and context.
-5. GAP-FILL — fill the IMPORTANT gaps, NOT every gap. The standard "collectively exhaustive over the whole role" rule is RELAXED here: you are anchored to THIS person, so do NOT try to cover the entire occupation. Look at what they emphasized and their stated responsibilities, and add ONLY tasks that are clearly CENTRAL to their actual work but went unmentioned — the things most likely to be a real, recurring part of their week. SKIP peripheral, occasional, or generic role-filler (e.g. "attend staff meetings", "complete mandated training") — those are exactly the low-value, inconsistent-specificity items that show up when you stretch for a count. Adding 2–3 important gaps is better than 8 marginal ones. Gap-fill must not overlap the covered tasks, and don't split one area into near-duplicate tasks (e.g. monitoring vs. investigating vs. debugging vs. tracking metrics are usually ONE observability task, not four).
-6. SELF-CHECK before finishing: (a) every mentioned task maps to exactly one output task; (b) no two output tasks overlap — run the concrete-activity test; (c) granularity is consistent O*NET level throughout (no lone sub-step sitting next to a broad category that contains it).
-7. COUNT: treat ${targetCount} as a CEILING, not a quota — aim for about ${targetCount} total, but if covering the mentioned tasks plus the genuine role gaps takes fewer, output FEWER. NEVER manufacture overlapping or near-duplicate tasks just to reach the number.`;
+  const interviewBlock = mentionedTasksBlock(interviewTasks);
+  const systemPrompt = buildAnchoredTaskSystemPrompt(targetCount);
 
   const streamingSystem = `${systemPrompt}
 

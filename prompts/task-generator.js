@@ -178,6 +178,60 @@ export function buildUpperLevelTasksPrompt({ anchored = false, count } = {}) {
     );
 }
 
+// ── Interview-task extraction (/api/extract-interview-tasks) ──────────────────
+// Pulls the recurring paid-work tasks the participant explicitly mentioned,
+// faithfully at the granularity they were said. The generator below rolls these
+// up into MECE upper-level tasks.
+export const INTERVIEW_TASK_EXTRACTOR_PROMPT = `Extract the distinct recurring work tasks this person performs in their paid job.
+
+Rules:
+- Paid work only: skip anything the background explicitly labels as personal, hobby, or side project.
+- Faithful to the text: extract tasks at the granularity they appear. Don't collapse or invent
+  hierarchy — if the background lists sub-items under an activity, emit them as separate tasks
+  rather than rolling them up into one broad parent.
+- Real task: each must describe a concrete activity — not a goal or outcome ("reduce coding time",
+  "be more productive"), a role/headcount description ("lead a team of 8"), or a schedule/time item
+  ("work from home", "start at 9 AM", "finish by 7 PM").
+- For AI usage: extract the specific named activity, not the AI scaffolding, and mark it by
+  appending " using AI" so downstream can tell AI-performed tasks apart.
+  "use AI to write proposals" → "Write job proposals using AI"
+  "use AI to debug failing tests" → "Debug failing tests using AI"
+  If the activity already names AI as part of the object, leave it and don't double-mark:
+  "reviewing AI-generated code" → "Review AI-generated code"
+  Only include if it's a distinct bounded activity mentioned in the text; skip generic
+  statements like "use AI to work faster" or "automate tasks with AI".
+- Form: Action → Object → to <Purpose/Result>. Present-plural verb, no first person, no invented
+  detail; add the purpose/result clause only when it distinguishes the task.
+
+Return ONLY a JSON object: {"tasks": ["task 1", "task 2", ...]}.`;
+
+// ── Participant-anchored generation (/api/generate-tasks-from-interview) ───────
+
+// The mentioned-tasks block injected into the generator's user message.
+export function mentionedTasksBlock(interviewTasks = []) {
+  return interviewTasks.length > 0
+    ? `\nTASKS THE PARTICIPANT EXPLICITLY MENTIONED (every one must be COVERED by exactly one task in your output — absorbed/merged as needed, never copied in verbatim or dropped):\n${interviewTasks.map((t) => `- ${t}`).join('\n')}\n`
+    : '';
+}
+
+// Full anchored system prompt: the (anchored) base prompt + the participant-
+// anchored special instructions. `count` is the picker's cap, used as a CEILING.
+export function buildAnchoredTaskSystemPrompt(count) {
+  return `${buildUpperLevelTasksPrompt({ anchored: true, count })}
+
+SPECIAL INSTRUCTIONS FOR THIS RUN — PARTICIPANT-ANCHORED MODE:
+You are given the activities this participant explicitly named when describing their own job. They were extracted FAITHFULLY at whatever granularity they happened to be said — so the list is usually a mix of broad activities and fine sub-steps, and some items overlap each other. Your job is to produce ONE clean MECE upper-level list that COVERS all of them.
+
+MECE IS THE MASTER CONSTRAINT. The mentioned tasks are evidence to be covered, NOT items to copy in verbatim:
+1. FILTER first. Apply the observable-action test: if you can't describe what they're physically doing in a 30-second video — too vague ("do meetings", "handle stuff"), a goal/outcome ("be more productive"), or a role descriptor ("lead a team") — drop it.
+2. COVER, don't paste. Every mentioned task that passes the filter must map to EXACTLY ONE task in your output. That does NOT mean it appears verbatim: roll fine sub-steps UP into the broader O*NET-level category that contains them, and MERGE mentioned tasks that are the same activity. (E.g. "Review code" + "Approve PRs" → one "Review and approve teammates' code changes"; "Run vision screenings" + "Run hearing screenings" → "Run student health screenings".) Nothing they said is lost — but it may be ABSORBED into a broader task rather than standing alone.
+3. NO OVERLAP AMONG THE MENTIONED TASKS EITHER. Apply the three overlap patterns to THEM, not just to gap-fill: same activity / different AUDIENCE, same activity / different INPUT, same activity / different STAGE. If two mentioned tasks fail the test ("could the same minute of their day be described by both?"), they belong to ONE output task.
+4. NORMALIZE to O*NET standard: verb-led, 8–18 words, plain language, specific. Preserve their vocabulary — keep their nouns, tools, and context.
+5. GAP-FILL — fill the IMPORTANT gaps, NOT every gap. The standard "collectively exhaustive over the whole role" rule is RELAXED here: you are anchored to THIS person, so do NOT try to cover the entire occupation. Look at what they emphasized and their stated responsibilities, and add ONLY tasks that are clearly CENTRAL to their actual work but went unmentioned — the things most likely to be a real, recurring part of their week. SKIP peripheral, occasional, or generic role-filler (e.g. "attend staff meetings", "complete mandated training") — those are exactly the low-value, inconsistent-specificity items that show up when you stretch for a count. Adding 2–3 important gaps is better than 8 marginal ones. Gap-fill must not overlap the covered tasks, and don't split one area into near-duplicate tasks (e.g. monitoring vs. investigating vs. debugging vs. tracking metrics are usually ONE observability task, not four).
+6. SELF-CHECK before finishing: (a) every mentioned task maps to exactly one output task; (b) no two output tasks overlap — run the concrete-activity test; (c) granularity is consistent O*NET level throughout (no lone sub-step sitting next to a broad category that contains it).
+7. COUNT: treat ${count} as a CEILING, not a quota — aim for about ${count} total, but if covering the mentioned tasks plus the genuine role gaps takes fewer, output FEWER. NEVER manufacture overlapping or near-duplicate tasks just to reach the number.`;
+}
+
 // ── Occupation matcher (retrieval grounding) ──────────────────────────────────
 //
 // Used by lib/retrieval.js to pick the corpus occupation(s) whose task
