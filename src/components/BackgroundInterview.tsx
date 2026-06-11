@@ -57,7 +57,7 @@ const QUESTIONS: {
       "FLOOR — the participant has named at least one real activity or task they did. If they named NO actual activity at all ('the usual', 'just work stuff', 'hard to say'), follow up asking what they worked on this week.",
       "BREADTH — if they named only ONE activity or area (e.g. 'mostly building an app', 'just seeing patients'), follow up ONCE: briefly ACKNOWLEDGE it, then ask whether there are other tasks or activities they also do. Do NOT push for more detail on that one activity. If they named several distinct activities, breadth is covered.",
       "SUBSTANCE — the answer must give a concrete sense of WHAT the work actually is, not just generic activity labels. A bare list — e.g. 'I have some zooms and a standup, I go to networking events, otherwise I write proposals and do research' — names activities but says nothing about what the proposals are FOR, what the research is ON, or what the meetings cover. When a central activity is named only as a bare label (no topic, project, client, deliverable, audience, or tool), it is NOT covered — follow up: warmly pick the SINGLE most central still-vague activity and ask what it actually involves or is about (e.g. 'What kind of proposals are you writing, and who for?' or 'What's the research on?'). Probe ONE thread per turn — never interrogate every item at once, never sound skeptical. On later turns, if other central activities they named are STILL bare labels, you may probe ONE more of them; stop once the main parts of their week are reasonably concrete. If the central activities already carry concrete substance, this is covered.",
-      "RESPONSIBILITY COVERAGE — the EARLIER context lists the responsibilities the participant named. If any responsibility or area there does NOT clearly map to a task they mentioned this week, it is NOT fully covered: follow up ONCE, warmly, asking whether they did anything on that responsibility this week (e.g. earlier they said they're responsible for hiring but never mentioned it → 'Earlier you mentioned you're responsible for hiring — did you get to any of that this week?'). Probe ONE uncovered responsibility per turn. If there is no earlier context, or every responsibility already maps to something they mentioned, this is covered.",
+      "RESPONSIBILITY COVERAGE — earlier in the conversation the participant described their primary responsibilities. If any responsibility or area they named does NOT clearly map to a task they mentioned this week, it is NOT fully covered: follow up ONCE, warmly, asking whether they did anything on that responsibility this week (e.g. earlier they said they're responsible for hiring but never mentioned it → 'Earlier you mentioned you're responsible for hiring — did you get to any of that this week?'). Probe ONE uncovered responsibility per turn. If they didn't describe their responsibilities, or every responsibility already maps to something they mentioned, this is covered.",
       "Representativeness — ONLY if the participant explicitly signals the recent week was unusual or atypical (e.g. 'last week was crazy', 'that's not a normal week', 'I was on leave/traveling'), follow up ONCE asking what a normal week usually looks like. If they give no such signal, treat the recent week as representative and do NOT ask about it — accept and move on.",
     ],
     maxFollowups: 3,
@@ -250,8 +250,9 @@ export function BackgroundInterview() {
   const [followUpQ, setFollowUpQ] = useState<string | null>(null);
   const [followUpCount, setFollowUpCount] = useState(0);
   const [accumulatedAnswer, setAccumulatedAnswer] = useState("");
-  // Follow-ups already asked this question, so the evaluator never repeats them
-  const [askedFollowUps, setAskedFollowUps] = useState<string[]>([]);
+  // Full interview conversation (every Q/A across all questions), so the
+  // evaluator asks follow-ups as a natural continuation, not a templated probe.
+  const convoRef = useRef<{ q: string; a: string }[]>([]);
 
   // Live (LLM-generated) phrasing for the current question; falls back to the
   // question's canonical static text on null.
@@ -338,7 +339,6 @@ export function BackgroundInterview() {
     setFollowUpQ(null);
     setFollowUpCount(0);
     setAccumulatedAnswer("");
-    setAskedFollowUps([]);
     setInput("");
     setShowTextInput(false);
 
@@ -378,6 +378,8 @@ export function BackgroundInterview() {
       isFollowUp: isFollowUpActive,
       timestamp: Date.now(),
     });
+    // Append to the running conversation transcript (what was actually asked + said)
+    convoRef.current.push({ q: displayQuestion, a: trimmed });
 
     // Build up the full answer context for coverage evaluation
     const combined = isFollowUpActive
@@ -392,12 +394,9 @@ export function BackgroundInterview() {
     if (newFollowUpCount < q.maxFollowups) {
       setIsEvaluating(true);
       try {
-        // For the week question, give the evaluator the responsibilities the
-        // participant named earlier so it can chase any that didn't surface as a task.
-        const evalContext =
-          q.field === "typicalWeek" && answers.responsibilities.trim()
-            ? `The participant described their primary responsibilities as: "${answers.responsibilities}"`
-            : "";
+        const conversation = convoRef.current
+          .map((t) => `Interviewer: ${t.q}\nParticipant: ${t.a}`)
+          .join("\n");
         const result = await evaluateAnswer(
           q.text,
           combined,
@@ -405,14 +404,12 @@ export function BackgroundInterview() {
           q.maxFollowups,
           newFollowUpCount,
           q.evaluationStyle ?? "lenient",
-          askedFollowUps,
-          evalContext,
+          conversation,
         );
         if (!result.allCovered && result.followUp) {
           // Show follow-up question
           setAccumulatedAnswer(combined);
           setFollowUpCount(newFollowUpCount);
-          setAskedFollowUps((prev) => [...prev, result.followUp as string]);
           setFollowUpQ(result.followUp);
           setQuestionVisible(false);
           setTimeout(() => setQuestionVisible(true), 180);

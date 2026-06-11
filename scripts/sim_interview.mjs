@@ -88,6 +88,46 @@ const PERSONAS = [
     brief:
       "You are a senior technical officer at O*NET, the organization that maintains the U.S. occupational database, about 8 years in. Your work mixes data and coordination: maintaining and updating occupational data, reviewing data quality, coordinating with analysts and outside contractors, and writing technical documentation. You answer in a measured, somewhat formal way and TEND TO STAY HIGH-LEVEL at first ('I oversee data operations', 'I'm responsible for the database') before giving concrete specifics only if asked.",
   },
+  {
+    name: "Elementary teacher",
+    brief:
+      "You are a 3rd-grade teacher, 5 years in. Concrete and down-to-earth about classroom work — lesson plans, grading, parent emails, recess duty — but modest and brief; you don't think of your work as impressive.",
+  },
+  {
+    name: "Freelance designer",
+    brief:
+      "You are a freelance graphic designer, ~7 years. You juggle several clients and describe work in vague chunks ('client work', 'some branding stuff') without naming who or what unless asked.",
+  },
+  {
+    name: "Construction electrician",
+    brief:
+      "You are a journeyman electrician on commercial job sites, 10 years. Practical, plain-spoken, fairly terse — you talk about wiring, panels, inspections, but don't elaborate much.",
+  },
+  {
+    name: "Accountant",
+    brief:
+      "You are a staff accountant at a mid-size firm, 3 years. Routine, structured work — reconciliations, journal entries, month-end close, client returns. You answer matter-of-factly and briefly.",
+  },
+  {
+    name: "Retail store manager",
+    brief:
+      "You manage a clothing retail store, 4 years. Your work is half people, half operations — scheduling, inventory, coaching staff, handling customers. You answer briefly and tend to say 'a bit of everything' before specifics.",
+  },
+  {
+    name: "Customer support rep",
+    brief:
+      "You are a customer support rep at a software company, 2 years. You answer tickets, hop on calls, escalate bugs. You describe it generically ('helping customers', 'answering tickets') and stay brief.",
+  },
+  {
+    name: "AI-heavy data scientist",
+    brief:
+      "You are a data scientist, 4 years, who leans heavily on AI tools (Copilot, ChatGPT) for code, analysis, and writing. Concrete but brief — models, dashboards, experiments — and you naturally mention using AI for parts of it.",
+  },
+  {
+    name: "Social worker",
+    brief:
+      "You are a child & family social worker, 6 years. Heavy caseload — home visits, case notes, court reports, coordinating services. You answer briefly and a bit guardedly, keeping client specifics vague.",
+  },
 ];
 
 async function participant(persona, question, history) {
@@ -97,7 +137,7 @@ async function participant(persona, question, history) {
     messages: [
       {
         role: "system",
-        content: `${persona.brief}\n\nYou are being interviewed about your work. Answer the interviewer's question in first person, in character, the way a real person would in a chat — natural, no narration. Stay consistent with what you've already said.`,
+        content: `${persona.brief}\n\nYou are being interviewed about your work. Answer in first person, in character, like a real person typing in a chat — natural, no narration.\n\nIMPORTANT — be realistic: real people don't volunteer much in interviews. Keep answers SHORT — usually one sentence, occasionally two. Don't over-explain, don't enumerate everything you can think of, don't add backstory or feelings. Just say the first thing that comes to mind and stop. (Only give long, winding answers if your persona is explicitly a rambling over-explainer.) Stay consistent with what you've already said.\n\nOutput ONLY your reply text — no speaker label or prefix like "Me:".`,
       },
       {
         role: "user",
@@ -108,7 +148,7 @@ async function participant(persona, question, history) {
   return res.choices[0].message.content.trim();
 }
 
-async function evaluate(q, answer, followupCount, priorFollowUps, context) {
+async function evaluate(q, answer, followupCount, conversation) {
   const res = await fetch(`${API}/api/evaluate-answer`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -119,8 +159,7 @@ async function evaluate(q, answer, followupCount, priorFollowUps, context) {
       maxFollowups: q.maxFollowups,
       followupCount,
       evaluationStyle: q.evaluationStyle,
-      priorFollowUps,
-      context,
+      conversation,
     }),
   });
   return res.json();
@@ -129,31 +168,24 @@ async function evaluate(q, answer, followupCount, priorFollowUps, context) {
 async function runInterview(persona) {
   console.log(`\n${"═".repeat(74)}\n  PERSONA: ${persona.name}\n${"═".repeat(74)}`);
   const history = [];
-  const answersByField = {};
   for (const q of QUESTIONS) {
     console.log(`\n  🧑‍💼 ${q.text}`);
     let answer = await participant(persona, q.text, history);
     console.log(`  🙂 ${answer}`);
-    history.push(`Interviewer: ${q.text}`, `Me: ${answer}`);
-
-    const context =
-      q.field === "typicalWeek" && answersByField.responsibilities
-        ? `The participant described their primary responsibilities as: "${answersByField.responsibilities}"`
-        : "";
+    history.push(`Interviewer: ${q.text}`, `Participant: ${answer}`);
 
     let accumulated = answer;
-    const asked = [];
-    while (asked.length < q.maxFollowups) {
-      const ev = await evaluate(q, accumulated, asked.length, asked, context);
+    let asked = 0;
+    while (asked < q.maxFollowups) {
+      const ev = await evaluate(q, accumulated, asked, history.join("\n"));
       if (ev.allCovered || !ev.followUp) break;
       console.log(`     ↳ ${ev.followUp}`);
-      asked.push(ev.followUp);
+      asked++;
       const fa = await participant(persona, ev.followUp, history);
       console.log(`  🙂 ${fa}`);
-      history.push(`Interviewer: ${ev.followUp}`, `Me: ${fa}`);
+      history.push(`Interviewer: ${ev.followUp}`, `Participant: ${fa}`);
       accumulated += `\n${fa}`;
     }
-    answersByField[q.field] = accumulated;
   }
 }
 

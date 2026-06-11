@@ -301,13 +301,12 @@ export async function evaluateAnswer(
   maxFollowups: number,
   followupCount: number,
   evaluationStyle: 'lenient' | 'strict' = 'lenient',
-  priorFollowUps: string[] = [],
-  context: string = '',
+  conversation: string = '',
 ): Promise<{ allCovered: boolean; followUp: string | null }> {
   const res = await fetch('/api/evaluate-answer', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question, answer, criteria, maxFollowups, followupCount, evaluationStyle, priorFollowUps, context }),
+    body: JSON.stringify({ question, answer, criteria, maxFollowups, followupCount, evaluationStyle, conversation }),
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();

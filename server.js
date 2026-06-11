@@ -200,7 +200,7 @@ const TOOLS = [
 ];
 
 app.post('/api/evaluate-answer', async (req, res) => {
-  const { question, answer, criteria, maxFollowups = 1, followupCount = 0, evaluationStyle = 'lenient', priorFollowUps = [], context = '' } = req.body;
+  const { question, answer, criteria, maxFollowups = 1, followupCount = 0, evaluationStyle = 'lenient', conversation = '' } = req.body;
   try {
     // Never follow up beyond the allowed limit
     if (followupCount >= maxFollowups) {
@@ -209,10 +209,10 @@ app.post('/api/evaluate-answer', async (req, res) => {
 
     const criteriaList = criteria.map((c, i) => `${i + 1}. ${c}`).join('\n');
 
-    // Follow-ups already asked this question — never repeat them or re-probe the
-    // same activity/thread; move to a different gap or mark covered.
-    const priorBlock = Array.isArray(priorFollowUps) && priorFollowUps.length > 0
-      ? `\n\nFollow-ups you ALREADY asked for THIS question (their answers are included above):\n${priorFollowUps.map((q, i) => `${i + 1}. ${q}`).join('\n')}\nDo NOT repeat any of these, and do NOT re-probe the same activity or thread you already asked about. If the only remaining gap is on a thread you already probed, either move to a DIFFERENT activity they named that's still vague, or mark it covered.`
+    // The full interview conversation so far — lets the interviewer ask the next
+    // question as a natural continuation rather than a templated probe.
+    const convoBlock = conversation && conversation.trim()
+      ? `\n\nTHE CONVERSATION SO FAR (the whole interview, most recent last):\n${conversation.trim()}\n`
       : '';
 
     const styleRules = evaluationStyle === 'strict'
@@ -229,24 +229,24 @@ app.post('/api/evaluate-answer', async (req, res) => {
       messages: [
         {
           role: 'system',
-          content: `You are a skilled qualitative interviewer. Your job is twofold: judge whether a participant's answer satisfies a set of coverage criteria, and — only when it doesn't — ask the kind of follow-up a great human interviewer would ask.
+          content: `You are a skilled qualitative interviewer, mid-conversation with a participant about their work. Your job is twofold: judge whether their answer to the CURRENT question satisfies its coverage criteria, and — only when it doesn't — ask the natural next follow-up, as a real interviewer continuing THIS conversation.
 
 Coverage judgment:
 ${styleRules}
 
-When a criterion is unmet, write ONE follow-up targeting ONLY the single most critical unmet criterion, using these interviewing techniques:
-- Be genuinely RESPONSIVE to the substance of what they said. Pick up the specific thread they just opened and ask the natural next question a curious listener would ask about THAT thing. The follow-up should be different depending on what they actually said — not a fixed template with their words pasted in front. (If they say "building an app," ask about the app work itself — what part they've been focused on lately. If they say "lots of meetings," ask about the meetings — who they're with, what they're about.)
-- Make them feel heard, then ask — but VARY how you open; don't start every follow-up the same way. A brief acknowledgment like "Got it" is fine OCCASIONALLY, but don't lean on it or any single opener — most follow-ups should just weave their own words into the question and ask directly, the way someone actually in the conversation would.
-- Keep it warm and LOW PRESSURE — any one concrete thing is a perfectly good answer. NEVER sound skeptical or invalidating: don't imply they didn't really answer or have to prove themselves, and avoid challenge words like "actually" ("what did you actually do…").
-- Go after one missing handle: a single concrete detail the criterion needs — a tool, an artifact, a person they hand off to, how often it happens — not several at once.
-- Stay neutral and open. Don't suggest or imply a specific answer, don't presume facts not in evidence, don't lead toward a "right" answer. A "no" is valid data, not a gap to push on.
-- Sound like a person. One sentence, conversational, verb-based phrasing the way you'd ask a coworker — not a survey item. Never ask double-barreled questions, and never ask for PII.
+When a criterion is unmet, write ONE follow-up targeting the single most critical unmet criterion. Above all, it must feel like a natural continuation of the conversation you've been having — NOT a standalone probe:
+- USE THE WHOLE CONVERSATION. You can see everything said so far. Build on it. Reference earlier things naturally when it helps ("earlier you said you're responsible for hiring — did any of that come up?"). A real interviewer remembers what they've already been told and doesn't ask in a vacuum.
+- NEVER repeat a question you've already asked, and never re-probe a thread you already covered. If a gap remains only on something you already asked about, move to a different gap or mark it covered.
+- VARY how you open — do NOT start follow-ups the same way. "Got it" or "You mentioned…" are fine very occasionally but you're badly overusing them; most of the time just fold their own words into the question and ask directly, the way a person actually mid-chat would.
+- Be RESPONSIVE to the specific thing they just said — pick up that thread, ask what a curious listener would naturally ask next. Different answer → different question, not a template.
+- Warm and LOW PRESSURE. Any one concrete thing is a fine answer. NEVER sound skeptical or invalidating; avoid challenge words like "actually". A "no" is valid data.
+- One sentence, conversational, no double-barreled questions, no PII.
 
 Return JSON: { "allCovered": boolean, "followUp": string | null }`,
         },
         {
           role: 'user',
-          content: `Question asked: "${question}"\nParticipant's answer: "${answer}"\n${context ? `\nEARLIER IN THE INTERVIEW:\n${context}\n` : ''}\nCoverage criteria:\n${criteriaList}${priorBlock}\n\nAre all criteria satisfied? If not, what single follow-up question gets the most critical missing info?`,
+          content: `${convoBlock}\nThe CURRENT question is: "${question}"\nTheir answer to it (so far): "${answer}"\n\nCoverage criteria for the current question:\n${criteriaList}\n\nAre all criteria satisfied? If not, what is the single most natural follow-up to ask next, continuing this conversation?`,
         },
       ],
     });

@@ -18,7 +18,7 @@ const HOURS_ENABLED = false;
 
 // Hard cap on the picker list (real tasks + spliced attention checks). Also
 // the progress-bar denominator so the bar reflects actual rating progress.
-const MAX_TASKS = 20;
+const MAX_TASKS = 10;
 
 // Number of tasks the participant must rate before the "Finish early"
 // affordance unlocks. Pinned to MAX_TASKS so the threshold tracks the picker
@@ -131,6 +131,8 @@ export function TaskSelection() {
   const devSkip = devSkipToReview || devSkipToCard || devSkipToHours;
   const [showProcessing, setShowProcessing] = useState(!devSkip);
   const [showIntro, setShowIntro] = useState(false);
+  const [showEditPopup, setShowEditPopup] = useState(false);
+  const editPopupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showBonusToast, setShowBonusToast] = useState(false);
   const [lastBonusDelta, setLastBonusDelta] = useState(0);
 
@@ -253,6 +255,11 @@ export function TaskSelection() {
   const saveEdit = (idx: number, newName: string) => {
     const trimmed = newName.trim();
     if (!trimmed) return;
+    // Dismiss the edit reminder as soon as any real edit is saved.
+    if (trimmed !== tasks[idx]?.name) {
+      if (editPopupTimerRef.current) clearTimeout(editPopupTimerRef.current);
+      setShowEditPopup(false);
+    }
     const before = totalEditChars(tasks);
     const now = Date.now();
     const next = tasks.map((t, i) => {
@@ -333,7 +340,22 @@ export function TaskSelection() {
       }
     }
 
-    setCurrentIdx((i) => i + 1);
+    setCurrentIdx((i) => {
+      const next = i + 1;
+      // Re-show the edit reminder on every card after the threshold, until
+      // the participant edits at least one task.
+      if (next >= NUDGE_AFTER_UNEDITED) {
+        const hasEdited = tasks.some((t) => (t.edits?.length ?? 0) > 0);
+        if (!hasEdited) {
+          if (editPopupTimerRef.current) clearTimeout(editPopupTimerRef.current);
+          setShowEditPopup(true);
+          editPopupTimerRef.current = setTimeout(() => setShowEditPopup(false), 4000);
+        } else {
+          setShowEditPopup(false);
+        }
+      }
+      return next;
+    });
   };
 
   const addExtraTask = (raw: string) => {
@@ -535,6 +557,33 @@ export function TaskSelection() {
     <div className="flex flex-col h-full bg-transparent relative overflow-hidden">
       {/* Top gradient is rendered by the parent (App.tsx) so it spans the full viewport. */}
 
+      {/* Edit reminder toast — slides in once after NUDGE_AFTER_UNEDITED unedited cards */}
+      <div
+        className={`absolute bottom-8 left-6 right-6 z-50 transition-all duration-500 ${showEditPopup ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4 pointer-events-none"}`}
+      >
+        <div className="bg-slate-800 text-white rounded-2xl px-5 py-4 shadow-lg flex items-start gap-3">
+          <svg
+            className="w-4 h-4 mt-0.5 shrink-0 text-indigo-300"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M11 2l3 3-8 8H3v-3l8-8z" />
+          </svg>
+          <p className="text-sm leading-relaxed">
+            <span className="font-semibold text-white">
+              Quick reminder: Use the pencil to edit.
+            </span>{" "}
+            <span className="text-slate-300">
+              Rewrite any task that doesn't quite fit.
+            </span>
+          </p>
+        </div>
+      </div>
+
       {/* Bonus toast — shows the per-edit character delta */}
       {BONUS_ENABLED && (
         <div
@@ -549,10 +598,10 @@ export function TaskSelection() {
       {/* Header */}
       <div
         className={`relative z-10 px-8 pt-8 pb-5 shrink-0 w-full mx-auto ${
-          isExhausted ? "max-w-[1040px]" : "max-w-[780px]"
+          isExhausted ? "max-w-[1000px]" : "max-w-[780px]"
         }`}
       >
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-6">
           <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400">
             Part 2 of {totalParts} — Task Validation
           </p>
@@ -581,7 +630,7 @@ export function TaskSelection() {
       {/* Task area */}
       <div
         className={`relative z-10 flex-1 flex flex-col min-h-0 overflow-y-auto w-full mx-auto
-        ${isExhausted ? "justify-start pt-6 pb-12 px-4 sm:px-6 max-w-[1040px]" : "px-8 max-w-[780px]"}`}
+        ${isExhausted ? "justify-start pt-6 pb-12 px-8 max-w-[860px]" : "px-8 max-w-[780px]"}`}
       >
         {loading ? (
           <div className="flex-1 flex items-center justify-center">
@@ -621,6 +670,11 @@ export function TaskSelection() {
             onExtraInputChange={setExtraInput}
             onAddExtra={addExtraTask}
             onRemoveExtra={removeExtraTask}
+            onRemoveConfirmed={(idx) => setTasks(prev => {
+              const confirmed = prev.filter(x => (x.status === "confirmed" || x.status === "edited") && !x.isAttentionCheck);
+              const target = confirmed[idx];
+              return prev.filter(t => t !== target);
+            })}
             addEarnedUsd={addEarnedUsd}
             addCapped={addCapped}
             onSubmit={goToHoursSummary}
@@ -632,7 +686,6 @@ export function TaskSelection() {
               task={currentTask}
               taskIdx={currentIdx}
               isLast={currentIdx >= tasks.length - 1}
-              hasEditedAnyTask={tasks.some((t) => (t.edits?.length ?? 0) > 0)}
               onSaveEdit={saveEdit}
               onAdvance={advance}
             />
@@ -1049,7 +1102,6 @@ interface TaskReviewCardProps {
   task: TaskItem;
   taskIdx: number;
   isLast: boolean;
-  hasEditedAnyTask: boolean;
   onSaveEdit: (idx: number, name: string) => void;
   onAdvance: (answer: "yes" | "no", meta?: { hoursPerWeek: number }) => void;
 }
@@ -1058,7 +1110,6 @@ function TaskReviewCard({
   task,
   taskIdx,
   isLast,
-  hasEditedAnyTask,
   onSaveEdit,
   onAdvance,
 }: TaskReviewCardProps) {
@@ -1067,12 +1118,14 @@ function TaskReviewCard({
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(task.name);
   const [showCoachMark, setShowCoachMark] = useState(taskIdx === 0);
+  // Buttons are locked on card 1 until the participant clicks the pencil.
+  const [pencilClicked, setPencilClicked] = useState(taskIdx !== 0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Dismiss coach mark once they interact with anything
+  // Dismiss coach mark once they've clicked the pencil
   useEffect(() => {
-    if (editing || primaryAnswer !== null) setShowCoachMark(false);
-  }, [editing, primaryAnswer]);
+    if (pencilClicked) setShowCoachMark(false);
+  }, [pencilClicked]);
 
   const hoursValue = parseFloat(hoursInput);
   const hoursValid = Number.isFinite(hoursValue) && hoursValue >= 0;
@@ -1155,7 +1208,7 @@ function TaskReviewCard({
                 )}
                 <button
                   type="button"
-                  onClick={startEdit}
+                  onClick={() => { setPencilClicked(true); startEdit(); }}
                   className="relative flex items-center justify-center w-8 h-8 rounded-full bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-500 transition-colors"
                   aria-label="Edit task"
                 >
@@ -1176,9 +1229,9 @@ function TaskReviewCard({
           )}
         </div>
 
-        {/* Coach mark callout — first card only */}
+        {/* Coach mark callout — first card only, blocks buttons until pencil clicked */}
         {showCoachMark && (
-          <div className="animate-fadeSlideIn flex items-start gap-2.5 px-4 py-3 rounded-xl bg-indigo-50 border border-indigo-100 -mt-2">
+          <div className="animate-popIn flex items-start gap-2.5 px-4 py-3 rounded-xl bg-indigo-50 border border-indigo-200 -mt-2">
             <svg
               className="w-3.5 h-3.5 mt-0.5 shrink-0 text-indigo-400"
               viewBox="0 0 16 16"
@@ -1191,8 +1244,11 @@ function TaskReviewCard({
               <path d="M11 2l3 3-8 8H3v-3l8-8z" />
             </svg>
             <p className="text-sm text-indigo-700 leading-relaxed">
-              <span className="font-semibold">Use the pencil to edit the statement.</span>{" "}
-              Add specifics, remove what doesn't fit, or rewrite it in your own words.
+              <span className="font-semibold">
+                Use the pencil to edit the statement.
+              </span>{" "}
+              Add any specifics, remove what doesn't fit, or rewrite it in your
+              own words.
             </p>
           </div>
         )}
@@ -1223,6 +1279,7 @@ function TaskReviewCard({
           ).map(({ value, label, active, inactive }) => (
             <button
               key={value}
+              disabled={!pencilClicked}
               onClick={() => {
                 setPrimaryAnswer(value);
                 if (value === "no") setHoursInput("");
@@ -1233,7 +1290,7 @@ function TaskReviewCard({
                   );
                 }
               }}
-              className={`flex-1 py-3 rounded-2xl border text-sm font-medium transition-all active:scale-[0.98] ${
+              className={`flex-1 py-3 rounded-2xl border text-sm font-medium transition-all active:scale-[0.98] disabled:opacity-30 disabled:cursor-not-allowed ${
                 primaryAnswer === value
                   ? active
                   : `bg-white border-slate-200 text-slate-600 ${inactive}`
@@ -1248,40 +1305,6 @@ function TaskReviewCard({
 
       {/* Bottom: absolutely pinned so it never affects the centered layout */}
       <div className="absolute bottom-0 left-0 right-0 space-y-4 pb-12">
-        {/* Nudge */}
-        {primaryAnswer === "yes" &&
-          !hasEditedAnyTask &&
-          taskIdx >= NUDGE_AFTER_UNEDITED && (
-            <div
-              onClick={() => !editing && startEdit()}
-              className={`flex items-start gap-3 px-4 py-3.5 rounded-xl bg-amber-50 border border-amber-200 ${editing ? "cursor-default" : "cursor-text"} animate-fadeSlideIn`}
-            >
-              <svg
-                className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-500"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M11 2l3 3-8 8H3v-3l8-8z" />
-              </svg>
-              <p className="text-sm text-amber-700 leading-relaxed">
-                {editing ? (
-                  "Great — reword it so it reflects how you actually do this."
-                ) : (
-                  <>
-                    <span className="font-semibold text-amber-800">
-                      Make it yours.
-                    </span>{" "}
-                    Click the title above and reword it in your own terms.
-                  </>
-                )}
-              </p>
-            </div>
-          )}
-
         {/* Hours follow-up — only when the participant does this task and the
           hours feature is on */}
         {HOURS_ENABLED && primaryAnswer === "yes" && (
@@ -1335,6 +1358,7 @@ function ReviewAndAddScreen({
   onExtraInputChange,
   onAddExtra,
   onRemoveExtra,
+  onRemoveConfirmed,
   addEarnedUsd,
   addCapped,
   onSubmit,
@@ -1345,6 +1369,7 @@ function ReviewAndAddScreen({
   onExtraInputChange: (v: string) => void;
   onAddExtra: (v: string) => void;
   onRemoveExtra: (idx: number) => void;
+  onRemoveConfirmed: (idx: number) => void;
   addEarnedUsd: number;
   addCapped: boolean;
   onSubmit: (pendingExtra?: string) => void;
@@ -1439,18 +1464,27 @@ function ReviewAndAddScreen({
             from your interview so far.
           </p>
 
-          <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+          <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
             {confirmedTasks.map((t, i) => (
               <div
                 key={`${t.name}-${i}`}
-                className="px-4 py-3 rounded-xl bg-white border border-slate-200 hover:border-indigo-200 hover:shadow-sm transition"
+                className="group relative px-4 py-3 rounded-xl bg-white border border-slate-200 hover:border-indigo-200 hover:shadow-sm transition"
               >
-                <p className="text-sm text-slate-800 leading-snug">{t.name}</p>
+                <p className="text-sm text-slate-800 leading-snug pr-6">{t.name}</p>
                 {t.status === "edited" && (
                   <span className="mt-1.5 inline-block text-[10px] font-semibold uppercase tracking-wider text-amber-600">
                     edited
                   </span>
                 )}
+                <button
+                  onClick={() => onRemoveConfirmed(i)}
+                  aria-label="Remove task"
+                  className="absolute top-2.5 right-2.5 opacity-0 group-hover:opacity-100 transition-opacity w-5 h-5 flex items-center justify-center rounded-full text-slate-300 hover:text-red-400 hover:bg-red-50"
+                >
+                  <svg viewBox="0 0 16 16" className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/>
+                  </svg>
+                </button>
               </div>
             ))}
           </div>
@@ -1458,7 +1492,7 @@ function ReviewAndAddScreen({
       )}
 
       {/* What else fills your week. */}
-      <section className="mt-10">
+      <section className="mt-16">
         <div className="flex items-center justify-between gap-4">
           <h3 className="text-[1.35rem] font-light text-slate-800 leading-snug tracking-tight">
             What else fills your week?
