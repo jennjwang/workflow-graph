@@ -5,7 +5,7 @@ import { createReadStream } from 'fs';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
-import { UPPER_LEVEL_TASKS_SYSTEM_PROMPT, SUBTASK_WORKER_SYSTEM_PROMPT } from './prompts/task-generator.js';
+import { buildUpperLevelTasksPrompt, SUBTASK_WORKER_SYSTEM_PROMPT } from './prompts/task-generator.js';
 import { retrieveExemplarBlock } from './lib/retrieval.js';
 import { streamGapTasks } from './gapTasks.js';
 
@@ -309,44 +309,6 @@ Return JSON: { "question": string }`,
   }
 });
 
-app.post('/api/generate-categories', async (req, res) => {
-  const { jobTitle, typicalWeek } = req.body;
-  try {
-    const response = await client.chat.completions.create({
-      model: SMALL_MODEL,
-      temperature: 0.7,
-      response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'system',
-          content: `You are generating task DOMAINS for ONE specific person's job. The domains will be used to surface tasks the participant might recognize as part of their work.
-
-GROUND IN THIS ROLE. Each domain should be a real area of work for THIS specific job — not a generic category that could apply to any white-collar worker. A nurse, an electrician, and a kindergarten teacher should each get domains that are obviously theirs.
-
-PLAIN LANGUAGE. Use vocabulary the participant would actually use at work — short, concrete, no corporate-speak.
-- ✓ "Patient care", "Lesson planning", "Customer support tickets", "Equipment maintenance"
-- ✗ "Stakeholder engagement", "Cross-functional coordination", "Strategic initiatives"
-
-COVER THE BREADTH. Include the work an outsider might overlook — the routine, the prep, the cleanup, the people-side, not just the headline tasks.
-
-OUTPUT — 5–7 domains, distinct and non-overlapping. Each "name" is 2–4 plain words. Each "description" is one short sentence in plain language.
-
-Return JSON: {"categories": [{"name": "...", "description": "..."}]}`,
-        },
-        {
-          role: 'user',
-          content: `Job title: ${jobTitle}\nTypical week: ${typicalWeek}`,
-        },
-      ],
-    });
-    const parsed = JSON.parse(response.choices[0].message.content);
-    res.json({ categories: parsed.categories ?? [] });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // Pull out recurring work activities the participant EXPLICITLY mentioned in
 // the background interview. These ground the upper-level generator so the
 // final task list reflects what they actually said rather than what's typical
@@ -422,284 +384,6 @@ app.post('/api/extract-interview-tasks', async (req, res) => {
   }
 });
 
-app.post('/api/generate-tasks', async (req, res) => {
-  const { jobTitle, typicalWeek, aiUsage, responsibilities, priorTasks = [], interviewTasks = [] } = req.body;
-  try {
-    const priorBlock = priorTasks.length > 0
-      ? `\nAlready shown (do NOT repeat or paraphrase):\n${priorTasks.map(t => `- ${t}`).join('\n')}\n`
-      : '';
-
-    // Activities the participant explicitly named in the open interview.
-    // The grounding block REDEFINES the MECE target for this run: coverage of
-    // the role applies to (mentioned ∪ generator output), so the generator's
-    // job is to fill gaps the participant didn't mention. This overrides the
-    // base system prompt's "collectively exhaustive" requirement, which would
-    // otherwise force echoing.
-    const groundingBlock = interviewTasks.length > 0
-      ? `\nACTIVITIES THE PARTICIPANT ALREADY MENTIONED in the open interview:\n${interviewTasks.map(t => `- ${t}`).join('\n')}\n\n` +
-        `REDEFINED MECE TARGET FOR THIS RUN: Treat the mentioned activities above as ALREADY-PRESENT upper-level tasks. Your output PLUS the mentioned activities together must be MECE over the role. Your output's role is to fill the GAPS — categories of work clearly implied by the participant's responsibilities and typical week that they did NOT explicitly mention.\n\n` +
-        `SEMANTIC OVERLAP — READ CAREFULLY (most common failure mode):\n` +
-        `  When you check "is my proposed task the same as one they mentioned?", compare MEANING, not wording. Two tasks are the SAME ACTIVITY when a participant would describe the same minute of their day with either label. Surface differences do not make them different activities.\n\n` +
-        `  Examples of MENTIONED ↔ DO-NOT-OUTPUT pairs:\n` +
-        `    Mentioned "do code reviews"                 → DO NOT output "Review pull requests" / "Review code".\n` +
-        `    Mentioned "answer Slack messages"           → DO NOT output "Respond to team chat" / "Reply to teammates".\n` +
-        `    Mentioned "go to standup"                   → DO NOT output "Attend daily standups" / "Join team standup".\n` +
-        `    Mentioned "implement tickets"               → DO NOT output "Build features" / "Write code for tickets" / "Develop assigned work".\n` +
-        `    Mentioned "write the PRD"                   → DO NOT output "Draft product requirements" / "Author PRDs".\n` +
-        `    Mentioned "answer customer support emails"  → DO NOT output "Respond to customer inquiries" / "Handle support tickets".\n` +
-        `  TEST: for each task you draft, scan every mentioned activity and ask "could a participant honestly say this is the same thing I described?" If yes for any, drop yours.\n\n` +
-        `Concretely:\n` +
-        `  1. DO NOT output an upper-level task that semantically overlaps with one of the mentioned activities, even if the wording, verb, or framing differs. The mentioned set covers that category.\n` +
-        `  2. DO output upper-level tasks for any role-relevant category the mentioned set does NOT touch (admin, communication, periodic reporting, learning, coordination, equipment upkeep, mandated compliance, anything in their responsibilities the typical week doesn't cover, etc.).\n` +
-        `  3. STAY IN THEIR WORLD. Your gap-fill tasks must be clearly implied by their responsibilities or typical week — not imported from outside the role.\n` +
-        `  4. If the mentioned set already exhausts the role's major categories, output FEWER tasks (even just 2–3). Better to output a short list than to manufacture overlap.\n` +
-        `  5. COUNT: aim for total (mentioned + your output) ≈ 25–30. If mentioned has 5, output 20–25. If mentioned has 15, output 10–15.\n`
-      : '';
-
-    // MECE areas-as-tasks: each task is a broad responsibility area, written as a
-    // verb-led activity. The set is mutually exclusive and collectively exhaustive
-    // over the role's typical week. Each task will later be decomposed into 3–5
-    // concrete sub-steps, so we deliberately avoid sub-step granularity here.
-    // Optional retrieval grounding: inject real task statements from the best-
-    // matching corpus occupation. Fail-open (empty block) when disabled/unconfigured.
-    const { block: exemplarBlock, occupations: matchedOccupations, count: exemplarCount } =
-      await retrieveExemplarBlock({ jobTitle, responsibilities, typicalWeek });
-
-    const response = await client.chat.completions.create({
-      model: MODEL,
-      temperature: 0.7,
-      response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'system',
-          content: UPPER_LEVEL_TASKS_SYSTEM_PROMPT,
-        },
-        {
-          role: 'user',
-          content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${aiUsage ? `\nAI usage: ${aiUsage}` : ''}${exemplarBlock}${groundingBlock}${priorBlock}\nGenerate the upper-level tasks.`,
-        },
-      ],
-    });
-    const parsed = JSON.parse(response.choices[0].message.content);
-    const generated = parsed.tasks ?? [];
-    // Log the generator's inputs and outputs together so we can audit grounding
-    // failures end-to-end (e.g. "did the generator repeat something that was in
-    // interviewTasks?") without having to crack open the saved session JSON.
-    console.log(`[generate-tasks] role=${jobTitle} interviewTasks=${interviewTasks.length} generated=${generated.length} retrieval=${exemplarCount > 0 ? `${matchedOccupations.join('|')} (${exemplarCount})` : 'off/empty'}`);
-    if (interviewTasks.length > 0) {
-      console.log('  interviewTasks (grounding — should NOT be repeated):');
-      for (const t of interviewTasks) console.log(`    ◦ ${t}`);
-    }
-    console.log('  generated:');
-    for (const t of generated) console.log(`    ◦ ${typeof t === 'string' ? t : t?.name ?? '(unknown shape)'}`);
-    res.json({ tasks: generated });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Streaming variant of /api/generate-tasks. Emits Server-Sent Events as each
-// task is parsed off the OpenAI stream, so the client can render the picker as
-// soon as the first task arrives instead of waiting for the full list (~1-2s
-// time-to-first-paint instead of ~7s for the whole batch).
-//
-// Output format: the model is asked to emit JSONL (one {"name":"..."} per
-// line, no surrounding array). We accumulate stream chunks in a buffer, split
-// on newlines, parse each completed line, and emit an SSE `task` event per
-// parsed object. The shared UPPER_LEVEL_TASKS_SYSTEM_PROMPT still applies —
-// only the OUTPUT FORMAT instruction is overridden.
-// ── Active-learning bank helpers (only reached when taskBank is enabled) ──
-const BANK_SELECT_PROMPT = `You help tailor a task checklist for a specific software worker. You are given the worker's PROFILE (role, responsibilities, typical week, AI usage — verbatim, may ramble) and a CANDIDATE TASK BANK of software-engineering tasks. SELECT the tasks this worker plausibly does and rate how clearly the profile supports each.
-
-Use the signals differently: RESPONSIBILITIES = the scope of the job (a selected task must trace to a responsibility or clearly fall within the described role); TYPICAL WEEK = evidence of what they actually do. On conflict prefer responsibilities. EXCLUDE anything the week makes clear they do NOT do.
-
-Choose ONLY from the bank; do NOT invent or reword — refer to each by id. relevance: "high" = directly supported, "medium" = within the role but not stated, "low" = weakly supported. When unsure prefer low/medium over excluding; never select a task that contradicts the profile.
-
-Return JSON: {"selected":[{"id":"<bank id>","relevance":"high|medium|low"}]}`;
-
-async function bankSelectRelevant(profileText, bankTasks) {
-  const block = bankTasks.map(t => `  ${t.id}: ${t.statement} (${t.level ?? '?'}${t.ai ? ' [AI]' : ''})`).join('\n');
-  const resp = await client.chat.completions.create({
-    model: MODEL, temperature: 0,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: BANK_SELECT_PROMPT },
-      { role: 'user', content: `${profileText}\n\nCANDIDATE TASK BANK:\n${block}` },
-    ],
-  });
-  try { return JSON.parse(resp.choices[0].message.content).selected || []; }
-  catch { return []; }
-}
-
-// Stream the active-learning bank draw. Returns true if it handled the request (caller
-// skips LLM generation); false to fall back to generation. Fails soft on any DB error.
-// Stream the active-learning draw + gap-fill. Spans the whole spectrum:
-//   empty bank  → 0 drawn → pure streamGapTasks (cold-start suggestions)
-//   warm bank   → draw (active learning) + gap-fill for role coverage the bank lacks
-//                 (the gap prompt self-limits: if the draw exhausts the role, it emits ~none)
-// Drawn bank tasks carry an id (write-back records them); generated gap tasks have NO id
-// (they get harvested into the bank when answered — harvest TBD). Returns true if it handled
-// the request; false → fall back to the legacy generator (fail-soft on any DB/LLM error).
-async function streamFromBank({ jobTitle, responsibilities, typicalWeek, aiUsage,
-                                priorTasks = [], interviewTasks = [] }, sendEvent) {
-  try {
-    const occ = TASK_BANK_OCC;
-    const bankTasks = await taskBank.loadBank(occ);
-    const profileBlock = `WORKER PROFILE\n  Job title / role: ${jobTitle || ''}\n  Responsibilities: ${responsibilities || ''}\n  Typical week: ${typicalWeek || ''}\n  AI usage: ${aiUsage || ''}`;
-
-    // Within-draw dedup safety net: never emit the same task text twice (bank↔bank, bank↔gap,
-    // or gap↔gap), and never re-emit something already shown (priorTasks/interview). Normalizes
-    // case + trailing punctuation/space. Prompt-level MECE handles paraphrases; this catches
-    // exact/near-exact repeats the LLM or the bank itself might produce.
-    const norm = s => String(s).trim().toLowerCase().replace(/[.\s]+$/, '');
-    const seen = new Set([...priorTasks, ...interviewTasks].map(norm));
-    const fresh = (name) => { const k = norm(name); if (!k || seen.has(k)) return false; seen.add(k); return true; };
-
-    // 1) DRAW from the bank (active learning) — skipped cleanly when the bank is empty.
-    let drawn = [];
-    if (bankTasks.length) {
-      const selected = await bankSelectRelevant(profileBlock, bankTasks);
-      if (selected.length) {
-        const budget = Number(process.env.TASK_BANK_BUDGET || 25);
-        const describeFrac = process.env.TASK_BANK_DESCRIBE_FRAC != null
-          ? Number(process.env.TASK_BANK_DESCRIBE_FRAC) : null;   // null = adaptive core+tail
-        const ordered = taskBank.acquire(bankTasks, selected, budget, describeFrac, priorTasks);
-        for (const t of ordered) {
-          if (!fresh(t.statement)) continue;             // skip a near-dup bank statement
-          sendEvent('task', { name: t.statement, id: t.id });
-          drawn.push(t.statement);
-        }
-      }
-    }
-
-    // 2) GAP-FILL via the shared generator — discover role coverage the bank (+ what they
-    //    said + what's shown) does not hold. Generated tasks stream WITHOUT an id.
-    const covered = [...drawn, ...interviewTasks, ...priorTasks];
-    let nGap = 0;
-    await streamGapTasks({
-      profile: { jobTitle, responsibilities, typicalWeek, aiUsage },
-      covered,
-      onTask: (name) => { if (fresh(name)) { sendEvent('task', { name }); nGap++; } },
-    });
-
-    sendEvent('done', { total: drawn.length + nGap, source: bankTasks.length ? 'bank+gap' : 'gap' });
-    console.log(`[generate-tasks-stream] occ=${occ} bank-drawn=${drawn.length} gap=${nGap}`);
-    return true;
-  } catch (e) {
-    console.warn('[taskBank] draw/gap failed, falling back to generation:', e.message);
-    return false;
-  }
-}
-
-app.post('/api/generate-tasks-stream', async (req, res) => {
-  const { jobTitle, typicalWeek, aiUsage, responsibilities, priorTasks = [], interviewTasks = [] } = req.body;
-
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders?.();
-
-  const sendEvent = (event, data) => {
-    res.write(`event: ${event}\n`);
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
-  };
-
-  try {
-    // Active-learning bank draw + gap-fill (for covered occupations). Falls back to generation.
-    if (taskBank && await streamFromBank({ jobTitle, responsibilities, typicalWeek, aiUsage, priorTasks, interviewTasks }, sendEvent)) {
-      res.end();
-      return;
-    }
-
-    const priorBlock = priorTasks.length > 0
-      ? `\nAlready shown (do NOT repeat or paraphrase):\n${priorTasks.map(t => `- ${t}`).join('\n')}\n`
-      : '';
-
-    const groundingBlock = interviewTasks.length > 0
-      ? `\nACTIVITIES THE PARTICIPANT ALREADY MENTIONED in the open interview:\n${interviewTasks.map(t => `- ${t}`).join('\n')}\n\n` +
-        `REDEFINED MECE TARGET FOR THIS RUN: Treat the mentioned activities above as ALREADY-PRESENT upper-level tasks. Your output PLUS the mentioned activities together must be MECE over the role. Your output's role is to fill the GAPS — categories of work clearly implied by the participant's responsibilities and typical week that they did NOT explicitly mention.\n\n` +
-        `SEMANTIC OVERLAP — READ CAREFULLY (most common failure mode):\n` +
-        `  When you check "is my proposed task the same as one they mentioned?", compare MEANING, not wording. Two tasks are the SAME ACTIVITY when a participant would describe the same minute of their day with either label. Surface differences do not make them different activities.\n\n` +
-        `  Examples of MENTIONED ↔ DO-NOT-OUTPUT pairs:\n` +
-        `    Mentioned "do code reviews"                 → DO NOT output "Review pull requests" / "Review code".\n` +
-        `    Mentioned "answer Slack messages"           → DO NOT output "Respond to team chat" / "Reply to teammates".\n` +
-        `    Mentioned "go to standup"                   → DO NOT output "Attend daily standups" / "Join team standup".\n` +
-        `    Mentioned "implement tickets"               → DO NOT output "Build features" / "Write code for tickets" / "Develop assigned work".\n` +
-        `  TEST: for each task you draft, scan every mentioned activity and ask "could a participant honestly say this is the same thing I described?" If yes for any, drop yours.\n\n` +
-        `Concretely:\n` +
-        `  1. DO NOT output an upper-level task that semantically overlaps with one of the mentioned activities, even if the wording, verb, or framing differs.\n` +
-        `  2. DO output upper-level tasks for any role-relevant category the mentioned set does NOT touch.\n` +
-        `  3. STAY IN THEIR WORLD. Your gap-fill tasks must be clearly implied by their responsibilities or typical week.\n` +
-        `  4. If the mentioned set already exhausts the role's major categories, emit fewer items.\n` +
-        `  5. COUNT: aim for total (mentioned + your output) ≈ 25–30. If mentioned has 5, output 20–25. If mentioned has 15, output 10–15.\n`
-      : '';
-
-    // OVERRIDE the system prompt's final "Return JSON" instruction with a JSONL
-    // directive. Streaming partial JSON is fragile; JSONL splits cleanly on \n.
-    const streamingSystem = `${UPPER_LEVEL_TASKS_SYSTEM_PROMPT}
-
-OUTPUT FORMAT — STREAMING (overrides any earlier JSON instructions):
-Emit ONE JSON object per line. Each line: {"name":"<task name>"}. Separate with newlines. NO outer array, NO commas between objects, NO surrounding {"tasks":[...]}. Just one object per line. Emit them as you decide on them — don't pre-buffer the full set.`;
-
-    // Optional retrieval grounding (see /api/generate-tasks). Runs before the
-    // stream opens, so it adds to time-to-first-token; fail-open on any error.
-    const { block: exemplarBlock, occupations: matchedOccupations, count: exemplarCount } =
-      await retrieveExemplarBlock({ jobTitle, responsibilities, typicalWeek });
-
-    const stream = await client.chat.completions.create({
-      model: MODEL,
-      temperature: 0.7,
-      stream: true,
-      messages: [
-        { role: 'system', content: streamingSystem },
-        {
-          role: 'user',
-          content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${aiUsage ? `\nAI usage: ${aiUsage}` : ''}${exemplarBlock}${groundingBlock}${priorBlock}\nGenerate the upper-level tasks.`,
-        },
-      ],
-    });
-
-    let buffer = '';
-    let emitted = 0;
-    const emitLine = (line) => {
-      const trimmed = line.trim();
-      if (!trimmed) return;
-      try {
-        const obj = JSON.parse(trimmed);
-        if (obj && typeof obj.name === 'string' && obj.name.trim()) {
-          sendEvent('task', { name: obj.name.trim() });
-          emitted += 1;
-        }
-      } catch {
-        // Skip malformed lines silently — model occasionally emits prose or
-        // commentary in stray chunks; we tolerate that.
-      }
-    };
-
-    for await (const chunk of stream) {
-      const delta = chunk.choices?.[0]?.delta?.content ?? '';
-      if (!delta) continue;
-      buffer += delta;
-      let nl;
-      while ((nl = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.slice(0, nl);
-        buffer = buffer.slice(nl + 1);
-        emitLine(line);
-      }
-    }
-    if (buffer.trim()) emitLine(buffer);
-
-    console.log(`[generate-tasks-stream] role=${jobTitle} interviewTasks=${interviewTasks.length} emitted=${emitted} retrieval=${exemplarCount > 0 ? `${matchedOccupations.join('|')} (${exemplarCount})` : 'off/empty'}`);
-    sendEvent('done', { total: emitted });
-    res.end();
-  } catch (err) {
-    console.error('[generate-tasks-stream]', err);
-    try { sendEvent('error', { error: err.message }); } catch {}
-    res.end();
-  }
-});
-
 // Integrated MECE generator: takes raw interview-extracted tasks and produces
 // a single unified task list. Unlike /api/generate-tasks-stream (which treats
 // interview tasks as grounding and only gap-fills), this endpoint:
@@ -720,13 +404,15 @@ app.post('/api/generate-tasks-from-interview', async (req, res) => {
     res.flush?.();
   };
 
-  const { jobTitle, typicalWeek, aiUsage, responsibilities, interviewTasks = [] } = req.body;
+  const { jobTitle, typicalWeek, aiUsage, responsibilities, interviewTasks = [], count } = req.body;
+  // Target list size — passed from the client so it tracks the picker's cap.
+  const targetCount = Number.isFinite(+count) && +count > 0 ? Math.round(+count) : 22;
 
   const interviewBlock = interviewTasks.length > 0
     ? `\nTASKS THE PARTICIPANT EXPLICITLY MENTIONED (every one must be COVERED by exactly one task in your output — absorbed/merged as needed, never copied in verbatim or dropped):\n${interviewTasks.map(t => `- ${t}`).join('\n')}\n`
     : '';
 
-  const systemPrompt = `${UPPER_LEVEL_TASKS_SYSTEM_PROMPT}
+  const systemPrompt = `${buildUpperLevelTasksPrompt({ anchored: true, count: targetCount })}
 
 SPECIAL INSTRUCTIONS FOR THIS RUN — PARTICIPANT-ANCHORED MODE:
 You are given the activities this participant explicitly named when describing their own job. They were extracted FAITHFULLY at whatever granularity they happened to be said — so the list is usually a mix of broad activities and fine sub-steps, and some items overlap each other. Your job is to produce ONE clean MECE upper-level list that COVERS all of them.
@@ -736,9 +422,9 @@ MECE IS THE MASTER CONSTRAINT. The mentioned tasks are evidence to be covered, N
 2. COVER, don't paste. Every mentioned task that passes the filter must map to EXACTLY ONE task in your output. That does NOT mean it appears verbatim: roll fine sub-steps UP into the broader O*NET-level category that contains them, and MERGE mentioned tasks that are the same activity. (E.g. "Review code" + "Approve PRs" → one "Review and approve teammates' code changes"; "Run vision screenings" + "Run hearing screenings" → "Run student health screenings".) Nothing they said is lost — but it may be ABSORBED into a broader task rather than standing alone.
 3. NO OVERLAP AMONG THE MENTIONED TASKS EITHER. Apply the three overlap patterns to THEM, not just to gap-fill: same activity / different AUDIENCE, same activity / different INPUT, same activity / different STAGE. If two mentioned tasks fail the test ("could the same minute of their day be described by both?"), they belong to ONE output task.
 4. NORMALIZE to O*NET standard: verb-led, 8–18 words, plain language, specific. Preserve their vocabulary — keep their nouns, tools, and context.
-5. GAP-FILL: add tasks for role-relevant categories their mentioned set doesn't touch (admin, communication, periodic reporting, learning, coordination, equipment upkeep, compliance). These must not overlap the covered tasks.
+5. GAP-FILL — fill the IMPORTANT gaps, NOT every gap. The standard "collectively exhaustive over the whole role" rule is RELAXED here: you are anchored to THIS person, so do NOT try to cover the entire occupation. Look at what they emphasized and their stated responsibilities, and add ONLY tasks that are clearly CENTRAL to their actual work but went unmentioned — the things most likely to be a real, recurring part of their week. SKIP peripheral, occasional, or generic role-filler (e.g. "attend staff meetings", "complete mandated training") — those are exactly the low-value, inconsistent-specificity items that show up when you stretch for a count. Adding 2–3 important gaps is better than 8 marginal ones. Gap-fill must not overlap the covered tasks, and don't split one area into near-duplicate tasks (e.g. monitoring vs. investigating vs. debugging vs. tracking metrics are usually ONE observability task, not four).
 6. SELF-CHECK before finishing: (a) every mentioned task maps to exactly one output task; (b) no two output tasks overlap — run the concrete-activity test; (c) granularity is consistent O*NET level throughout (no lone sub-step sitting next to a broad category that contains it).
-7. COUNT: aim for 20–25 total.`;
+7. COUNT: treat ${targetCount} as a CEILING, not a quota — aim for about ${targetCount} total, but if covering the mentioned tasks plus the genuine role gaps takes fewer, output FEWER. NEVER manufacture overlapping or near-duplicate tasks just to reach the number.`;
 
   const streamingSystem = `${systemPrompt}
 

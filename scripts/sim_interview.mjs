@@ -169,41 +169,52 @@ async function evaluate(q, answer, followupCount, conversation) {
   return res.json();
 }
 
-async function runInterview(persona) {
-  console.log(
-    `\n${"═".repeat(74)}\n  PERSONA: ${persona.name}\n${"═".repeat(74)}`,
-  );
+export async function runInterview(persona, { quiet = false } = {}) {
+  const log = quiet ? () => {} : (...a) => console.log(...a);
+  log(`\n${"═".repeat(74)}\n  PERSONA: ${persona.name}\n${"═".repeat(74)}`);
   const history = [];
+  const turns = []; // {field, question, answer} — for downstream extraction
+  const answersByField = {};
   for (const q of QUESTIONS) {
-    console.log(`\n  🧑‍💼 ${q.text}`);
+    log(`\n  🧑‍💼 ${q.text}`);
     let answer = await participant(persona, q.text, history);
-    console.log(`  🙂 ${answer}`);
+    log(`  🙂 ${answer}`);
     history.push(`Interviewer: ${q.text}`, `Participant: ${answer}`);
+    turns.push({ field: q.field, question: q.text, answer });
 
     let accumulated = answer;
     let asked = 0;
     while (asked < q.maxFollowups) {
       const ev = await evaluate(q, accumulated, asked, history.join("\n"));
       if (ev.allCovered || !ev.followUp) break;
-      console.log(`     ↳ ${ev.followUp}`);
+      log(`     ↳ ${ev.followUp}`);
       asked++;
       const fa = await participant(persona, ev.followUp, history);
-      console.log(`  🙂 ${fa}`);
+      log(`  🙂 ${fa}`);
       history.push(`Interviewer: ${ev.followUp}`, `Participant: ${fa}`);
+      turns.push({ field: q.field, question: ev.followUp, answer: fa });
       accumulated += `\n${fa}`;
     }
     // Fixed catch-all question always asked once after the follow-ups.
     if (q.closingQuestion) {
-      console.log(`     ↳ ${q.closingQuestion}`);
+      log(`     ↳ ${q.closingQuestion}`);
       const fa = await participant(persona, q.closingQuestion, history);
-      console.log(`  🙂 ${fa}`);
+      log(`  🙂 ${fa}`);
       history.push(`Interviewer: ${q.closingQuestion}`, `Participant: ${fa}`);
+      turns.push({ field: q.field, question: q.closingQuestion, answer: fa });
     }
+    answersByField[q.field] = accumulated;
   }
+  return { turns, answersByField, history };
 }
 
-for (const persona of PERSONAS) {
-  if (only && persona.name !== only) continue;
-  await runInterview(persona);
+export { PERSONAS, QUESTIONS };
+
+// Only auto-run the full sweep when invoked directly (not when imported).
+if (process.argv[1] && process.argv[1].endsWith("sim_interview.mjs")) {
+  for (const persona of PERSONAS) {
+    if (only && persona.name !== only) continue;
+    await runInterview(persona);
+  }
+  console.log();
 }
-console.log();

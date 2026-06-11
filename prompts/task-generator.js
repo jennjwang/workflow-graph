@@ -150,6 +150,34 @@ Before finalizing, mentally walk through the participant's week and confirm:
 
 Return ONLY valid JSON: {"tasks": [{"name": "..."}]}`;
 
+// Build the upper-level tasks prompt. Default is the full role-based prompt
+// (collectively exhaustive over the occupation, ~25–30 tasks). In ANCHORED mode
+// — used when generating from a specific participant's interview — the two
+// occupation-wide rules are relaxed so the base prompt doesn't contradict the
+// participant-anchored instructions:
+//   • "Collectively Exhaustive over the role" → "Mutually Exclusive + only the
+//     important gaps implied by THIS person's own responsibilities/week".
+//   • the fixed "Aim for 25–30" count → a dynamic ceiling (the picker's cap).
+export function buildUpperLevelTasksPrompt({ anchored = false, count } = {}) {
+  if (!anchored) return UPPER_LEVEL_TASKS_SYSTEM_PROMPT;
+  const ceil = Number.isFinite(+count) && +count > 0 ? Math.round(+count) : null;
+  return UPPER_LEVEL_TASKS_SYSTEM_PROMPT
+    .replace(
+      'THE RESULT MUST BE MECE — Mutually Exclusive, Collectively Exhaustive.',
+      'THE RESULT MUST BE MUTUALLY EXCLUSIVE — no two tasks overlap. It need NOT be collectively exhaustive over the whole occupation: you are anchored to THIS specific participant, not to the role in general.',
+    )
+    .replace(
+      `  COLLECTIVELY EXHAUSTIVE: together the tasks must cover EVERYTHING someone in this role does in a typical week. Imagine the participant's full week minute-by-minute — every activity should map to one of the tasks.
+    - Don't forget: admin paperwork, learning/training, communication with external parties, periodic reporting, equipment/space/inventory upkeep, mandated compliance.
+    - THE TEST: name an activity from this role's typical week. Does it fit under one of your tasks? If you can name something that fits NONE of them, you're missing a category — add it.`,
+      `  ANCHORED COVERAGE (NOT occupation-wide exhaustiveness): cover what THIS participant actually described, plus only the IMPORTANT gaps clearly implied by their own responsibilities and week. Do NOT add tasks to "complete" the occupation — peripheral, occasional, or generic role-filler they never mentioned is noise here, and its specificity won't match the rest. A short, faithful list beats a padded one.`,
+    )
+    .replace(
+      `COUNT. Aim for 25–30 tasks. MECE and the COHERENT-ACTIVITY test outrank the count — NEVER pad with one-off micro-actions or sub-steps to hit a number. But also DON'T under-generate: if you're tempted to merge two activities via " and " (different audiences, formats, cadences, or outputs), output them as TWO tasks instead — see "ONE THING PER TASK" above. The participant filters further on the next step, so a slightly longer list is better than a list that pre-merged distinct activities.`,
+      `COUNT. ${ceil ? `Treat ${ceil} as a CEILING, not a quota` : 'Keep the list tight'}: output only as many tasks as it takes to cover what they described plus the important gaps, and output FEWER rather than pad. Mutual-exclusivity and the COHERENT-ACTIVITY test outrank the count.`,
+    );
+}
+
 // ── Occupation matcher (retrieval grounding) ──────────────────────────────────
 //
 // Used by lib/retrieval.js to pick the corpus occupation(s) whose task

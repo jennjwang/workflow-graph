@@ -334,86 +334,9 @@ export async function fetchInterviewQuestion(
   }
 }
 
-export async function generateCategories(
-  jobTitle: string,
-  typicalWeek: string,
-): Promise<{ name: string; description: string }[]> {
-  const res = await fetch('/api/generate-categories', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jobTitle, typicalWeek }),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  const data = await res.json();
-  return data.categories ?? [];
-}
-
-export async function generateTasksForCategory(
-  jobTitle: string,
-  typicalWeek: string,
-  category: string,
-  priorTasks: string[] = [],
-  count?: number,
-  aiUsage?: string,
-  responsibilities?: string,
-  interviewTasks: string[] = [],
-): Promise<string[]> {
-  const res = await fetch('/api/generate-tasks', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jobTitle, typicalWeek, category, priorTasks, count, aiUsage, responsibilities, interviewTasks }),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  const data = await res.json();
-  return (data.tasks ?? []).map((t: { name: string }) => t.name);
-}
-
-// Streaming version: invokes onTask(name) as each task is parsed off the SSE
-// stream, then resolves once the server signals 'done'. Use this in the picker
-// flow so the first task can render in ~1-2s instead of waiting for the full
-// list (~7s). Throws if the stream errors before completion.
-export async function generateTasksForCategoryStream(
-  jobTitle: string,
-  typicalWeek: string,
-  priorTasks: string[],
-  aiUsage: string | undefined,
-  responsibilities: string | undefined,
-  interviewTasks: string[],
-  onTask: (name: string, id?: string) => void,
-): Promise<void> {
-  const res = await fetch('/api/generate-tasks-stream', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jobTitle, typicalWeek, priorTasks, aiUsage, responsibilities, interviewTasks }),
-  });
-  if (!res.ok || !res.body) throw new Error(await res.text());
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) return;
-    buffer += decoder.decode(value, { stream: true });
-    const parts = buffer.split('\n\n');
-    buffer = parts.pop() ?? '';
-    for (const part of parts) {
-      const lines = part.split('\n');
-      const eventLine = lines.find(l => l.startsWith('event: '));
-      const dataLine = lines.find(l => l.startsWith('data: '));
-      if (!eventLine || !dataLine) continue;
-      const event = eventLine.slice(7);
-      const data = JSON.parse(dataLine.slice(6));
-      if (event === 'task' && typeof data?.name === 'string')
-        onTask(data.name, typeof data?.id === 'string' ? data.id : undefined);
-      else if (event === 'error') throw new Error(data.error ?? 'stream error');
-      else if (event === 'done') return;
-    }
-  }
-}
-
-// Integrated MECE generator: normalizes interview-extracted tasks to O*NET
-// standard, deduplicates, and adds gap-fill — returning one flat list.
-// Streaming version (SSE), same interface as generateTasksForCategoryStream.
+// Integrated MECE generator (the only task generator): normalizes the
+// interview-extracted tasks to O*NET standard, merges overlaps, and adds
+// importance gap-fill — streaming one flat list over SSE.
 export async function generateTasksFromInterview(
   jobTitle: string,
   typicalWeek: string,
@@ -421,11 +344,12 @@ export async function generateTasksFromInterview(
   responsibilities: string | undefined,
   interviewTasks: string[],
   onTask: (name: string) => void,
+  count?: number,
 ): Promise<void> {
   const res = await fetch('/api/generate-tasks-from-interview', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jobTitle, typicalWeek, aiUsage, responsibilities, interviewTasks }),
+    body: JSON.stringify({ jobTitle, typicalWeek, aiUsage, responsibilities, interviewTasks, count }),
   });
   if (!res.ok || !res.body) throw new Error(await res.text());
   const reader = res.body.getReader();

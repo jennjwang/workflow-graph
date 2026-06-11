@@ -18,7 +18,7 @@ const HOURS_ENABLED = false;
 
 // Hard cap on the picker list (real tasks + spliced attention checks). Also
 // the progress-bar denominator so the bar reflects actual rating progress.
-const MAX_TASKS = 10;
+const MAX_TASKS = 20;
 
 // Number of tasks the participant must rate before the "Finish early"
 // affordance unlocks. Pinned to MAX_TASKS so the threshold tracks the picker
@@ -239,6 +239,7 @@ export function TaskSelection() {
           userProfile.responsibilities,
           interviewTasks,
           (name) => onTask(name),
+          MAX_TASKS,
         );
         // If the stream returned zero tasks (model fluke), surface an error
         // state so the participant sees something rather than a frozen loader.
