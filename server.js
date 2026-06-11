@@ -723,20 +723,22 @@ app.post('/api/generate-tasks-from-interview', async (req, res) => {
   const { jobTitle, typicalWeek, aiUsage, responsibilities, interviewTasks = [] } = req.body;
 
   const interviewBlock = interviewTasks.length > 0
-    ? `\nTASKS THE PARTICIPANT EXPLICITLY MENTIONED (must appear in your output, normalized):\n${interviewTasks.map(t => `- ${t}`).join('\n')}\n`
+    ? `\nTASKS THE PARTICIPANT EXPLICITLY MENTIONED (every one must be COVERED by exactly one task in your output — absorbed/merged as needed, never copied in verbatim or dropped):\n${interviewTasks.map(t => `- ${t}`).join('\n')}\n`
     : '';
 
   const systemPrompt = `${UPPER_LEVEL_TASKS_SYSTEM_PROMPT}
 
 SPECIAL INSTRUCTIONS FOR THIS RUN — PARTICIPANT-ANCHORED MODE:
-You are given the activities this participant explicitly named when describing their own job. Your output must include ALL of them, normalized to O*NET standard. Then add gap-fill tasks for anything their role clearly implies that they didn't mention.
+You are given the activities this participant explicitly named when describing their own job. They were extracted FAITHFULLY at whatever granularity they happened to be said — so the list is usually a mix of broad activities and fine sub-steps, and some items overlap each other. Your job is to produce ONE clean MECE upper-level list that COVERS all of them.
 
-Rules:
-1. FILTER the interview tasks first. Apply the observable-action test from the main prompt: can you describe what the participant is physically doing in a 30-second video? If yes, normalize and include it. If the task is too vague ("do meetings", "handle stuff"), a goal/outcome ("be more productive"), or a role descriptor ("lead a team"), skip it.
-2. NORMALIZE the ones that pass: rewrite to O*NET standard (verb-led, 8–18 words, plain language, specific). Preserve the participant's intent and vocabulary — keep their nouns, tools, and context. If they said "code reviews" write "Review pull requests from teammates". If two interview tasks describe the same activity, merge them.
-3. ADD gap-fill tasks for activities clearly implied by their role and responsibilities that they didn't mention. Use the same vocabulary and framing so the full list feels coherent.
-4. Apply all standard MECE rules: mutually exclusive, collectively exhaustive, no vague verbs.
-5. COUNT: aim for 20–25 total.`;
+MECE IS THE MASTER CONSTRAINT. The mentioned tasks are evidence to be covered, NOT items to copy in verbatim:
+1. FILTER first. Apply the observable-action test: if you can't describe what they're physically doing in a 30-second video — too vague ("do meetings", "handle stuff"), a goal/outcome ("be more productive"), or a role descriptor ("lead a team") — drop it.
+2. COVER, don't paste. Every mentioned task that passes the filter must map to EXACTLY ONE task in your output. That does NOT mean it appears verbatim: roll fine sub-steps UP into the broader O*NET-level category that contains them, and MERGE mentioned tasks that are the same activity. (E.g. "Review code" + "Approve PRs" → one "Review and approve teammates' code changes"; "Run vision screenings" + "Run hearing screenings" → "Run student health screenings".) Nothing they said is lost — but it may be ABSORBED into a broader task rather than standing alone.
+3. NO OVERLAP AMONG THE MENTIONED TASKS EITHER. Apply the three overlap patterns to THEM, not just to gap-fill: same activity / different AUDIENCE, same activity / different INPUT, same activity / different STAGE. If two mentioned tasks fail the test ("could the same minute of their day be described by both?"), they belong to ONE output task.
+4. NORMALIZE to O*NET standard: verb-led, 8–18 words, plain language, specific. Preserve their vocabulary — keep their nouns, tools, and context.
+5. GAP-FILL: add tasks for role-relevant categories their mentioned set doesn't touch (admin, communication, periodic reporting, learning, coordination, equipment upkeep, compliance). These must not overlap the covered tasks.
+6. SELF-CHECK before finishing: (a) every mentioned task maps to exactly one output task; (b) no two output tasks overlap — run the concrete-activity test; (c) granularity is consistent O*NET level throughout (no lone sub-step sitting next to a broad category that contains it).
+7. COUNT: aim for 20–25 total.`;
 
   const streamingSystem = `${systemPrompt}
 

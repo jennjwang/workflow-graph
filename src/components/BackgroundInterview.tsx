@@ -46,7 +46,7 @@ const QUESTIONS: {
     placeholder: "What you own or are accountable for",
     criteria: [
       "FLOOR — the participant has named at least one primary responsibility or area they own (e.g. 'I own the team's product specs', 'I'm responsible for patient care'). If they named NONE ('a bit of everything', 'various things'), follow up asking what they're mainly responsible for.",
-      "TASKS UNDER RESPONSIBILITIES — when they've named responsibilities or areas at a high level but NOT the concrete tasks those involve, it's NOT fully covered: follow up by picking ONE responsibility they named and asking what specific tasks or activities fall under it (e.g. they say 'I'm responsible for the backend' → 'When it comes to the backend, what are the main things you actually do?'; 'I handle patient care' → 'What does patient care involve day to day for you?'). On a later turn, if OTHER responsibilities they named are still just high-level areas, you may drill into ONE more of them. Stop once the tasks under their main responsibilities are reasonably clear. If they've already described the concrete tasks under their responsibilities, this is covered. Probe ONE responsibility per turn, warmly, never skeptically.",
+      "TASKS UNDER RESPONSIBILITIES — when they've named responsibilities or areas at a high level but NOT the concrete tasks those involve, it's NOT fully covered: follow up by picking ONE responsibility they named and asking what specific tasks or activities fall under it (e.g. they say 'I'm responsible for the backend' → 'When it comes to the backend, what are the main things you do?'; 'I handle patient care' → 'What does patient care involve day to day for you?'). On a later turn, if OTHER responsibilities they named are still just high-level areas, you may drill into ONE more of them. Stop once the tasks under their main responsibilities are reasonably clear. If they've already described the concrete tasks under their responsibilities, this is covered. Probe ONE responsibility per turn, warmly, never skeptically.",
     ],
     maxFollowups: 2,
   },
@@ -64,10 +64,10 @@ const QUESTIONS: {
       "RESPONSIBILITY COVERAGE — earlier in the conversation the participant described their primary responsibilities. If any responsibility or area they named does NOT clearly map to a task they mentioned this week, it is NOT fully covered: follow up ONCE, warmly, asking whether they did anything on that responsibility this week (e.g. earlier they said they're responsible for hiring but never mentioned it → 'Earlier you mentioned you're responsible for hiring — did you get to any of that this week?'). Probe ONE uncovered responsibility per turn. If they didn't describe their responsibilities, or every responsibility already maps to something they mentioned, this is covered.",
       "Representativeness — ONLY if the participant explicitly signals the recent week was unusual or atypical (e.g. 'last week was crazy', 'that's not a normal week', 'I was on leave/traveling'), follow up ONCE asking what a normal week usually looks like. If they give no such signal, treat the recent week as representative and do NOT ask about it — accept and move on.",
     ],
-    maxFollowups: 3,
-    minFollowups: 1,
+    maxFollowups: 4,
+    minFollowups: 2,
     closingQuestion:
-      "Before we wrap up — are there any other tasks you do at work that you haven't mentioned yet?",
+      "Finally,  are there any other tasks you do at work that you haven't mentioned yet?",
   },
 ];
 
@@ -552,7 +552,9 @@ export function BackgroundInterview() {
       {/* Header with step progress */}
       <div className="relative z-10 px-10 pt-8 pb-5 shrink-0">
         <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-4">
-          Interview
+          {!showIntro && !showOutro
+            ? `Topic ${step + 1} of ${QUESTIONS.length}`
+            : "Interview"}
         </p>
         <div className="flex gap-2 items-center">
           {QUESTIONS.map((_, i) => (
@@ -591,13 +593,8 @@ export function BackgroundInterview() {
               )}
             </div>
           ))}
-          {!showIntro && !showOutro && (
-            <span className="ml-2 text-xs text-slate-400">
-              Question {step + 1} of {QUESTIONS.length}
-              {isFollowUpActive && (
-                <span className="ml-1.5 text-indigo-400">· follow-up</span>
-              )}
-            </span>
+          {!showIntro && !showOutro && isFollowUpActive && (
+            <span className="ml-2 text-xs text-indigo-400">· follow-up</span>
           )}
         </div>
       </div>
@@ -631,25 +628,6 @@ export function BackgroundInterview() {
               </p>
             ) : (
               <>
-                {isFollowUpActive && (
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-indigo-400 mb-3 flex items-center gap-1.5">
-                    <svg
-                      className="w-3 h-3"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                    >
-                      <path d="M2 4h8a4 4 0 0 1 0 8H6" />
-                      <polyline
-                        points="3 11 6 14 3 17"
-                        transform="scale(1,0.7) translate(0,4)"
-                      />
-                    </svg>
-                    Follow-up
-                  </p>
-                )}
                 <p className="text-[1.75rem] font-light text-slate-800 leading-[1.45] tracking-[-0.015em]">
                   {displayQuestion}
                 </p>

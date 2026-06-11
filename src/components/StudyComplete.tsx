@@ -23,7 +23,9 @@ export function StudyComplete() {
     if (hasSaved.current) return;
     hasSaved.current = true;
     const data = getExportData() as Record<string, unknown>;
-    saveSession(sessionId, undefined, undefined, undefined, data).catch(() => {});
+    saveSession(sessionId, undefined, undefined, undefined, data).catch(
+      () => {},
+    );
   }, [sessionId, getExportData]);
 
   // Auto-redirect to Prolific's completion URL after a brief pause so the
@@ -59,7 +61,7 @@ export function StudyComplete() {
         </div>
 
         <h1 className="text-[1.85rem] font-light text-slate-800 leading-snug tracking-tight mb-4">
-          Thanks for your responses.
+          Thank you for your response.
         </h1>
         <p className="text-sm text-slate-500 leading-relaxed">
           {redirecting
