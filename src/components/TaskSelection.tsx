@@ -16,8 +16,11 @@ import { TaskItem } from "../types";
 // the flow then goes review/add → finalize with no hours collected.
 const HOURS_ENABLED = false;
 
-// Hard cap on the picker list (real tasks + spliced attention checks). Also
-// the progress-bar denominator so the bar reflects actual rating progress.
+// Hard cap on the picker list (real tasks + spliced attention checks). This is
+// a BURNOUT budget — participants can only rate so many before fatigue — so the
+// generated list must never exceed it. The generator produces normalized +
+// gap-fill tasks freely; if the combined list exceeds this, the server
+// down-samples both groups, preserving their natural proportion.
 const MAX_TASKS = 20;
 
 // Number of tasks the participant must rate before the "Finish early"

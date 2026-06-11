@@ -50,6 +50,12 @@ THE RESULT MUST BE MECE — Mutually Exclusive, Collectively Exhaustive.
     - Same activity, different STAGE — sequential phases of one workflow ("Plan experiments" / "Run experiments" / "Analyze results"; "Develop proofs" / "Write proofs in LaTeX"). DEFAULT: keep them separate as long as each stage is its own multi-step activity (different tools, outputs, or cognitive mode) — the participant can decide on the next step whether to collapse. ONLY merge if the stages blur together continuously in practice (e.g. "Read draft" + "Revise draft" happen interleaved).
     - THE TEST: take a concrete activity (e.g. "reply to an email from a parent"). Does it fit under more than one of your tasks? If yes, the tasks overlap — restructure.
 
+  MERGE BY ACTIVITY, NEVER BY CONTEXT. The three patterns above merge ONE activity that varies by audience/input/stage. The opposite move is a mistake: do NOT bundle DIFFERENT activities into one task just because they share a CONTEXT — the same WHO ("to help others", "for the team"), the same WHEN ("when busy", "during downtime", "after close", "on call"), or the same WHERE. Context is not an activity and must never define a task or justify a merge.
+    - ✗ "Help other cooks with prep, plating, and dishwashing when busy" — three distinct activities (prep / plating / dishwashing) glued by "helping others". Each is its OWN task; "helping others when busy" is just context — drop it.
+    - ✗ "Cover the front desk during breaks" — name the actual activities (answer phones, greet visitors, take payments), not the coverage window.
+    - ✗ "Handle whatever the team needs during the rush" — a context catch-all, not a task.
+    A distinct activity stays its own task even if it only happens to help someone else, only at a certain time, or only in a certain place. If you catch yourself naming a task by who/when/where instead of by the action, decompose it into the real activities and map each to its own task.
+
   COLLECTIVELY EXHAUSTIVE: together the tasks must cover EVERYTHING someone in this role does in a typical week. Imagine the participant's full week minute-by-minute — every activity should map to one of the tasks.
     - Don't forget: admin paperwork, learning/training, communication with external parties, periodic reporting, equipment/space/inventory upkeep, mandated compliance.
     - THE TEST: name an activity from this role's typical week. Does it fit under one of your tasks? If you can name something that fits NONE of them, you're missing a category — add it.
@@ -137,7 +143,14 @@ ONE THING PER TASK — PREFER SPLITTING. If you find yourself writing "X and Y" 
   - ✗ "Write dissertation and paper drafts" → ✓ "Draft dissertation chapters" + ✓ "Draft conference papers"
   - ✗ "Run bar setup and closeout"          → ✓ "Run morning cafe setup" + ✓ "Run end-of-day closeout"
   - ✗ "Treat illnesses and injuries"        → ✓ "Triage student illnesses" + ✓ "Treat student injuries"
-Only use a single noun phrase (no "and") when a clear umbrella term genuinely covers both things at the same observable-action level ("Run health screenings" covers vision and hearing because both are the same activity with different inputs). When the two items differ in audience, format, cadence, or output — split them. The participant filters further on the next step.
+Only use a single noun phrase (no "and") when a clear umbrella term genuinely covers both things at the same observable-action level ("Run health screenings" covers vision and hearing because both are the same activity with different inputs). When the two items differ in audience, format, cadence, or output — split them.
+
+  THE "SUCH AS" / "INCLUDING" DISCIPLINE (from O*NET cluster synthesis). When you fold variety into one task, do it cleanly:
+  - Every item you fold in must read as a KIND or CASE of the task statement. "Wash" and "chop" are cases of prepping vegetables (fine to combine); "restock inventory" is NOT a case of "clean counters", and "plate dishes" is NOT a case of "cleaning" — those are different activities, so SPLIT them.
+  - Use a "such as"/"including" list ONLY for genuinely DIFFERENT KINDS of the SAME activity, AT MOST 3, named generically, in the OBJECT only — NEVER to glue different ACTIONS. Prefer a plain generic object over a list when one word covers the kinds ("unit and integration tests" → "automated tests").
+  - If the items all name the same activity, just restate it cleanly with a generic object — no list at all.
+  - Stay as SPECIFIC as the shared activity allows; never widen to a vague umbrella just to make items fit. If no statement covers them without going vague, they are different activities — split.
+  The participant filters further on the next step.
 
 COUNT. Aim for 25–30 tasks. MECE and the COHERENT-ACTIVITY test outrank the count — NEVER pad with one-off micro-actions or sub-steps to hit a number. But also DON'T under-generate: if you're tempted to merge two activities via " and " (different audiences, formats, cadences, or outputs), output them as TWO tasks instead — see "ONE THING PER TASK" above. The participant filters further on the next step, so a slightly longer list is better than a list that pre-merged distinct activities.
 
@@ -174,7 +187,7 @@ export function buildUpperLevelTasksPrompt({ anchored = false, count } = {}) {
     )
     .replace(
       `COUNT. Aim for 25–30 tasks. MECE and the COHERENT-ACTIVITY test outrank the count — NEVER pad with one-off micro-actions or sub-steps to hit a number. But also DON'T under-generate: if you're tempted to merge two activities via " and " (different audiences, formats, cadences, or outputs), output them as TWO tasks instead — see "ONE THING PER TASK" above. The participant filters further on the next step, so a slightly longer list is better than a list that pre-merged distinct activities.`,
-      `COUNT. ${ceil ? `Treat ${ceil} as a CEILING, not a quota` : 'Keep the list tight'}: output only as many tasks as it takes to cover what they described plus the important gaps, and output FEWER rather than pad. Mutual-exclusivity and the COHERENT-ACTIVITY test outrank the count.`,
+      `COUNT. The exact size and composition are set in the run-specific instructions below.${ceil ? ` In all cases the total must not exceed ${ceil}.` : ''} Mutual-exclusivity and the COHERENT-ACTIVITY test outrank the count.`,
     );
 }
 
@@ -214,8 +227,9 @@ export function mentionedTasksBlock(interviewTasks = []) {
     : '';
 }
 
-// Full anchored system prompt: the (anchored) base prompt + the participant-
-// anchored special instructions. `count` is the picker's cap, used as a CEILING.
+// PASS 1 of the two-pass generator: normalize the participant's mentioned tasks
+// into a MECE upper-level list (no recognition gap-fill — that's pass 2).
+// `count` is the burnout cap.
 export function buildAnchoredTaskSystemPrompt(count) {
   return `${buildUpperLevelTasksPrompt({ anchored: true, count })}
 
@@ -224,12 +238,43 @@ You are given the activities this participant explicitly named when describing t
 
 MECE IS THE MASTER CONSTRAINT. The mentioned tasks are evidence to be covered, NOT items to copy in verbatim:
 1. FILTER first. Apply the observable-action test: if you can't describe what they're physically doing in a 30-second video — too vague ("do meetings", "handle stuff"), a goal/outcome ("be more productive"), or a role descriptor ("lead a team") — drop it.
-2. COVER, don't paste. Every mentioned task that passes the filter must map to EXACTLY ONE task in your output. That does NOT mean it appears verbatim: roll fine sub-steps UP into the broader O*NET-level category that contains them, and MERGE mentioned tasks that are the same activity. (E.g. "Review code" + "Approve PRs" → one "Review and approve teammates' code changes"; "Run vision screenings" + "Run hearing screenings" → "Run student health screenings".) Nothing they said is lost — but it may be ABSORBED into a broader task rather than standing alone.
-3. NO OVERLAP AMONG THE MENTIONED TASKS EITHER. Apply the three overlap patterns to THEM, not just to gap-fill: same activity / different AUDIENCE, same activity / different INPUT, same activity / different STAGE. If two mentioned tasks fail the test ("could the same minute of their day be described by both?"), they belong to ONE output task.
+2. COVER, don't paste. Every mentioned task that passes the filter must map to EXACTLY ONE task in your output. That does NOT mean it appears verbatim: roll fine sub-steps UP into the broader O*NET-level category that contains them, and MERGE mentioned tasks that are the same activity. (E.g. "Review code" + "Approve PRs" → one "Review and approve teammates' code changes"; "Run vision screenings" + "Run hearing screenings" → "Run student health screenings".) Nothing they said is lost — but it may be ABSORBED into a broader task rather than standing alone. KIND/CASE TEST: each mentioned task you absorb must read as a KIND or CASE of the output task. If it doesn't — "plate dishes" is not a case of "clean the station" — it's a different activity; give it its own task. Stay as specific as the shared activity allows; don't widen to a vague umbrella to swallow it.
+3. NO OVERLAP AMONG THE MENTIONED TASKS EITHER. Apply the three overlap patterns to THEM: same activity / different AUDIENCE, same activity / different INPUT, same activity / different STAGE. If two mentioned tasks fail the test ("could the same minute of their day be described by both?"), they belong to ONE output task. But run the REVERSE check too: never roll DIFFERENT activities into one task because they share a context (who it's for, when, where) — "help others with prep, plating, and dishwashing" is THREE tasks, not one; map each mentioned item to the task for its actual activity (their plating → a plating task), not to a "helping" or "when busy" bucket.
 4. NORMALIZE to O*NET standard: verb-led, 8–18 words, plain language, specific. Preserve their vocabulary — keep their nouns, tools, and context.
-5. GAP-FILL — fill the IMPORTANT gaps, NOT every gap. The standard "collectively exhaustive over the whole role" rule is RELAXED here: you are anchored to THIS person, so do NOT try to cover the entire occupation. Look at what they emphasized and their stated responsibilities, and add ONLY tasks that are clearly CENTRAL to their actual work but went unmentioned — the things most likely to be a real, recurring part of their week. SKIP peripheral, occasional, or generic role-filler (e.g. "attend staff meetings", "complete mandated training") — those are exactly the low-value, inconsistent-specificity items that show up when you stretch for a count. Adding 2–3 important gaps is better than 8 marginal ones. Gap-fill must not overlap the covered tasks, and don't split one area into near-duplicate tasks (e.g. monitoring vs. investigating vs. debugging vs. tracking metrics are usually ONE observability task, not four).
-6. SELF-CHECK before finishing: (a) every mentioned task maps to exactly one output task; (b) no two output tasks overlap — run the concrete-activity test; (c) granularity is consistent O*NET level throughout (no lone sub-step sitting next to a broad category that contains it).
-7. COUNT: treat ${count} as a CEILING, not a quota — aim for about ${count} total, but if covering the mentioned tasks plus the genuine role gaps takes fewer, output FEWER. NEVER manufacture overlapping or near-duplicate tasks just to reach the number.`;
+5. Cover ONLY what they actually described (rolled up). Do NOT add tasks they didn't mention — that's handled separately. NEVER manufacture overlapping or near-duplicate tasks.
+6. SELF-CHECK: (a) every mentioned task maps to exactly one output task; (b) no two output tasks overlap; (c) granularity is consistent O*NET level throughout.
+7. Total must not exceed ${count}. Output as few as faithfully covers their tasks.`;
+}
+
+// PASS 2 of the two-pass generator: given the participant's already-covered
+// (normalized) tasks, list GAP-FILL — plausible role tasks they likely do but
+// did NOT mention. EXHAUSTIVE (the complete real task set, not padded) and
+// RANKED by importance; the caller importance-weighted-samples it down to fit
+// the burnout budget, so ranking matters. `maxGap` bounds the pool for cost.
+export function buildGapFillMessages({ jobTitle, responsibilities, typicalWeek, coveredTasks = [], maxGap }) {
+  const covered = coveredTasks.map((t) => `- ${t}`).join('\n');
+  return [
+    {
+      role: 'system',
+      content: `You list GAP-FILL tasks for a work-task checklist. The participant already described some of their work (the COVERED tasks below). List the tasks someone in THIS specific role plausibly does but that the participant did NOT mention — recognition prompts they will confirm or deny on the next screen.
+
+BE EXHAUSTIVE, BUT DO NOT PAD. List the COMPLETE set of real recurring tasks for THIS role that aren't already covered — the core work plus the surrounding admin, communication, coordination, scheduling, upkeep/maintenance, reporting, learning, and compliance tasks. "Exhaustive" means don't MISS a genuine task — it does NOT mean inflate the list: every item must be a real, recurring task a typical person in this role actually does. No padding, no marginal one-offs, no near-duplicates to lengthen it.
+
+RANK by IMPORTANCE / RELEVANCE to THIS person — most central and most likely tasks FIRST, peripheral/occasional/generic ones LAST. A later step trims from the BOTTOM, so ordering is critical: never bury an obviously-core task below filler.
+
+Rules:
+- Each must be a realistic, recurring task for THIS role, grounded in their job title, responsibilities, and week. NEVER import tasks from a different job, and never invent something implausible.
+- Do NOT overlap or duplicate any COVERED task (compare meaning, not wording), and no near-duplicates among your own (e.g. monitoring vs. investigating vs. tracking metrics are ONE task).
+- O*NET task-statement style: verb-led, 8–18 words, plain language, specific, sentence case, terminal period. Use the role's real vocabulary.
+- Output up to ${maxGap} tasks, ordered MOST IMPORTANT FIRST.
+
+Return ONLY JSON: {"tasks": ["...", ...]}  — ordered by importance, most important first.`,
+    },
+    {
+      role: 'user',
+      content: `Role: ${jobTitle}${responsibilities ? `\nResponsibilities: ${responsibilities}` : ''}${typicalWeek ? `\nTypical week: ${typicalWeek}` : ''}\n\nCOVERED tasks (do NOT repeat or overlap these):\n${covered || '(none)'}\n\nList the exhaustive, importance-ranked set of role tasks they did not mention.`,
+    },
+  ];
 }
 
 // ── Occupation matcher (retrieval grounding) ──────────────────────────────────

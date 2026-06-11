@@ -5,7 +5,7 @@ import { createReadStream } from 'fs';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
-import { SUBTASK_WORKER_SYSTEM_PROMPT, INTERVIEW_TASK_EXTRACTOR_PROMPT, mentionedTasksBlock, buildAnchoredTaskSystemPrompt } from './prompts/task-generator.js';
+import { SUBTASK_WORKER_SYSTEM_PROMPT, INTERVIEW_TASK_EXTRACTOR_PROMPT, mentionedTasksBlock, buildAnchoredTaskSystemPrompt, buildGapFillMessages } from './prompts/task-generator.js';
 import { evaluateAnswerMessages, rewordQuestionMessages } from './prompts/interview.js';
 import { retrieveExemplarBlock } from './lib/retrieval.js';
 import { streamGapTasks } from './gapTasks.js';
@@ -320,57 +320,103 @@ app.post('/api/generate-tasks-from-interview', async (req, res) => {
   };
 
   const { jobTitle, typicalWeek, aiUsage, responsibilities, interviewTasks = [], count } = req.body;
-  // Target list size — passed from the client so it tracks the picker's cap.
+  // Burnout cap (tracks the picker). Both groups are generated freely; if the
+  // combined list exceeds the cap, we down-sample BOTH preserving their proportion.
   const targetCount = Number.isFinite(+count) && +count > 0 ? Math.round(+count) : 22;
 
   const interviewBlock = mentionedTasksBlock(interviewTasks);
-  const systemPrompt = buildAnchoredTaskSystemPrompt(targetCount);
-
-  const streamingSystem = `${systemPrompt}
+  const streamingSystem = `${buildAnchoredTaskSystemPrompt(targetCount)}
 
 OUTPUT FORMAT: emit one task per line as JSONL. Each line must be a complete JSON object: {"name": "..."}
 No surrounding array. No markdown. No commentary. Just one {"name": "..."} per line.`;
 
+  // Random k items from arr (partial Fisher–Yates) — uniform within a group.
+  const sample = (arr, k) => {
+    if (k >= arr.length) return arr.slice();
+    if (k <= 0) return [];
+    const a = arr.slice();
+    for (let i = 0; i < k; i++) {
+      const j = i + Math.floor(Math.random() * (a.length - i));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a.slice(0, k);
+  };
+
+  // Sample k items from an importance-RANKED list (index 0 = most important),
+  // weighted by rank so the top is much likelier to survive but lower items can
+  // still appear (variety across participants). Returns them back in rank order.
+  const weightedSampleByRank = (ranked, k) => {
+    if (k <= 0) return [];
+    if (k >= ranked.length) return ranked.slice();
+    const pool = ranked.map((it, i) => ({ it, i, w: ranked.length - i }));
+    const chosen = [];
+    for (let n = 0; n < k && pool.length; n++) {
+      let r = Math.random() * pool.reduce((s, p) => s + p.w, 0);
+      let idx = 0;
+      while (idx < pool.length - 1 && (r -= pool[idx].w) > 0) idx++;
+      chosen.push(pool[idx]);
+      pool.splice(idx, 1);
+    }
+    return chosen.sort((a, b) => a.i - b.i).map((c) => c.it);
+  };
+
   try {
     const { block: exemplarBlock } = await retrieveExemplarBlock({ jobTitle, responsibilities, typicalWeek });
 
+    // ── PASS 1: normalize the participant's mentioned tasks (buffered, not emitted
+    //    yet — proportional down-sampling may need to trim this group too) ──
+    const normalized = [];
+    const pushNorm = (name) => { const n = String(name).trim(); if (n) normalized.push(n); };
     const stream = await client.chat.completions.create({
       model: MODEL,
       temperature: 0.7,
       stream: true,
       messages: [
         { role: 'system', content: streamingSystem },
-        { role: 'user', content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${aiUsage ? `\nAI usage: ${aiUsage}` : ''}${exemplarBlock}${interviewBlock}\nGenerate the integrated MECE task list.` },
+        { role: 'user', content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${aiUsage ? `\nAI usage: ${aiUsage}` : ''}${exemplarBlock}${interviewBlock}\nGenerate the MECE task list from their mentioned tasks.` },
       ],
     });
-
     let buffer = '';
-    let taskCount = 0;
     for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta?.content ?? '';
-      buffer += delta;
+      buffer += chunk.choices[0]?.delta?.content ?? '';
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) continue;
-        try {
-          const obj = JSON.parse(trimmed);
-          if (obj.name && typeof obj.name === 'string') {
-            sendEvent('task', { name: obj.name.trim(), id: obj.id });
-            taskCount++;
-          }
-        } catch { /* incomplete line — keep buffering */ }
+        try { const obj = JSON.parse(trimmed); if (obj.name) pushNorm(obj.name); } catch { /* keep buffering */ }
       }
     }
-    // Flush any remaining buffer
-    if (buffer.trim()) {
-      try {
-        const obj = JSON.parse(buffer.trim());
-        if (obj.name) { sendEvent('task', { name: obj.name.trim(), id: obj.id }); taskCount++; }
-      } catch { /* ignore */ }
-    }
-    console.log(`[generate-tasks-from-interview] role=${jobTitle} interviewTasks=${interviewTasks.length} emitted=${taskCount}`);
+    if (buffer.trim()) { try { const obj = JSON.parse(buffer.trim()); if (obj.name) pushNorm(obj.name); } catch { /* ignore */ } }
+
+    // ── PASS 2: gap-fill — exhaustive, importance-RANKED pool (most important
+    //    first). GAP_POOL_CAP just bounds cost; it's well above any real role. ──
+    const GAP_POOL_CAP = 40;
+    let gapPool = [];
+    try {
+      const r = await client.chat.completions.create({
+        model: MODEL,
+        temperature: 0.7,
+        response_format: { type: 'json_object' },
+        messages: buildGapFillMessages({ jobTitle, responsibilities, typicalWeek, coveredTasks: normalized, maxGap: GAP_POOL_CAP }),
+      });
+      const parsed = JSON.parse(r.choices[0].message.content);
+      gapPool = (Array.isArray(parsed.tasks) ? parsed.tasks : [])
+        .filter((t) => typeof t === 'string' && t.trim())
+        .map((t) => t.trim());
+    } catch (e) { console.warn('[generate-tasks-from-interview] gap-fill failed:', e.message); }
+
+    // ── COMPOSE: keep ALL their own (normalized) tasks — never sample those away —
+    //    then fill the remaining burnout budget with an importance-weighted sample
+    //    of the ranked gap pool. (Only if they alone overflow do we trim them.) ──
+    const N = normalized.length, G = gapPool.length;
+    const outNorm = N > targetCount ? sample(normalized, targetCount) : normalized;
+    const gapBudget = Math.max(0, targetCount - outNorm.length);
+    const outGap = weightedSampleByRank(gapPool, gapBudget);
+    for (const t of outNorm) sendEvent('task', { name: t, source: 'interview' });
+    for (const t of outGap) sendEvent('task', { name: t, source: 'gap' });
+
+    console.log(`[generate-tasks-from-interview] role=${jobTitle} mentioned=${interviewTasks.length} normalized=${N}->${outNorm.length} gapPool=${G}->kept=${outGap.length}`);
     sendEvent('done', {});
     res.end();
   } catch (err) {

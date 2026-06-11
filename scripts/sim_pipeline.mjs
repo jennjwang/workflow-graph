@@ -8,12 +8,10 @@
 // then hits the real /api/extract-interview-tasks and
 // /api/generate-tasks-from-interview endpoints — the live pipeline.
 
-import OpenAI from "openai";
 import { PERSONAS, runInterview } from "./sim_interview.mjs";
 
 const API = process.env.SIM_API || "http://localhost:3001";
-const COUNT = Number(process.env.SIM_COUNT || 10); // tracks the picker's MAX_TASKS
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const COUNT = Number(process.env.SIM_COUNT || 20); // tracks the picker's MAX_TASKS
 const only = process.argv[2];
 
 async function extract(backgroundTranscript, userProfile) {
@@ -34,7 +32,7 @@ async function generate(userProfile, interviewTasks) {
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = "";
-  const tasks = [];
+  const tasks = []; // { name, source: "interview" | "gap" } — tagged by the server
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -46,27 +44,12 @@ async function generate(userProfile, interviewTasks) {
       if (d) {
         try {
           const o = JSON.parse(d.slice(6));
-          if (o.name) tasks.push(o.name);
+          if (o.name) tasks.push({ name: o.name, source: o.source ?? "interview" });
         } catch {}
       }
     }
   }
   return tasks;
-}
-
-async function classify(mentioned, generated) {
-  const r = await client.chat.completions.create({
-    model: "gpt-4o",
-    temperature: 0,
-    response_format: { type: "json_object" },
-    messages: [
-      {
-        role: "user",
-        content: `MENTIONED tasks (extracted from the interview):\n${mentioned.map((t) => "- " + t).join("\n")}\n\nGENERATED tasks:\n${generated.map((t, i) => `${i + 1}. ${t}`).join("\n")}\n\nFor each generated task, decide if it primarily COVERS one or more of the mentioned tasks (source "interview") or is a GAP-FILL not present in the mentioned set (source "gapfill"). Return JSON: {"items":[{"task":"...","source":"interview"|"gapfill","covers":["mentioned tasks it absorbs"]}]}`,
-      },
-    ],
-  });
-  return JSON.parse(r.choices[0].message.content).items;
 }
 
 for (const persona of PERSONAS) {
@@ -80,24 +63,19 @@ for (const persona of PERSONAS) {
   };
 
   const extracted = await extract(turns, userProfile);
-  const generated = await generate(userProfile, extracted);
-  const labeled = await classify(extracted, generated);
+  const generated = await generate(userProfile, extracted); // server-tagged source
+  const norm = generated.filter((t) => t.source === "interview");
+  const gaps = generated.filter((t) => t.source === "gap");
 
   console.log(`\n${"═".repeat(76)}\n  ${persona.name}\n${"═".repeat(76)}`);
   console.log(`\n  EXTRACTED FROM INTERVIEW (${extracted.length}):`);
   extracted.forEach((t) => console.log(`    · ${t}`));
-  console.log(`\n  GENERATED TASKS (${generated.length}):`);
+  const pct = generated.length ? Math.round((gaps.length / generated.length) * 100) : 0;
+  console.log(`\n  GENERATED (${generated.length}): ${norm.length} normalized + ${gaps.length} gap-fill (${pct}% gap)`);
   console.log(`\n  — normalized from interview —`);
-  labeled
-    .filter((i) => i.source === "interview")
-    .forEach((i) =>
-      console.log(
-        `    ✦ ${i.task}${i.covers?.length ? `   ⟵ ${i.covers.join("; ")}` : ""}`,
-      ),
-    );
-  const gaps = labeled.filter((i) => i.source === "gapfill");
+  norm.forEach((t) => console.log(`    ✦ ${t.name}`));
   console.log(`\n  — gap-fill (not mentioned) —`);
   if (gaps.length === 0) console.log("    (none)");
-  gaps.forEach((i) => console.log(`    + ${i.task}`));
+  gaps.forEach((t) => console.log(`    + ${t.name}`));
 }
 console.log();
