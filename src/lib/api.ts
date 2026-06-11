@@ -302,11 +302,12 @@ export async function evaluateAnswer(
   followupCount: number,
   evaluationStyle: 'lenient' | 'strict' = 'lenient',
   conversation: string = '',
+  minFollowups: number = 0,
 ): Promise<{ allCovered: boolean; followUp: string | null }> {
   const res = await fetch('/api/evaluate-answer', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question, answer, criteria, maxFollowups, followupCount, evaluationStyle, conversation }),
+    body: JSON.stringify({ question, answer, criteria, maxFollowups, followupCount, evaluationStyle, conversation, minFollowups }),
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();

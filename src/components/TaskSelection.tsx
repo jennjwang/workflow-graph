@@ -108,7 +108,6 @@ export function TaskSelection() {
       condition: s.condition,
     })),
   );
-  const totalParts = condition === "short" ? 2 : 3;
 
   // Dev shortcut: ?dev=task-selection&review=1 jumps straight to the
   // "What else fills your week?" review screen with seeded confirmed tasks.
@@ -347,9 +346,13 @@ export function TaskSelection() {
       if (next >= NUDGE_AFTER_UNEDITED) {
         const hasEdited = tasks.some((t) => (t.edits?.length ?? 0) > 0);
         if (!hasEdited) {
-          if (editPopupTimerRef.current) clearTimeout(editPopupTimerRef.current);
+          if (editPopupTimerRef.current)
+            clearTimeout(editPopupTimerRef.current);
           setShowEditPopup(true);
-          editPopupTimerRef.current = setTimeout(() => setShowEditPopup(false), 4000);
+          editPopupTimerRef.current = setTimeout(
+            () => setShowEditPopup(false),
+            4000,
+          );
         } else {
           setShowEditPopup(false);
         }
@@ -523,12 +526,7 @@ export function TaskSelection() {
   }
 
   if (showIntro) {
-    return (
-      <IntroScreen
-        onStart={() => setShowIntro(false)}
-        totalParts={totalParts}
-      />
-    );
+    return <IntroScreen onStart={() => setShowIntro(false)} />;
   }
 
   if (showHoursSummary) {
@@ -543,7 +541,6 @@ export function TaskSelection() {
       );
     return (
       <HoursSummaryScreen
-        totalParts={totalParts}
         confirmedPickerTasks={confirmedPickerTasks}
         extraTasks={extraTasks}
         onSetTaskHours={setTaskHours}
@@ -603,7 +600,7 @@ export function TaskSelection() {
       >
         <div className="flex items-center justify-between mb-6">
           <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400">
-            Part 2 of {totalParts} — Task Validation
+            Task Validation
           </p>
           {BONUS_ENABLED &&
             !isExhausted &&
@@ -670,11 +667,17 @@ export function TaskSelection() {
             onExtraInputChange={setExtraInput}
             onAddExtra={addExtraTask}
             onRemoveExtra={removeExtraTask}
-            onRemoveConfirmed={(idx) => setTasks(prev => {
-              const confirmed = prev.filter(x => (x.status === "confirmed" || x.status === "edited") && !x.isAttentionCheck);
-              const target = confirmed[idx];
-              return prev.filter(t => t !== target);
-            })}
+            onRemoveConfirmed={(idx) =>
+              setTasks((prev) => {
+                const confirmed = prev.filter(
+                  (x) =>
+                    (x.status === "confirmed" || x.status === "edited") &&
+                    !x.isAttentionCheck,
+                );
+                const target = confirmed[idx];
+                return prev.filter((t) => t !== target);
+              })
+            }
             addEarnedUsd={addEarnedUsd}
             addCapped={addCapped}
             onSubmit={goToHoursSummary}
@@ -711,13 +714,7 @@ export function TaskSelection() {
 
 // ── Intro screen ───────────────────────────────────────────────────────────────
 
-function IntroScreen({
-  onStart,
-  totalParts,
-}: {
-  onStart: () => void;
-  totalParts: number;
-}) {
+function IntroScreen({ onStart }: { onStart: () => void }) {
   return (
     <div className="flex flex-col h-full bg-transparent relative overflow-hidden">
       {/* Top gradient is rendered by the parent (App.tsx) so it spans the full viewport. */}
@@ -727,7 +724,7 @@ function IntroScreen({
             className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-9 animate-fadeSlideUp"
             style={{ animationDelay: "0ms" }}
           >
-            Part 2 of {totalParts} — Task Validation
+            Task Validation
           </p>
           <h2
             className="text-[1.65rem] font-light text-slate-800 leading-snug tracking-tight animate-fadeSlideUp"
@@ -755,13 +752,12 @@ function IntroScreen({
             style={{ animationDelay: "280ms" }}
           >
             <p className="text-sm font-semibold text-indigo-700 mb-1.5">
-              Editing the task statements
+              Why edit the task statements
             </p>
             <p className="text-sm text-slate-600 leading-relaxed">
-              No one understands your work better than you do. You will have the
-              chance to reword tasks to match how you'd actually describe them.
-              This helps us understand your role in a way that standardized
-              descriptions might miss.
+              No one understands your work better than you do. Rewording tasks
+              to match how you'd actually describe them helps us understand your
+              role in a way that standardized descriptions might miss.
             </p>
           </div>
           <div className="mt-6 space-y-4">
@@ -935,14 +931,12 @@ function HoursSliderRow({
 }
 
 function HoursSummaryScreen({
-  totalParts,
   confirmedPickerTasks,
   extraTasks,
   onSetTaskHours,
   onSetExtraHours,
   onConfirm,
 }: {
-  totalParts: number;
   confirmedPickerTasks: { t: TaskItem; idx: number }[];
   extraTasks: { name: string; addedAt: number; hoursPerWeek?: number }[];
   onSetTaskHours: (idx: number, hours: number | undefined) => void;
@@ -990,7 +984,7 @@ function HoursSummaryScreen({
       {/* Header */}
       <div className="relative z-10 px-8 pt-8 pb-5 shrink-0">
         <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-4">
-          Part 2 of {totalParts} — Task Validation
+          Task Validation
         </p>
       </div>
 
@@ -1208,7 +1202,10 @@ function TaskReviewCard({
                 )}
                 <button
                   type="button"
-                  onClick={() => { setPencilClicked(true); startEdit(); }}
+                  onClick={() => {
+                    setPencilClicked(true);
+                    startEdit();
+                  }}
                   className="relative flex items-center justify-center w-8 h-8 rounded-full bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-500 transition-colors"
                   aria-label="Edit task"
                 >
@@ -1459,10 +1456,15 @@ function ReviewAndAddScreen({
           <h3 className="text-[1.35rem] font-light text-slate-800 leading-snug tracking-tight">
             Here are your tasks so far
           </h3>
-          <p className="text-sm text-slate-500 mt-1.5">
-            {totalDisplayedSoFar} task{totalDisplayedSoFar !== 1 ? "s" : ""}{" "}
-            from your interview so far.
-          </p>
+          <div className="flex items-center justify-between mt-1.5">
+            <p className="text-sm text-slate-500">
+              We found {totalDisplayedSoFar} task
+              {totalDisplayedSoFar !== 1 ? "s" : ""} from this interaction.
+            </p>
+            <p className="text-xs text-slate-400">
+              Hover over a task to remove it.
+            </p>
+          </div>
 
           <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
             {confirmedTasks.map((t, i) => (
@@ -1470,7 +1472,9 @@ function ReviewAndAddScreen({
                 key={`${t.name}-${i}`}
                 className="group relative px-4 py-3 rounded-xl bg-white border border-slate-200 hover:border-indigo-200 hover:shadow-sm transition"
               >
-                <p className="text-sm text-slate-800 leading-snug pr-6">{t.name}</p>
+                <p className="text-sm text-slate-800 leading-snug pr-6">
+                  {t.name}
+                </p>
                 {t.status === "edited" && (
                   <span className="mt-1.5 inline-block text-[10px] font-semibold uppercase tracking-wider text-amber-600">
                     edited
@@ -1481,8 +1485,16 @@ function ReviewAndAddScreen({
                   aria-label="Remove task"
                   className="absolute top-2.5 right-2.5 opacity-0 group-hover:opacity-100 transition-opacity w-5 h-5 flex items-center justify-center rounded-full text-slate-300 hover:text-red-400 hover:bg-red-50"
                 >
-                  <svg viewBox="0 0 16 16" className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                    <line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/>
+                  <svg
+                    viewBox="0 0 16 16"
+                    className="w-3 h-3"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                  >
+                    <line x1="4" y1="4" x2="12" y2="12" />
+                    <line x1="12" y1="4" x2="4" y2="12" />
                   </svg>
                 </button>
               </div>

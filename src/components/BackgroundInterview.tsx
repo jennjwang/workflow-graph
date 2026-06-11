@@ -17,6 +17,10 @@ const QUESTIONS: {
   placeholder: string;
   criteria: string[];
   maxFollowups: number;
+  // Minimum follow-ups to ALWAYS ask, even if coverage criteria are already met
+  minFollowups?: number;
+  // A fixed catch-all question always asked once, after the follow-ups
+  closingQuestion?: string;
   evaluationStyle?: "lenient" | "strict";
   // Constraints the dynamic question rephrasing MUST preserve
   framingNotes?: string;
@@ -61,12 +65,15 @@ const QUESTIONS: {
       "Representativeness — ONLY if the participant explicitly signals the recent week was unusual or atypical (e.g. 'last week was crazy', 'that's not a normal week', 'I was on leave/traveling'), follow up ONCE asking what a normal week usually looks like. If they give no such signal, treat the recent week as representative and do NOT ask about it — accept and move on.",
     ],
     maxFollowups: 3,
+    minFollowups: 1,
+    closingQuestion:
+      "Before we wrap up — are there any other tasks you do at work that you haven't mentioned yet?",
   },
 ];
 
 // Closing thank-you shown after the last question, before task selection
 const OUTRO_TEXT =
-  "Thank you for your time and answers. From this interview, we'll generate a list of tasks for you to review and refine next.";
+  "Great! From this quick interview, we'll generate a list of tasks for you to review and refine next.";
 
 // AI-interviewer intro screens, shown one at a time before the first question
 const INTRO_SCREENS = [
@@ -227,16 +234,13 @@ function MicOrb({
 }
 
 export function BackgroundInterview() {
-  const { setUserProfile, setPhase, addBackgroundTurn, condition } =
-    useWorkflowStore(
-      useShallow((s) => ({
-        setUserProfile: s.setUserProfile,
-        setPhase: s.setPhase,
-        addBackgroundTurn: s.addBackgroundTurn,
-        condition: s.condition,
-      })),
-    );
-  const totalParts = condition === "short" ? 2 : 3;
+  const { setUserProfile, setPhase, addBackgroundTurn } = useWorkflowStore(
+    useShallow((s) => ({
+      setUserProfile: s.setUserProfile,
+      setPhase: s.setPhase,
+      addBackgroundTurn: s.addBackgroundTurn,
+    })),
+  );
 
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState<Record<keyof UserProfile, string>>({
@@ -253,6 +257,9 @@ export function BackgroundInterview() {
   // Full interview conversation (every Q/A across all questions), so the
   // evaluator asks follow-ups as a natural continuation, not a templated probe.
   const convoRef = useRef<{ q: string; a: string }[]>([]);
+  // Closing catch-all question state (asked once, after follow-ups)
+  const [closingAsked, setClosingAsked] = useState(false);
+  const [isClosingActive, setIsClosingActive] = useState(false);
 
   // Live (LLM-generated) phrasing for the current question; falls back to the
   // question's canonical static text on null.
@@ -336,30 +343,38 @@ export function BackgroundInterview() {
   const advanceStep = async (finalAnswer: string) => {
     const newAnswers = { ...answers, [q.field]: finalAnswer };
     setAnswers(newAnswers);
-    setFollowUpQ(null);
-    setFollowUpCount(0);
-    setAccumulatedAnswer("");
     setInput("");
     setShowTextInput(false);
 
+    // Fade the CURRENT text out FIRST; only swap to the next screen once it's
+    // invisible, so stale text (e.g. the old follow-up) never flashes mid-fade.
+    setQuestionVisible(false);
+
+    const resetQuestionState = () => {
+      setFollowUpQ(null);
+      setFollowUpCount(0);
+      setAccumulatedAnswer("");
+      setClosingAsked(false);
+      setIsClosingActive(false);
+    };
+
     if (step < QUESTIONS.length - 1) {
-      setQuestionVisible(false);
-      // Generate the next question's live phrasing during the fade (≥220ms floor).
       const nextIndex = step + 1;
+      // Wait out the fade (matches the 250ms CSS) and load the next question's
+      // phrasing, THEN swap content + fade back in.
       await Promise.all([
         loadDynamic(nextIndex),
-        new Promise((r) => setTimeout(r, 220)),
+        new Promise((r) => setTimeout(r, 260)),
       ]);
+      resetQuestionState();
       setStep(nextIndex);
       setQuestionVisible(true);
     } else {
-      // Save the profile and show the closing thank-you before task selection.
+      await new Promise((r) => setTimeout(r, 260));
+      resetQuestionState();
       setUserProfile(newAnswers as UserProfile);
-      setQuestionVisible(false);
-      setTimeout(() => {
-        setShowOutro(true);
-        setQuestionVisible(true);
-      }, 220);
+      setShowOutro(true);
+      setQuestionVisible(true);
     }
   };
 
@@ -386,6 +401,12 @@ export function BackgroundInterview() {
       ? `${accumulatedAnswer}\n${trimmed}`
       : trimmed;
 
+    // They just answered the closing catch-all question — accept and move on.
+    if (isClosingActive) {
+      await advanceStep(combined);
+      return;
+    }
+
     const newFollowUpCount = isFollowUpActive
       ? followUpCount + 1
       : followUpCount;
@@ -405,15 +426,19 @@ export function BackgroundInterview() {
           newFollowUpCount,
           q.evaluationStyle ?? "lenient",
           conversation,
+          q.minFollowups ?? 0,
         );
         if (!result.allCovered && result.followUp) {
-          // Show follow-up question
+          // Fade the answered question out, then swap in the follow-up (invisible).
+          const followUp = result.followUp;
           setAccumulatedAnswer(combined);
           setFollowUpCount(newFollowUpCount);
-          setFollowUpQ(result.followUp);
-          setQuestionVisible(false);
-          setTimeout(() => setQuestionVisible(true), 180);
           setIsEvaluating(false);
+          setQuestionVisible(false);
+          setTimeout(() => {
+            setFollowUpQ(followUp);
+            setQuestionVisible(true);
+          }, 260);
           return;
         }
       } catch (e) {
@@ -421,6 +446,20 @@ export function BackgroundInterview() {
       } finally {
         setIsEvaluating(false);
       }
+    }
+
+    // Follow-ups done — ask the fixed catch-all question once before advancing.
+    if (q.closingQuestion && !closingAsked) {
+      const closing = q.closingQuestion;
+      setClosingAsked(true);
+      setIsClosingActive(true);
+      setAccumulatedAnswer(combined);
+      setQuestionVisible(false);
+      setTimeout(() => {
+        setFollowUpQ(closing);
+        setQuestionVisible(true);
+      }, 260);
+      return;
     }
 
     // All covered (or max follow-ups reached, or evaluation failed) — advance
@@ -513,7 +552,7 @@ export function BackgroundInterview() {
       {/* Header with step progress */}
       <div className="relative z-10 px-10 pt-8 pb-5 shrink-0">
         <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-4">
-          Part 1 of {totalParts} — Interview
+          Interview
         </p>
         <div className="flex gap-2 items-center">
           {QUESTIONS.map((_, i) => (

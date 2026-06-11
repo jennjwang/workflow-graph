@@ -42,6 +42,9 @@ const QUESTIONS = [
     text: "Think back over this past week — what did you actually work on?",
     evaluationStyle: "lenient",
     maxFollowups: 3,
+    minFollowups: 1,
+    closingQuestion:
+      "Final question — are there any other tasks you do that you haven't mentioned yet?",
     criteria: [
       "FLOOR — named at least one real activity; if none ('the usual'), follow up asking what they worked on.",
       "BREADTH — if only ONE activity named, acknowledge then ask what else; several distinct = covered.",
@@ -160,13 +163,16 @@ async function evaluate(q, answer, followupCount, conversation) {
       followupCount,
       evaluationStyle: q.evaluationStyle,
       conversation,
+      minFollowups: q.minFollowups ?? 0,
     }),
   });
   return res.json();
 }
 
 async function runInterview(persona) {
-  console.log(`\n${"═".repeat(74)}\n  PERSONA: ${persona.name}\n${"═".repeat(74)}`);
+  console.log(
+    `\n${"═".repeat(74)}\n  PERSONA: ${persona.name}\n${"═".repeat(74)}`,
+  );
   const history = [];
   for (const q of QUESTIONS) {
     console.log(`\n  🧑‍💼 ${q.text}`);
@@ -185,6 +191,13 @@ async function runInterview(persona) {
       console.log(`  🙂 ${fa}`);
       history.push(`Interviewer: ${ev.followUp}`, `Participant: ${fa}`);
       accumulated += `\n${fa}`;
+    }
+    // Fixed catch-all question always asked once after the follow-ups.
+    if (q.closingQuestion) {
+      console.log(`     ↳ ${q.closingQuestion}`);
+      const fa = await participant(persona, q.closingQuestion, history);
+      console.log(`  🙂 ${fa}`);
+      history.push(`Interviewer: ${q.closingQuestion}`, `Participant: ${fa}`);
     }
   }
 }

@@ -200,7 +200,7 @@ const TOOLS = [
 ];
 
 app.post('/api/evaluate-answer', async (req, res) => {
-  const { question, answer, criteria, maxFollowups = 1, followupCount = 0, evaluationStyle = 'lenient', conversation = '' } = req.body;
+  const { question, answer, criteria, maxFollowups = 1, followupCount = 0, evaluationStyle = 'lenient', conversation = '', minFollowups = 0 } = req.body;
   try {
     // Never follow up beyond the allowed limit
     if (followupCount >= maxFollowups) {
@@ -208,6 +208,12 @@ app.post('/api/evaluate-answer', async (req, res) => {
     }
 
     const criteriaList = criteria.map((c, i) => `${i + 1}. ${c}`).join('\n');
+
+    // Minimum follow-ups: ask at least this many even when criteria are already
+    // met — the extra one digs a little deeper into a task they mentioned.
+    const minBlock = minFollowups > followupCount
+      ? `\n\nMINIMUM FOLLOW-UPS: you must ask at least ${minFollowups} follow-up(s) for this question and have asked ${followupCount} so far. So EVEN IF every criterion is already satisfied, you still need to ask one more — a natural, curious follow-up that digs a little deeper into the single most interesting or central task they mentioned (what it involves, how they go about it, what it's for). When you do this, set "allCovered" to false and provide the followUp.`
+      : '';
 
     // The full interview conversation so far — lets the interviewer ask the next
     // question as a natural continuation rather than a templated probe.
@@ -246,7 +252,7 @@ Return JSON: { "allCovered": boolean, "followUp": string | null }`,
         },
         {
           role: 'user',
-          content: `${convoBlock}\nThe CURRENT question is: "${question}"\nTheir answer to it (so far): "${answer}"\n\nCoverage criteria for the current question:\n${criteriaList}\n\nAre all criteria satisfied? If not, what is the single most natural follow-up to ask next, continuing this conversation?`,
+          content: `${convoBlock}\nThe CURRENT question is: "${question}"\nTheir answer to it (so far): "${answer}"\n\nCoverage criteria for the current question:\n${criteriaList}${minBlock}\n\nAre all criteria satisfied? If not (or if the minimum follow-ups above haven't been met), what is the single most natural follow-up to ask next, continuing this conversation?`,
         },
       ],
     });
