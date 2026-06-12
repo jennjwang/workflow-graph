@@ -343,7 +343,7 @@ export async function generateTasksFromInterview(
   aiUsage: string | undefined,
   responsibilities: string | undefined,
   interviewTasks: string[],
-  onTask: (name: string) => void,
+  onTask: (name: string, meta?: { source?: 'interview' | 'gap' | 'bank'; bankId?: string; isProbe?: boolean }) => void,
   count?: number,
 ): Promise<void> {
   const res = await fetch('/api/generate-tasks-from-interview', {
@@ -368,7 +368,8 @@ export async function generateTasksFromInterview(
       if (!eventLine || !dataLine) continue;
       const event = eventLine.slice(7);
       const data = JSON.parse(dataLine.slice(6));
-      if (event === 'task' && typeof data?.name === 'string') onTask(data.name);
+      if (event === 'task' && typeof data?.name === 'string')
+        onTask(data.name, { source: data.source, bankId: data.bankId, isProbe: data.isProbe });
       else if (event === 'error') throw new Error(data.error ?? 'stream error');
       else if (event === 'done') return;
     }
@@ -382,6 +383,12 @@ export async function postTaskResponse(args: {
   participant: string;
   task: string;                                    // bank task id (TaskItem.bankId)
   response: 'confirm' | 'deny';
+  isProbe: boolean;                                // representative PROBE (counts toward decision) vs gated
+  shownStatement?: string;                         // exact label shown to this participant (identity audit)
+  // Granular relevance rating when RELEVANCE_RATING_ENABLED is on. `response`
+  // remains the binary (confirm = 'relevant', deny = everything else) so the
+  // active-learning posterior is unaffected; this just preserves the richer label.
+  relevance?: 'relevant' | 'future' | 'other-occupation' | 'not-valid' | 'unsure';
   aiExposure?: 'none' | 'low' | 'medium' | 'high' | null;
   occupation?: string;
 }): Promise<void> {
@@ -389,7 +396,30 @@ export async function postTaskResponse(args: {
     await fetch('/api/task-response', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...args, eligible: true }),
+      body: JSON.stringify(args),
+    });
+  } catch {
+    /* best-effort; never block the participant flow on the write-back */
+  }
+}
+
+// Staging write-back for GENERATED (non-bank) tasks. Online harvest is off, so a confirmed/denied
+// generated task is parked server-side (generated_responses) for periodic OFFLINE clustering into
+// the bank. Best-effort and fire-and-forget — never blocks the participant.
+export async function postGeneratedResponse(args: {
+  participant: string;
+  statement: string;                               // the generated task exactly as shown
+  response: 'confirm' | 'deny';
+  source?: 'interview' | 'gap';
+  relevance?: 'relevant' | 'future' | 'other-occupation' | 'not-valid' | 'unsure';
+  aiExposure?: 'none' | 'low' | 'medium' | 'high' | null;
+  occupation?: string;
+}): Promise<void> {
+  try {
+    await fetch('/api/generated-response', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(args),
     });
   } catch {
     /* best-effort; never block the participant flow on the write-back */

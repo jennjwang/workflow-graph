@@ -6,15 +6,45 @@ import {
   recordScreenOut,
   transcribeAudio,
   postTaskResponse,
+  postGeneratedResponse,
 } from "../lib/api";
 import { useWorkflowStore } from "../store";
 import { BONUS_ENABLED } from "../lib/bonus";
-import { TaskItem } from "../types";
+import { TaskItem, TaskRelevance } from "../types";
 
 // Master switch for the hours feature: the per-task "how many hours" question
 // AND the "Your week at a glance" summary screen. Flip to false to drop both —
 // the flow then goes review/add → finalize with no hours collected.
 const HOURS_ENABLED = false;
+
+// Master switch for the per-task control. When false, each card shows the binary
+// "I do this / I don't do this". When true, it shows a 5-point relevance rating
+// of the task to the occupation. The granular choice is stored on
+// TaskItem.relevance; downstream keep/drop and the active-learning write-back
+// still key off whether the choice maps to "yes" (only 'relevant') vs "no".
+const RELEVANCE_RATING_ENABLED = true;
+
+// Relevance options in display order. `answer` is the binary the choice maps to
+// for the existing keep/drop + confirm/deny write-back logic.
+const RELEVANCE_OPTIONS: {
+  value: TaskRelevance;
+  label: string;
+  answer: "yes" | "no";
+}[] = [
+  { value: "relevant", label: "Yes, currently relevant", answer: "yes" },
+  {
+    value: "future",
+    label: "Not yet, but likely within 5 years",
+    answer: "no",
+  },
+  {
+    value: "other-occupation",
+    label: "No, performed by workers in a different occupation",
+    answer: "no",
+  },
+  { value: "not-valid", label: "No, not valid or practical", answer: "no" },
+  { value: "unsure", label: "Unsure", answer: "no" },
+];
 
 // Hard cap on the picker list (real tasks + spliced attention checks). This is
 // a BURNOUT budget — participants can only rate so many before fatigue — so the
@@ -224,13 +254,23 @@ export function TaskSelection() {
         // Linear indexing into the (already shuffled) FALLBACK_ATTENTION_CHECKS
         // guarantees no repeats within a session.
         let realCount = 0;
-        const onTask = (name: string, id?: string) => {
+        const onTask = (
+          name: string,
+          meta?: { source?: "interview" | "gap" | "bank"; bankId?: string; isProbe?: boolean },
+        ) => {
           realCount += 1;
           setTasks((prev) => {
             if (prev.length >= MAX_TASKS) return prev;
             return [
               ...prev,
-              { name, originalName: name, bankId: id, status: "unreviewed" },
+              {
+                name,
+                originalName: name,
+                bankId: meta?.bankId,
+                source: meta?.source,
+                isProbe: meta?.isProbe,
+                status: "unreviewed",
+              },
             ];
           });
           if (realCount === 1) setLoadState("ready");
@@ -241,7 +281,7 @@ export function TaskSelection() {
           userProfile.aiUsage,
           userProfile.responsibilities,
           interviewTasks,
-          (name) => onTask(name),
+          (name, meta) => onTask(name, meta),
           MAX_TASKS,
         );
         // If the stream returned zero tasks (model fluke), surface an error
@@ -294,26 +334,53 @@ export function TaskSelection() {
     }
   };
 
-  const advance = (answer: "yes" | "no", meta?: { hoursPerWeek: number }) => {
+  const advance = (
+    answer: "yes" | "no",
+    meta?: { hoursPerWeek?: number; relevance?: TaskRelevance },
+  ) => {
     const reviewedTask = tasks[currentIdx];
 
-    // Active-learning write-back: record confirm/deny for bank-sourced tasks (the loop).
-    // Best-effort/fire-and-forget. Skip attention checks and participant-added tasks (no bankId).
-    if (reviewedTask?.bankId && !reviewedTask.isAttentionCheck) {
+    // Active-learning write-back (the loop). Best-effort/fire-and-forget. Two streams:
+    //   BANK task (bankId)  → /api/task-response, is_probe → moves the in/out decision.
+    //   GENERATED task      → /api/generated-response staging pile → offline clustering.
+    // Skip attention checks and tasks the participant typed in themselves.
+    if (reviewedTask && !reviewedTask.isAttentionCheck && !reviewedTask.addedByParticipant) {
       const sid = useWorkflowStore.getState().sessionId;
-      postTaskResponse({
-        participant: prolific.pid || sid,
-        task: reviewedTask.bankId,
-        response: answer === "yes" ? "confirm" : "deny",
-      });
+      const participant = prolific.pid || sid;
+      const response = answer === "yes" ? "confirm" : "deny";
+      if (reviewedTask.bankId) {
+        postTaskResponse({
+          participant,
+          task: reviewedTask.bankId,
+          response,
+          isProbe: reviewedTask.isProbe ?? true,
+          shownStatement: reviewedTask.originalName,
+          relevance: meta?.relevance,
+        });
+      } else {
+        const genSource =
+          reviewedTask.source === "gap" ? "gap"
+          : reviewedTask.source === "interview" ? "interview"
+          : undefined;
+        postGeneratedResponse({
+          participant,
+          statement: reviewedTask.originalName,
+          response,
+          source: genSource,
+          relevance: meta?.relevance,
+        });
+      }
     }
 
     setTasks((prev) =>
       prev.map((t, i) => {
         if (i !== currentIdx) return t;
-        if (answer === "no") return { ...t, status: "removed" };
+        const withRel = meta?.relevance
+          ? { ...t, relevance: meta.relevance }
+          : t;
+        if (answer === "no") return { ...withRel, status: "removed" };
         return {
-          ...t,
+          ...withRel,
           status: t.status === "edited" ? "edited" : "confirmed",
           hoursPerWeek: meta?.hoursPerWeek,
         };
@@ -598,7 +665,7 @@ export function TaskSelection() {
 
       {/* Header */}
       <div
-        className={`relative z-10 px-8 pt-8 pb-5 shrink-0 w-full mx-auto ${
+        className={`relative z-10 px-5 sm:px-8 pt-7 sm:pt-8 pb-5 shrink-0 w-full mx-auto ${
           isExhausted ? "max-w-[1000px]" : "max-w-[780px]"
         }`}
       >
@@ -631,7 +698,7 @@ export function TaskSelection() {
       {/* Task area */}
       <div
         className={`relative z-10 flex-1 flex flex-col min-h-0 overflow-y-auto w-full mx-auto
-        ${isExhausted ? "justify-start pt-6 pb-12 px-8 max-w-[860px]" : "px-8 max-w-[780px]"}`}
+        ${isExhausted ? "justify-start pt-6 pb-12 px-5 sm:px-8 max-w-[860px]" : "px-5 sm:px-8 max-w-[780px]"}`}
       >
         {loading ? (
           <div className="flex-1 flex items-center justify-center">
@@ -702,7 +769,7 @@ export function TaskSelection() {
 
       {/* Footer — early-exit hint, only shown mid-flow (the exhausted screen has its own primary button) */}
       {canEarlyExit && !isExhausted && (
-        <div className="relative z-10 px-8 pb-8 pt-4 border-t border-slate-100 shrink-0 w-full max-w-[780px] mx-auto">
+        <div className="relative z-10 px-5 sm:px-8 pb-8 pt-4 border-t border-slate-100 shrink-0 w-full max-w-[780px] mx-auto">
           <button
             onClick={() => goToHoursSummary()}
             className="w-full text-sm text-slate-400 hover:text-slate-600 transition py-1"
@@ -722,7 +789,7 @@ function IntroScreen({ onStart }: { onStart: () => void }) {
   return (
     <div className="flex flex-col h-full bg-transparent relative overflow-hidden">
       {/* Top gradient is rendered by the parent (App.tsx) so it spans the full viewport. */}
-      <div className="relative z-10 flex flex-1 items-center justify-center px-8">
+      <div className="relative z-10 flex flex-1 items-center justify-center px-5 sm:px-8 py-10 overflow-y-auto">
         <div className="max-w-lg w-full">
           <p
             className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-9 animate-fadeSlideUp"
@@ -731,7 +798,7 @@ function IntroScreen({ onStart }: { onStart: () => void }) {
             Task Validation
           </p>
           <h2
-            className="text-[1.65rem] font-light text-slate-800 leading-snug tracking-tight animate-fadeSlideUp"
+            className="text-[1.4rem] sm:text-[1.65rem] font-light text-slate-800 leading-snug tracking-tight animate-fadeSlideUp"
             style={{ animationDelay: "80ms" }}
           >
             We built a task list from your interview.
@@ -791,7 +858,7 @@ function IntroScreen({ onStart }: { onStart: () => void }) {
           </div>
           <button
             onClick={onStart}
-            className="mt-14 inline-flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-full transition-all active:scale-[0.98] shadow-sm shadow-indigo-200 animate-fadeSlideUp"
+            className="mt-10 sm:mt-14 inline-flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-full transition-all active:scale-[0.98] shadow-sm shadow-indigo-200 animate-fadeSlideUp"
             style={{ animationDelay: "420ms" }}
           >
             Start
@@ -986,13 +1053,13 @@ function HoursSummaryScreen({
   return (
     <div className="flex flex-col h-full bg-transparent relative overflow-hidden">
       {/* Header */}
-      <div className="relative z-10 px-8 pt-8 pb-5 shrink-0">
+      <div className="relative z-10 px-5 sm:px-8 pt-7 sm:pt-8 pb-5 shrink-0">
         <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-4">
           Task Validation
         </p>
       </div>
 
-      <div className="relative z-10 flex-1 flex flex-col min-h-0 overflow-y-auto justify-start pb-12 px-4 sm:px-8">
+      <div className="relative z-10 flex-1 flex flex-col min-h-0 overflow-y-auto justify-start pb-12 px-5 sm:px-8">
         <div className="w-full max-w-4xl mx-auto animate-fadeSlideIn">
           <h2 className="text-[1.5rem] font-light text-slate-800 leading-snug tracking-tight">
             Your week at a glance
@@ -1101,7 +1168,10 @@ interface TaskReviewCardProps {
   taskIdx: number;
   isLast: boolean;
   onSaveEdit: (idx: number, name: string) => void;
-  onAdvance: (answer: "yes" | "no", meta?: { hoursPerWeek: number }) => void;
+  onAdvance: (
+    answer: "yes" | "no",
+    meta?: { hoursPerWeek?: number; relevance?: TaskRelevance },
+  ) => void;
 }
 
 function TaskReviewCard({
@@ -1112,6 +1182,9 @@ function TaskReviewCard({
   onAdvance,
 }: TaskReviewCardProps) {
   const [primaryAnswer, setPrimaryAnswer] = useState<"yes" | "no" | null>(null);
+  const [relevanceChoice, setRelevanceChoice] = useState<TaskRelevance | null>(
+    null,
+  );
   const [hoursInput, setHoursInput] = useState("");
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(task.name);
@@ -1135,13 +1208,14 @@ function TaskReviewCard({
 
   const handleContinue = () => {
     if (!canContinue) return;
+    const relMeta = relevanceChoice ? { relevance: relevanceChoice } : {};
     if (primaryAnswer === "no") {
-      onAdvance("no");
+      onAdvance("no", relMeta);
     } else {
-      onAdvance(
-        "yes",
-        HOURS_ENABLED ? { hoursPerWeek: hoursValue } : undefined,
-      );
+      onAdvance("yes", {
+        ...(HOURS_ENABLED ? { hoursPerWeek: hoursValue } : {}),
+        ...relMeta,
+      });
     }
   };
 
@@ -1168,13 +1242,13 @@ function TaskReviewCard({
     <div className="h-full relative">
       {/* Centered: task name + buttons. pb reserves space for the bottom section
           so the centering point never shifts when nudge/continue appear. */}
-      <div className="h-full flex flex-col justify-center gap-7 pb-48">
+      <div className="h-full flex flex-col justify-center gap-6 sm:gap-7 pb-24 sm:pb-48">
         {/* Task name */}
         <div className="pb-1">
           {editing ? (
             <textarea
               ref={inputRef}
-              className="w-full text-2xl font-light text-slate-800 bg-transparent border-b-2 border-indigo-300 focus:outline-none pb-1 resize-none overflow-hidden leading-snug"
+              className="w-full text-xl sm:text-2xl font-light text-slate-800 bg-transparent border-b-2 border-indigo-300 focus:outline-none pb-1 resize-none overflow-hidden leading-snug"
               value={editValue}
               rows={1}
               onChange={(e) => {
@@ -1196,7 +1270,7 @@ function TaskReviewCard({
             />
           ) : (
             <div className="flex items-start gap-3">
-              <p className="text-2xl font-light text-slate-800 leading-snug flex-1">
+              <p className="text-xl sm:text-2xl font-light text-slate-800 leading-snug flex-1">
                 {task.name}
               </p>
               {/* Pencil button — only edit trigger */}
@@ -1254,53 +1328,84 @@ function TaskReviewCard({
           </div>
         )}
 
-        {/* Buttons */}
-        <div className="flex gap-3">
-          {(
-            [
-              {
-                value: "yes",
-                label: "I do this",
-                active:
-                  "bg-indigo-600 border-indigo-600 text-white shadow-sm shadow-indigo-200",
-                inactive: "hover:border-indigo-200 hover:text-indigo-600",
-              },
-              {
-                value: "no",
-                label: "I don't do this",
-                active: "bg-slate-100 border-slate-300 text-slate-700",
-                inactive: "hover:border-slate-300",
-              },
-            ] as {
-              value: "yes" | "no";
-              label: string;
-              active: string;
-              inactive: string;
-            }[]
-          ).map(({ value, label, active, inactive }) => (
-            <button
-              key={value}
-              disabled={!pencilClicked}
-              onClick={() => {
-                setPrimaryAnswer(value);
-                if (value === "no") setHoursInput("");
-                if (!HOURS_ENABLED) {
-                  setTimeout(
-                    () => onAdvance(value === "no" ? "no" : "yes"),
-                    220,
-                  );
-                }
-              }}
-              className={`flex-1 py-3 rounded-2xl border text-sm font-medium transition-all active:scale-[0.98] disabled:opacity-30 disabled:cursor-not-allowed ${
-                primaryAnswer === value
-                  ? active
-                  : `bg-white border-slate-200 text-slate-600 ${inactive}`
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        {/* Answer control — relevance rating or the binary, behind the flag */}
+        {RELEVANCE_RATING_ENABLED ? (
+          <div className="space-y-3">
+            <p className="text-sm text-slate-500 leading-relaxed">
+              How relevant is this task to your occupation?
+            </p>
+            <div className="flex flex-col gap-2">
+              {RELEVANCE_OPTIONS.map(({ value, label, answer }) => (
+                <button
+                  key={value}
+                  disabled={!pencilClicked}
+                  onClick={() => {
+                    setRelevanceChoice(value);
+                    setPrimaryAnswer(answer);
+                    if (answer === "no") setHoursInput("");
+                    if (!HOURS_ENABLED) {
+                      setTimeout(() => onAdvance(answer, { relevance: value }), 220);
+                    }
+                  }}
+                  className={`w-full text-left px-4 py-3 rounded-2xl border text-sm font-medium transition-all active:scale-[0.99] disabled:opacity-30 disabled:cursor-not-allowed ${
+                    relevanceChoice === value
+                      ? "bg-indigo-600 border-indigo-600 text-white shadow-sm shadow-indigo-200"
+                      : "bg-white border-slate-200 text-slate-600 hover:border-indigo-200 hover:text-indigo-600"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="flex gap-3">
+            {(
+              [
+                {
+                  value: "yes",
+                  label: "I do this",
+                  active:
+                    "bg-indigo-600 border-indigo-600 text-white shadow-sm shadow-indigo-200",
+                  inactive: "hover:border-indigo-200 hover:text-indigo-600",
+                },
+                {
+                  value: "no",
+                  label: "I don't do this",
+                  active: "bg-slate-100 border-slate-300 text-slate-700",
+                  inactive: "hover:border-slate-300",
+                },
+              ] as {
+                value: "yes" | "no";
+                label: string;
+                active: string;
+                inactive: string;
+              }[]
+            ).map(({ value, label, active, inactive }) => (
+              <button
+                key={value}
+                disabled={!pencilClicked}
+                onClick={() => {
+                  setPrimaryAnswer(value);
+                  if (value === "no") setHoursInput("");
+                  if (!HOURS_ENABLED) {
+                    setTimeout(
+                      () => onAdvance(value === "no" ? "no" : "yes"),
+                      220,
+                    );
+                  }
+                }}
+                className={`flex-1 py-3 rounded-2xl border text-sm font-medium transition-all active:scale-[0.98] disabled:opacity-30 disabled:cursor-not-allowed ${
+                  primaryAnswer === value
+                    ? active
+                    : `bg-white border-slate-200 text-slate-600 ${inactive}`
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
       {/* end centered section */}
 
@@ -1460,13 +1565,13 @@ function ReviewAndAddScreen({
           <h3 className="text-[1.35rem] font-light text-slate-800 leading-snug tracking-tight">
             Here are your tasks so far
           </h3>
-          <div className="flex items-center justify-between mt-1.5">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-0.5 mt-1.5">
             <p className="text-sm text-slate-500">
               We found {totalDisplayedSoFar} task
               {totalDisplayedSoFar !== 1 ? "s" : ""} from this interaction.
             </p>
             <p className="text-xs text-slate-400">
-              Hover over a task to remove it.
+              Use the × to remove a task.
             </p>
           </div>
 
@@ -1487,7 +1592,7 @@ function ReviewAndAddScreen({
                 <button
                   onClick={() => onRemoveConfirmed(i)}
                   aria-label="Remove task"
-                  className="absolute top-2.5 right-2.5 opacity-0 group-hover:opacity-100 transition-opacity w-5 h-5 flex items-center justify-center rounded-full text-slate-300 hover:text-red-400 hover:bg-red-50"
+                  className="absolute top-2 right-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity w-7 h-7 sm:w-5 sm:h-5 flex items-center justify-center rounded-full text-slate-400 sm:text-slate-300 hover:text-red-400 hover:bg-red-50"
                 >
                   <svg
                     viewBox="0 0 16 16"

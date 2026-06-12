@@ -308,19 +308,41 @@ export function BackgroundInterview() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
 
-  // Keep the auto-grow textarea sized to its content even when `input` changes
-  // from outside the keystroke handler (transcription appended, advance clears).
-  useEffect(() => {
+  // Size the auto-grow textarea to its content — or, when empty, to its
+  // (possibly wrapping) placeholder, so a multi-line placeholder is never
+  // clipped on narrow/mobile widths where the hint text wraps. Reads the
+  // placeholder straight off the DOM, so it stays one line on wider screens
+  // where it fits without forcing a fixed taller box.
+  const autosizeInput = () => {
     const el = inputRef.current;
     if (!el) return;
     el.style.height = "auto";
-    el.style.height = el.scrollHeight + "px";
-  }, [input]);
+    // scrollHeight is content+padding only; with box-border the set height must
+    // add the border so the content area isn't clipped by the border width.
+    const borderY = el.offsetHeight - el.clientHeight;
+    const fit = (content: number) => `${content + borderY}px`;
+    if (el.value) {
+      el.style.height = fit(el.scrollHeight);
+    } else {
+      const ph = el.placeholder;
+      el.value = ph;
+      el.style.height = fit(el.scrollHeight);
+      el.value = "";
+    }
+  };
 
   const q = QUESTIONS[step];
   // What's visually shown — live phrasing when available, else canonical text
   const displayQuestion = followUpQ ?? dynamicQuestion ?? q.text;
   const isFollowUpActive = followUpQ !== null;
+  const placeholderText = isFollowUpActive ? "Your answer…" : q.placeholder;
+
+  // Re-size the input whenever its content, its placeholder (question/follow-up
+  // change), or its visibility (voice↔text toggle, mount) changes.
+  useEffect(() => {
+    autosizeInput();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [input, placeholderText, showTextInput]);
 
   // Fetch the live reworded phrasing for a question index, racing a timeout so
   // a slow call never stalls the flow — fall back to the canonical static text.
@@ -550,7 +572,7 @@ export function BackgroundInterview() {
       <div className="absolute top-0 left-0 right-0 h-56 bg-gradient-to-b from-indigo-50/30 to-transparent pointer-events-none" />
 
       {/* Header with step progress */}
-      <div className="relative z-10 px-10 pt-8 pb-5 shrink-0">
+      <div className="relative z-10 px-5 sm:px-10 pt-7 sm:pt-8 pb-5 shrink-0">
         <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-4">
           {!showIntro && !showOutro
             ? `Topic ${step + 1} of ${QUESTIONS.length}`
@@ -601,17 +623,17 @@ export function BackgroundInterview() {
 
       {/* Main content */}
       <div className="relative z-10 flex-1 flex flex-col justify-center min-h-0 overflow-y-auto">
-        <div className="px-10 max-w-3xl mx-auto w-full">
+        <div className="px-5 sm:px-10 max-w-3xl mx-auto w-full">
           {/* Headline slot — intro copy or the current question (shared fade) */}
           <div
-            className="mb-12 transition-all duration-250"
+            className="mb-9 sm:mb-12 transition-all duration-250"
             style={{
               opacity: questionVisible ? 1 : 0,
               transform: questionVisible ? "translateY(0)" : "translateY(10px)",
             }}
           >
             {showIntro ? (
-              <p className="text-[1.6rem] font-light text-slate-800 leading-[1.55] tracking-[-0.01em]">
+              <p className="text-[1.3rem] sm:text-[1.6rem] font-light text-slate-800 leading-[1.55] tracking-[-0.01em]">
                 <PopInText
                   key={introStep}
                   text={INTRO_SCREENS[introStep]}
@@ -619,7 +641,7 @@ export function BackgroundInterview() {
                 />
               </p>
             ) : showOutro ? (
-              <p className="text-[1.6rem] font-light text-slate-800 leading-[1.55] tracking-[-0.01em]">
+              <p className="text-[1.3rem] sm:text-[1.6rem] font-light text-slate-800 leading-[1.55] tracking-[-0.01em]">
                 <PopInText
                   key="outro"
                   text={OUTRO_TEXT}
@@ -628,7 +650,7 @@ export function BackgroundInterview() {
               </p>
             ) : (
               <>
-                <p className="text-[1.75rem] font-light text-slate-800 leading-[1.45] tracking-[-0.015em]">
+                <p className="text-[1.4rem] sm:text-[1.75rem] font-light text-slate-800 leading-[1.4] sm:leading-[1.45] tracking-[-0.015em]">
                   {displayQuestion}
                 </p>
               </>
@@ -767,16 +789,12 @@ export function BackgroundInterview() {
                              placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-300
                              focus:border-transparent bg-white transition-colors duration-150 resize-none
                              max-h-60 overflow-y-auto"
-                  placeholder={
-                    isFollowUpActive ? "Your answer…" : q.placeholder
-                  }
+                  placeholder={placeholderText}
                   value={input}
                   onChange={(e) => {
                     setInput(e.target.value);
                     // Auto-grow so the participant can see everything they've typed.
-                    const el = e.target;
-                    el.style.height = "auto";
-                    el.style.height = el.scrollHeight + "px";
+                    autosizeInput();
                   }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {

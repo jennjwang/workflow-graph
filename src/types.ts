@@ -3,6 +3,15 @@ export type NodeType = 'start' | 'task' | 'decision' | 'handoff' | 'input' | 'fa
 export type TaskStatus = 'unreviewed' | 'confirmed' | 'edited' | 'removed';
 export type TaskRecency = 'past' | 'current' | 'new';
 export type TaskAiUse = 'yes' | 'no' | 'sometimes';
+// Granular relevance rating of a proposed task to the occupation. Replaces the
+// binary "I do this / I don't do this" when RELEVANCE_RATING_ENABLED is on. Only
+// 'relevant' maps to the keep ("yes") path; every other value drops the task.
+export type TaskRelevance =
+  | 'relevant'         // Yes, currently relevant
+  | 'future'           // Not yet, but likely within 5 years
+  | 'other-occupation' // No, performed by workers in a different occupation
+  | 'not-valid'        // No, not valid or practical
+  | 'unsure';          // Unsure
 export interface TaskEdit {
   from: string;            // value before this edit
   to: string;              // value after this edit
@@ -14,11 +23,14 @@ export interface TaskItem {
   name: string;
   originalName: string;
   bankId?: string;             // task-bank id (when this task came from the active-learning bank)
+  source?: 'interview' | 'gap' | 'bank';  // provenance: generated (interview/gap) vs bank PROBE
+  isProbe?: boolean;           // bank task shown as a representative PROBE (counts toward the decision)
   status: TaskStatus;
   category?: string;
   recency?: TaskRecency;
   aiUse?: TaskAiUse;
   aiHowSo?: string;
+  relevance?: TaskRelevance;   // granular relevance rating (RELEVANCE_RATING_ENABLED mode); replaces the binary keep/drop
   hoursPerWeek?: number;       // self-reported hours spent on this task in a typical week (confirmed tasks only)
   tools?: string;              // tools/software the participant uses for this task (confirmed tasks only)
   edits?: TaskEdit[];          // full chronological history of edits made to this task
