@@ -3,9 +3,10 @@
 //   tasks      — read-mostly, seeded from the bank JSON artifact (seedTasks).
 //   responses  — append-only participant answers (recordResponse).
 //
-// The Beta prevalence posterior + AI-exposure live in SQL views (schema.postgres.sql),
-// so this module just reads/writes rows; acquire() blends the posterior with the LLM
-// relevance gate. Mirrors scripts/new_tasks/draw_from_bank.py + evidence.py.
+// The Beta prevalence posterior + AI-exposure live in SQL views (schema.postgres.sql), so this
+// module just reads/writes rows; acquire() runs the two-stream funnel (representative PROBE by
+// decidability + relevance-gated CLASSIFY) over the UNDECIDED tasks. The decision logic here is
+// a port of final/active_learning/evidence.py — mirrors draw_from_bank.py + evidence.py; keep in sync.
 //
 // Requires:  npm install pg   ·   env: DATABASE_URL   ·   ESM (matches server.js)
 import pg from 'pg';
@@ -16,13 +17,19 @@ const { Pool } = pg;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const REL_W = { high: 1.0, medium: 0.6, low: 0.3 };   // relevance multiplier (the gate)
-const PRIOR_VAR = 1 / 12;                              // flat-prior variance (max ignorance)
+const REL_W = { high: 1.0, medium: 0.6, low: 0.3 };   // relevance multiplier (the classify gate)
 const EMBED_MODEL = 'text-embedding-3-small';
 const HARVEST_MATCH_SIM = Number(process.env.TASK_BANK_HARVEST_SIM || 0.6);  // cosine to merge a generated task
 const ANNEAL_PARTICIPANTS = Number(process.env.ANNEAL_PARTICIPANTS || 20);
-const RESOLVE_VAR = Number(process.env.TASK_BANK_RESOLVE_VAR || 0.02);   // a task below this is "resolved"
-const DESCRIBE_FLOOR = Number(process.env.TASK_BANK_DESCRIBE_FLOOR ?? 0.2); // always reserve this much describe
+
+// ── inventory decision (PORT of final/active_learning/evidence.py — keep the two in sync) ──
+// θ = O*NET Core bar · c = decision confidence · δ = indifference half-margin → BOUNDARY.
+const THETA = Number(process.env.TASK_BANK_THETA ?? 0.67);
+const C     = Number(process.env.TASK_BANK_C     ?? 0.95);
+const DELTA = Number(process.env.TASK_BANK_DELTA ?? 0.12);
+const CLASSIFY_FRAC = Number(process.env.TASK_BANK_CLASSIFY_FRAC ?? 0.4); // engagement reserve (anneals →0)
+const PROBE_MAX = Number(process.env.TASK_BANK_PROBE_MAX ?? 12);  // fatigue ceiling: max probes / session
+const PROBE_MIN = Number(process.env.TASK_BANK_PROBE_MIN ?? 2);   // floor while ANY task is still undecided
 
 // ── seed (factory artifact → tasks) ──────────────────────────────────────────
 // Re-runnable: clears this occupation's rows, inserts fresh. Never touches responses.
@@ -88,7 +95,7 @@ async function embedText(text) {
 const vlit = v => `[${v.join(',')}]`;                  // pgvector literal
 
 async function harvestResponse({ participant, occupation, statement, response,
-                                 aiExposure = null, eligible = true }) {
+                                 aiExposure = null, isProbe = true }) {
   if (!occupation || !statement) throw new Error('harvest needs occupation + statement');
   const emb = await embedText(statement);
   const client = await pool.connect();
@@ -111,9 +118,9 @@ async function harvestResponse({ participant, occupation, statement, response,
         [taskId, occupation, statement, vlit(emb)]);    // new emergent bank task at cold prior
     }
     await client.query(
-      `INSERT INTO responses (participant, task, occupation, eligible, response, ai_exposure)
+      `INSERT INTO responses (participant, task, occupation, is_probe, response, ai_exposure)
        VALUES ($1,$2,$3,$4,$5,$6)`,
-      [participant, taskId, occupation, eligible, response, aiExposure]);
+      [participant, taskId, occupation, isProbe, response, aiExposure]);
     await client.query('COMMIT');
     return { taskId, matched, sim: sim == null ? null : Number(sim) };
   } catch (e) { await client.query('ROLLBACK'); throw e; }
@@ -121,70 +128,150 @@ async function harvestResponse({ participant, occupation, statement, response,
 }
 
 // ── write-back (the loop) ────────────────────────────────────────────────────
-async function recordResponse({ participant, task, occupation = null,
-                                eligible = true, response, aiExposure = null }) {
+async function recordResponse({ participant, task, occupation = null, isProbe = true,
+                                shownStatement = null, response, aiExposure = null }) {
   if (response !== 'confirm' && response !== 'deny')
     throw new Error(`response must be confirm|deny, got ${response}`);
   await pool.query(
-    `INSERT INTO responses (participant, task, occupation, eligible, response, ai_exposure)
-     VALUES ($1,$2,$3,$4,$5,$6)`,
-    [participant, task, occupation, eligible, response, aiExposure]);
+    `INSERT INTO responses (participant, task, occupation, is_probe, shown_statement, response, ai_exposure)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [participant, task, occupation, isProbe, shownStatement, response, aiExposure]);
 }
 
-// ── acquisition: acquire = REL_W[tier] · [ λ·mean + (1−λ)·max(prevVar, exposureUnc) ] ──
-function exposureUncertainty(expN, expVar) {
-  if (!expN) return PRIOR_VAR;                // unrated → maximal
-  if (expN === 1) return PRIOR_VAR / 2;       // one rating → still uncertain
-  return (Number(expVar) || 0) / expN;        // standard error² of the mean
+// ── staging (online harvest is OFF): park a confirmed/denied GENERATED (non-bank) task for
+//    periodic OFFLINE clustering into the bank. No view/decision reads generated_responses. ──
+async function stageGeneratedResponse({ participant, occupation = null, statement,
+                                        source = null, response, relevance = null, aiExposure = null }) {
+  if (response !== 'confirm' && response !== 'deny')
+    throw new Error(`response must be confirm|deny, got ${response}`);
+  if (!statement) throw new Error('stageGeneratedResponse needs a statement');
+  await pool.query(
+    `INSERT INTO generated_responses (participant, occupation, statement, source, response, relevance, ai_exposure)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [participant, occupation, statement, source, response, relevance, aiExposure]);
 }
 
-// DUAL goal (describe + learn), CORE + TAIL. Reserve `describeFrac` of the budget for
-// DESCRIPTION — the relevance-eligible tasks the worker most likely DOES (highest
-// relevance·prevalence-mean) — and the rest for LEARNING — pure uncertainty sampling
-// (highest relevance·prevalence-variance). The two goals get SEPARATE slots.
-// Why not one blended score: simulate_active_learning.py showed λ·mean + (1−λ)·var collapses
-// learning below random even at λ=0.3 (exploit-on-mean pollutes the whole ranking), whereas
-// core+tail still beats random up to ~40% describe and degrades gracefully.
-// selected: [{ id, relevance }] from the LLM gate.  bankRows: from loadBank().
-// describeFrac: null = ADAPTIVE (default) — learn slots = the still-uncertain eligible tasks,
-// capped, with a describe floor, so it auto-anneals to description as the bank resolves and
-// never re-samples a resolved task. A number = a fixed describe fraction.
-function acquire(bankRows, selected, budget = 25, describeFrac = null, priorTasks = []) {
-  const byId = new Map(bankRows.map(r => [r.id, r]));
+// ── serving: representative PROBE tasks from the bank (decidability-ordered, UNFILTERED) ──
+// classifyFrac:0 → the bank contributes ONLY probes (the decision stream); the relevance-tailored
+// engagement layer comes from generation (interview+gap), so no LLM relevance-gate is needed here.
+//
+// ADAPTIVE per-session budget (no fixed count): the bank is static within a study (harvest is off),
+// so the principled signal is how much of it is still unresolved. Spend more of the fatigue ceiling
+// while lots is undecided (probe hard to resolve the inventory), and cede slots to generation as it
+// firms up — bounded by PROBE_MAX (fatigue) and by how many tasks are actually still UNDECIDED, with
+// a PROBE_MIN trickle while any work remains. So probes/session = a demand-driven hump, not a constant.
+async function pickProbes(occupation) {
+  const rows = await loadBank(occupation);
+  const pool = acquire(rows, [], rows.length, { classifyFrac: 0 });  // ALL undecided, most-decidable first
+  if (!pool.length) return [];                                       // inventory resolved → no probes owed
+  const undecidedFrac = pool.length / Math.max(1, rows.length);
+  const budget = Math.min(pool.length,
+                          Math.max(PROBE_MIN, Math.round(PROBE_MAX * undecidedFrac)));
+  return pool.slice(0, budget);
+}
+
+// ── inventory decision helpers (mirror evidence.py: prob_ge / decide / decidability) ──
+// gammaln (Lanczos) → log C(n,k) so the exact integer-Beta tail never overflows.
+function gammaln(x) {
+  const c = [0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+             771.32342877765313, -176.61502916214059, 12.507343278686905,
+             -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7];
+  if (x < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * x)) - gammaln(1 - x);
+  x -= 1; let a = c[0]; const t = x + 7.5;
+  for (let i = 1; i < 9; i++) a += c[i] / (x + i);
+  return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(a);
+}
+const logChoose = (n, k) => gammaln(n + 1) - gammaln(k + 1) - gammaln(n - k + 1);
+
+// P(prevalence ≥ θ) for a FLAT-prior Beta(1+conf, 1+deny); conf/deny are REPRESENTATIVE counts
+// (the corroboration weight is existence evidence, not prevalence, so it must not bias this).
+function probGe(conf, deny, theta = THETA) {
+  const a = 1 + conf, n = a + (1 + deny) - 1;
+  let cdfLe = 0;
+  for (let j = a; j <= n; j++)
+    cdfLe += Math.exp(logChoose(n, j) + j * Math.log(theta) + (n - j) * Math.log(1 - theta));
+  return 1 - cdfLe;
+}
+
+// Four-state inventory decision (δ-stopping; self-terminating, no n cap).
+function decide(conf, deny, { theta = THETA, c = C, delta = DELTA } = {}) {
+  const p = probGe(conf, deny, theta);
+  if (p >= c)     return 'IN';
+  if (p <= 1 - c) return 'OUT';
+  const belowTop = probGe(conf, deny, theta + delta) <= 1 - c;   // confident p < θ+δ
+  const aboveBot = probGe(conf, deny, theta - delta) >= c;       // confident p > θ−δ
+  return (belowTop && aboveBot) ? 'BOUNDARY' : 'UNDECIDED';
+}
+
+// Acquisition signal: distance to the nearer confidence bound (smaller ⇒ probe me next).
+function decidability(conf, deny, { theta = THETA, c = C } = {}) {
+  const p = probGe(conf, deny, theta);
+  return Math.min(c - p, p - (1 - c));
+}
+
+// ── acquisition: the two-stream funnel (see plan + simulate_active_learning.py) ──
+// Bank-task slots split into TWO streams, both drawn ONLY from UNDECIDED tasks (IN/OUT/BOUNDARY
+// are resolved → p≈0, never re-shown):
+//   PROBE     — representative, UNFILTERED by relevance, prioritized by DECIDABILITY (closest to
+//               crossing a confidence bound). The ONLY stream that moves the in/out decision →
+//               is_probe:true. Demand-driven: capped by the number of UNDECIDED tasks, so probe
+//               volume is a hump (high mid-study, ~0 once the inventory resolves).
+//   CLASSIFY  — relevance-gated draw of UNDECIDED tasks the worker likely does. Engagement
+//               scaffolding + existence/discovery only; does NOT move the decision → is_probe:false.
+//               Reserve = classifyFrac·budget, annealed toward 0 (fades to a census as the core
+//               set shrinks). Sim showed nearest-θ ('straddle') is pathological and decidability
+//               wins under the scarce budget we actually run in.
+// NOTE: decision uses REPRESENTATIVE counts — loadBank's task_posterior must be restricted to
+// is_probe=true answers (schema task #2); repConf/repDeny below assume that.
+//
+// bankRows: loadBank() (ALL bank tasks).  selected: [{ id, relevance }] from the LLM gate.
+// budget: bank-task slots.  opts.classifyFrac: engagement reserve (null → CLASSIFY_FRAC·(1−anneal)).
+// opts.anneal: 0..1 maturity (e.g. lambdaFor()), scales the classify reserve toward 0.
+function acquire(bankRows, selected, budget = 25,
+                 { classifyFrac = null, anneal = 0, priorTasks = [] } = {}) {
   const prior = new Set((priorTasks || []).map(s => String(s).trim().toLowerCase()));
-  const rel = r => REL_W[r.relevance] ?? 0.3;
-  const elig = selected
-    .map(s => { const r = byId.get(s.id); return r && { ...r, relevance: s.relevance }; })
-    .filter(r => r && !prior.has(r.statement.trim().toLowerCase()));
+  const relOf = new Map(selected.map(s => [s.id, s.relevance]));
 
-  const k = budget > 0 ? Math.min(budget, elig.length) : elig.length;
-  let nDesc;
-  if (describeFrac == null) {                                  // ADAPTIVE
-    const uncertain = elig.filter(r => Number(r.variance) > RESOLVE_VAR).length;
-    const learnCap = k - Math.round(DESCRIBE_FLOOR * k);
-    nDesc = k - Math.min(uncertain, learnCap);
-  } else {
-    nDesc = Math.round(describeFrac * k);
+  // decision state from REPRESENTATIVE evidence; keep only the UNDECIDED (acquirable) tasks.
+  const undecided = [];
+  for (const r of bankRows) {
+    if (prior.has(r.statement.trim().toLowerCase())) continue;
+    const conf = Number(r.n_confirmed) || 0;
+    const deny = (Number(r.n_shown) || 0) - conf;
+    if (decide(conf, deny) !== 'UNDECIDED') continue;            // IN/OUT/BOUNDARY → resolved
+    undecided.push({ ...r, _dec: decidability(conf, deny), relevance: relOf.get(r.id) ?? null });
   }
-  const core = [...elig].sort((a, b) => rel(b) * Number(b.mean) - rel(a) * Number(a.mean))
-                        .slice(0, nDesc);
-  const coreIds = new Set(core.map(r => r.id));
-  const tail = elig.filter(r => !coreIds.has(r.id))
-                   .sort((a, b) => rel(b) * Number(b.variance) - rel(a) * Number(a.variance))
-                   .slice(0, k - nDesc);
+  if (!undecided.length) return [];
 
-  // Interleave describe + learn so the uncertain (learn) tasks aren't all at the end —
-  // they'd hit response fatigue and form a skippable block, biasing exactly the answers
-  // we most need. Spreads them through the list instead.
-  core.forEach(r => { r.slot = 'describe'; });
-  tail.forEach(r => { r.slot = 'learn'; });
+  const cap = budget > 0 ? Math.min(budget, undecided.length) : undecided.length;
+  const a = Math.min(1, Math.max(0, anneal));
+  const frac = classifyFrac == null ? CLASSIFY_FRAC * (1 - a) : classifyFrac;
+
+  // CLASSIFY — relevance-gated, best relevance then most-decidable; capped by the reserve.
+  const classifyPool = undecided.filter(r => r.relevance != null)
+    .sort((x, y) => (REL_W[y.relevance] ?? 0) - (REL_W[x.relevance] ?? 0) || x._dec - y._dec);
+  const nClassify = Math.min(Math.round(frac * cap), classifyPool.length);
+  const classify = classifyPool.slice(0, nClassify);
+  const classifyIds = new Set(classify.map(r => r.id));
+
+  // PROBE — unfiltered, most-decidable first; fills the rest (gets classify's unspent slots too).
+  const probe = [...undecided].sort((x, y) => x._dec - y._dec)
+    .filter(r => !classifyIds.has(r.id)).slice(0, cap - classify.length);
+
+  probe.forEach(r => { r.slot = 'probe'; r.isProbe = true; });
+  classify.forEach(r => { r.slot = 'classify'; r.isProbe = false; });
+
+  // Interleave so the unfiltered probes (some obviously-irrelevant) aren't a skippable block.
   const out = [];
-  for (let i = 0; i < Math.max(core.length, tail.length); i++) {
-    if (i < core.length) out.push(core[i]);
-    if (i < tail.length) out.push(tail[i]);
+  for (let i = 0; i < Math.max(probe.length, classify.length); i++) {
+    if (i < probe.length) out.push(probe[i]);
+    if (i < classify.length) out.push(classify[i]);
   }
   return out.map(r => ({ id: r.id, statement: r.statement, level: r.level, ai: r.ai,
-                         relevance: r.relevance, slot: r.slot }));
+                         relevance: r.relevance, slot: r.slot, isProbe: r.isProbe,
+                         decidability: Number(r._dec.toFixed(4)) }));
 }
 
-export { pool, seedTasks, loadBank, nParticipants, lambdaFor, recordResponse, acquire, REL_W };
+export { pool, seedTasks, loadBank, nParticipants, lambdaFor, recordResponse,
+         stageGeneratedResponse, pickProbes, harvestResponse, acquire, decide, decidability,
+         probGe, REL_W };

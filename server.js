@@ -29,6 +29,9 @@ const QUESTION_MODEL = process.env.QUESTION_MODEL || 'gpt-4o';
 // import fails softly and the app behaves exactly as before. ──
 let taskBank = null;
 const TASK_BANK_OCC = process.env.TASK_BANK_OCC || null;
+// Probe count per session is ADAPTIVE (taskBank.pickProbes): it tracks how much of the bank is
+// still undecided, bounded by a fatigue ceiling — not a fixed reservation. The rest of the burnout
+// budget is the relevance-tailored generated layer (stashed offline on confirm).
 if (TASK_BANK_OCC) {
   try {
     taskBank = await import('./taskBank.js');
@@ -406,17 +409,39 @@ No surrounding array. No markdown. No commentary. Just one {"name": "..."} per l
         .map((t) => t.trim());
     } catch (e) { console.warn('[generate-tasks-from-interview] gap-fill failed:', e.message); }
 
-    // ── COMPOSE: keep ALL their own (normalized) tasks — never sample those away —
-    //    then fill the remaining burnout budget with an importance-weighted sample
-    //    of the ranked gap pool. (Only if they alone overflow do we trim them.) ──
-    const N = normalized.length, G = gapPool.length;
-    const outNorm = N > targetCount ? sample(normalized, targetCount) : normalized;
-    const gapBudget = Math.max(0, targetCount - outNorm.length);
-    const outGap = weightedSampleByRank(gapPool, gapBudget);
-    for (const t of outNorm) sendEvent('task', { name: t, source: 'interview' });
-    for (const t of outGap) sendEvent('task', { name: t, source: 'gap' });
+    // ── BANK PROBES (representative DECISION stream): if the bank is on, reserve some slots
+    //    for UNFILTERED bank tasks chosen by decidability. These carry a bankId + isProbe:true
+    //    and are recorded against bank ids; the generated tasks are the engagement layer. As the
+    //    inventory resolves, pickProbes returns fewer (only UNDECIDED) → probe volume is a hump. ──
+    let bankProbes = [];
+    if (taskBank && TASK_BANK_OCC) {
+      try { bankProbes = await taskBank.pickProbes(TASK_BANK_OCC); }   // adaptive count (see pickProbes)
+      catch (e) { console.warn('[generate-tasks-from-interview] bank probes failed:', e.message); }
+    }
 
-    console.log(`[generate-tasks-from-interview] role=${jobTitle} mentioned=${interviewTasks.length} normalized=${N}->${outNorm.length} gapPool=${G}->kept=${outGap.length}`);
+    // ── COMPOSE: keep ALL their own (normalized) tasks — never sample those away — then fill
+    //    the remaining (probe-reserved) burnout budget with an importance-weighted gap sample. ──
+    const genTarget = Math.max(1, targetCount - bankProbes.length);
+    const N = normalized.length, G = gapPool.length;
+    const outNorm = N > genTarget ? sample(normalized, genTarget) : normalized;
+    const gapBudget = Math.max(0, genTarget - outNorm.length);
+    const outGap = weightedSampleByRank(gapPool, gapBudget);
+
+    // Interleave bank probes through the generated list so the unfiltered probes (some
+    // obviously-irrelevant) aren't a skippable block at the end. Generated tasks have no bankId.
+    const generated = [
+      ...outNorm.map((name) => ({ name, source: 'interview' })),
+      ...outGap.map((name) => ({ name, source: 'gap' })),
+    ];
+    for (let i = 0; i < Math.max(generated.length, bankProbes.length); i++) {
+      if (i < bankProbes.length) {
+        const b = bankProbes[i];
+        sendEvent('task', { name: b.statement, source: 'bank', bankId: b.id, isProbe: true });
+      }
+      if (i < generated.length) sendEvent('task', generated[i]);
+    }
+
+    console.log(`[generate-tasks-from-interview] role=${jobTitle} mentioned=${interviewTasks.length} normalized=${N}->${outNorm.length} gapPool=${G}->kept=${outGap.length} bankProbes=${bankProbes.length}`);
     sendEvent('done', {});
     res.end();
   } catch (err) {
@@ -427,12 +452,27 @@ No surrounding array. No markdown. No commentary. Just one {"name": "..."} per l
 });
 
 // Active-learning write-back: record a participant's confirm/deny (+ AI exposure) for a
-// bank task. 503 when the bank isn't enabled. eligible = was the task shown via retrieval.
+// bank task. 503 when the bank isn't enabled. isProbe = was this a representative probe
+// (unfiltered show) → counts toward the in/out decision; false = relevance-gated (UX only).
 app.post('/api/task-response', async (req, res) => {
   if (!taskBank) return res.status(503).json({ error: 'task bank not enabled' });
   try {
-    const { participant, task, occupation, eligible = true, response, aiExposure = null } = req.body ?? {};
-    await taskBank.recordResponse({ participant, task, occupation: occupation || TASK_BANK_OCC, eligible, response, aiExposure });
+    const { participant, task, occupation, isProbe = true, shownStatement = null, response, aiExposure = null } = req.body ?? {};
+    await taskBank.recordResponse({ participant, task, occupation: occupation || TASK_BANK_OCC, isProbe, shownStatement, response, aiExposure });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Staging write-back for GENERATED (non-bank) tasks: online harvest is off, so a confirmed/denied
+// generated task is parked in generated_responses for periodic OFFLINE clustering into the bank.
+// 503 when the bank isn't enabled. Best-effort (the frontend never blocks on it).
+app.post('/api/generated-response', async (req, res) => {
+  if (!taskBank) return res.status(503).json({ error: 'task bank not enabled' });
+  try {
+    const { participant, occupation, statement, source = null, response, relevance = null, aiExposure = null } = req.body ?? {};
+    await taskBank.stageGeneratedResponse({ participant, occupation: occupation || TASK_BANK_OCC, statement, source, response, relevance, aiExposure });
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ error: e.message });

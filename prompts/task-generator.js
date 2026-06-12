@@ -202,6 +202,31 @@ Rules:
 - Faithful to the text: extract tasks at the granularity they appear. Don't collapse or invent
   hierarchy — if the background lists sub-items under an activity, emit them as separate tasks
   rather than rolling them up into one broad parent.
+- ONE THING PER TASK — SPLIT BUNDLED OBJECTS. When a single stated activity bundles multiple
+  distinct objects, outputs, or audiences via "and" or commas, emit ONE task per item rather than
+  one merged task. The bundling is usually just how it was said in one breath, not evidence the
+  items are one activity. KEEP THE STATED VERB on every split-out task — don't invent a new
+  activity for one item (if they said "advise on references", it is "Advise students on references",
+  NOT "Write student reference letters").
+  "advise students on research projects, references, and job applications"
+    → "Advise students on research projects" + "Advise students on references" + "Advise students on job applications"
+  "teach lectures and grade exams" → "Teach course lectures" + "Grade student exams"
+  BUT DON'T OVER-SPLIT THE SAME ACTIVITY. If the items are the SAME verb performed with the same
+  tools/procedure and only the input or sub-type differs, they are ONE task — merge them under a
+  generic object, do NOT emit one task per input. The split rule above is for distinct ACTIVITIES
+  that happened to be said together, not for sub-types of a single activity.
+  "run vision and hearing screenings" → "Run student health screenings" (ONE task, not two)
+  "fix bugs in the frontend and backend" → "Fix software bugs" (ONE task, not two)
+  "review unit, integration, and end-to-end tests" → "Review automated tests" (ONE task, not three)
+  Named technical sub-types of one output — test layers (unit/integration/e2e), environments
+  (staging/prod), document versions — are the SAME activity: merge under a generic object.
+  Litmus test: would the split-out items read like the SAME line repeated with one word swapped?
+  Then keep them merged.
+  CONTRAST — these DO split, because each names a genuinely different output FORMAT or AUDIENCE,
+  not a sub-type of one output: "write blog posts and API documentation" → TWO tasks (a blog post
+  and API docs are different artifacts for different readers); "advise students and parents" → TWO
+  (different audiences). Only split when the items differ in output format, audience, or cadence —
+  NOT when they're interchangeable inputs/sub-types of a single output.
 - Real task: each must describe a concrete activity — not a goal or outcome ("reduce coding time",
   "be more productive"), a role/headcount description ("lead a team of 8"), or a schedule/time item
   ("work from home", "start at 9 AM", "finish by 7 PM").
