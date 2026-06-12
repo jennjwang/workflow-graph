@@ -42,7 +42,7 @@ export function StudyComplete() {
   const redirecting = Boolean(prolific.pid && prolific.completionCode);
 
   return (
-    <div className="min-h-screen bg-white flex flex-col items-center justify-center px-8 py-16">
+    <div className="min-h-screen bg-white flex flex-col items-center justify-center px-5 sm:px-8 py-16">
       <div className="absolute top-0 left-0 right-0 h-56 bg-gradient-to-b from-indigo-50/30 to-transparent pointer-events-none" />
 
       <div className="relative max-w-2xl w-full text-center">

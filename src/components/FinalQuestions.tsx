@@ -60,11 +60,11 @@ export function FinalQuestions() {
   }
 
   return (
-    <div className="min-h-screen bg-white flex flex-col items-center justify-center px-8 py-16">
+    <div className="min-h-screen bg-white flex flex-col items-center justify-center px-5 sm:px-8 py-12 sm:py-16">
       <div className="absolute top-0 left-0 right-0 h-56 bg-gradient-to-b from-indigo-50/30 to-transparent pointer-events-none" />
 
       <div className="relative max-w-2xl w-full">
-        <h1 className="text-[1.85rem] font-light text-slate-800 leading-snug tracking-tight mb-2">
+        <h1 className="text-[1.5rem] sm:text-[1.85rem] font-light text-slate-800 leading-snug tracking-tight mb-2">
           A couple of final questions.
         </h1>
         <p className="text-sm text-slate-500 leading-relaxed mb-10">
@@ -76,7 +76,7 @@ export function FinalQuestions() {
             How was your experience with this study?
           </p>
           <p className="text-xs text-slate-500 mb-4">1 = Poor, 5 = Great</p>
-          <div className="flex gap-2">
+          <div className="flex gap-1.5 sm:gap-2">
             {[1, 2, 3, 4, 5].map((n) => {
               const selected = rating === n;
               return (

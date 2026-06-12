@@ -22,7 +22,7 @@ const HOURS_ENABLED = false;
 // of the task to the occupation. The granular choice is stored on
 // TaskItem.relevance; downstream keep/drop and the active-learning write-back
 // still key off whether the choice maps to "yes" (only 'relevant') vs "no".
-const RELEVANCE_RATING_ENABLED = true;
+const RELEVANCE_RATING_ENABLED = false;
 
 // Relevance options in display order. `answer` is the binary the choice maps to
 // for the existing keep/drop + confirm/deny write-back logic.
@@ -256,7 +256,11 @@ export function TaskSelection() {
         let realCount = 0;
         const onTask = (
           name: string,
-          meta?: { source?: "interview" | "gap" | "bank"; bankId?: string; isProbe?: boolean },
+          meta?: {
+            source?: "interview" | "gap" | "bank";
+            bankId?: string;
+            isProbe?: boolean;
+          },
         ) => {
           realCount += 1;
           setTasks((prev) => {
@@ -344,7 +348,11 @@ export function TaskSelection() {
     //   BANK task (bankId)  → /api/task-response, is_probe → moves the in/out decision.
     //   GENERATED task      → /api/generated-response staging pile → offline clustering.
     // Skip attention checks and tasks the participant typed in themselves.
-    if (reviewedTask && !reviewedTask.isAttentionCheck && !reviewedTask.addedByParticipant) {
+    if (
+      reviewedTask &&
+      !reviewedTask.isAttentionCheck &&
+      !reviewedTask.addedByParticipant
+    ) {
       const sid = useWorkflowStore.getState().sessionId;
       const participant = prolific.pid || sid;
       const response = answer === "yes" ? "confirm" : "deny";
@@ -359,9 +367,11 @@ export function TaskSelection() {
         });
       } else {
         const genSource =
-          reviewedTask.source === "gap" ? "gap"
-          : reviewedTask.source === "interview" ? "interview"
-          : undefined;
+          reviewedTask.source === "gap"
+            ? "gap"
+            : reviewedTask.source === "interview"
+              ? "interview"
+              : undefined;
         postGeneratedResponse({
           participant,
           statement: reviewedTask.originalName,
@@ -671,7 +681,7 @@ export function TaskSelection() {
       >
         <div className="flex items-center justify-between mb-6">
           <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400">
-            Task Validation
+            Task Review
           </p>
           {BONUS_ENABLED &&
             !isExhausted &&
@@ -795,27 +805,29 @@ function IntroScreen({ onStart }: { onStart: () => void }) {
             className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-9 animate-fadeSlideUp"
             style={{ animationDelay: "0ms" }}
           >
-            Task Validation
+            Task Review
           </p>
           <h2
             className="text-[1.4rem] sm:text-[1.65rem] font-light text-slate-800 leading-snug tracking-tight animate-fadeSlideUp"
             style={{ animationDelay: "80ms" }}
           >
-            We built a task list from your interview.
+            A few tasks we think you might do.
           </h2>
           <p
             className="text-slate-500 mt-6 text-[15px] leading-[1.7] animate-fadeSlideUp"
             style={{ animationDelay: "160ms" }}
           >
-            Based on what you just described, we've put together a list of tasks
-            for your role. Some come directly from what you told us — others
-            fill in gaps we think might be missing.
+            No interview catches everything — the routine, in-the-background
+            work is the easiest to overlook. So we've put together some
+            suggested tasks for your role as a prompt for anything we missed:
+            some are common to roles like yours, in case we missed them, others
+            are ones we inferred from what you told us.
           </p>
           <p
             className="text-slate-500 mt-4 text-[15px] leading-[1.7] animate-fadeSlideUp"
             style={{ animationDelay: "220ms" }}
           >
-            Confirm which tasks you actually do, and reword any that don't quite
+            Confirm which ones you actually do, and reword any that don't quite
             match how you'd describe them.
           </p>
           <div
@@ -1055,7 +1067,7 @@ function HoursSummaryScreen({
       {/* Header */}
       <div className="relative z-10 px-5 sm:px-8 pt-7 sm:pt-8 pb-5 shrink-0">
         <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-4">
-          Task Validation
+          Task Review
         </p>
       </div>
 
@@ -1344,7 +1356,10 @@ function TaskReviewCard({
                     setPrimaryAnswer(answer);
                     if (answer === "no") setHoursInput("");
                     if (!HOURS_ENABLED) {
-                      setTimeout(() => onAdvance(answer, { relevance: value }), 220);
+                      setTimeout(
+                        () => onAdvance(answer, { relevance: value }),
+                        220,
+                      );
                     }
                   }}
                   className={`w-full text-left px-4 py-3 rounded-2xl border text-sm font-medium transition-all active:scale-[0.99] disabled:opacity-30 disabled:cursor-not-allowed ${

@@ -7,6 +7,16 @@ html, body, #root {
   margin: 0;
   padding: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Full-viewport height for the fixed (non-scrolling shell) phases. The 100dvh
+   line wins in browsers that support it, so the layout tracks the *visible*
+   viewport on mobile — the footer/CTA isn't hidden behind the URL bar. Older
+   browsers fall back to the 100vh line above. */
+.app-screen {
+  height: 100vh;
+  height: 100dvh;
 }
 
 /* Hours-summary sliders: rounded track + soft round thumb. The thumb color is

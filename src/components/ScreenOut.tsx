@@ -73,7 +73,7 @@ export function ScreenOut() {
     : PROLIFIC_NOCODE_FALLBACK;
 
   return (
-    <div className="min-h-screen bg-white flex flex-col items-center justify-center px-8 py-16">
+    <div className="min-h-screen bg-white flex flex-col items-center justify-center px-5 sm:px-8 py-16">
       <div className="absolute top-0 left-0 right-0 h-56 bg-gradient-to-b from-slate-50 to-transparent pointer-events-none" />
 
       <div className="relative max-w-md w-full text-center">

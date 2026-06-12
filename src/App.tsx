@@ -310,8 +310,8 @@ export default function App() {
 
     if (phase === "background") {
       return (
-        <div className="flex h-screen w-screen overflow-hidden">
-          <div className="flex-1">
+        <div className="flex app-screen w-screen overflow-hidden">
+          <div className="flex-1 min-w-0">
             <BackgroundInterview />
           </div>
         </div>
@@ -320,7 +320,7 @@ export default function App() {
 
     if (phase === "task-selection") {
       return (
-        <div className="relative flex h-screen w-screen overflow-hidden bg-white">
+        <div className="relative flex app-screen w-screen overflow-hidden bg-white">
           {/* Gradient spans the full viewport so it doesn't get clipped to the centered column. */}
           <div className="absolute top-0 left-0 right-0 h-48 bg-gradient-to-b from-indigo-50/40 to-transparent pointer-events-none" />
           <div className="relative w-full max-w-[1040px] mx-auto h-full">

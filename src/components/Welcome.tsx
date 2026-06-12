@@ -8,12 +8,12 @@ export function Welcome() {
       <div className="absolute top-0 left-0 right-0 h-72 bg-gradient-to-b from-indigo-50/40 to-transparent pointer-events-none" />
 
       {/* Welcome card */}
-      <div className="relative z-10 flex-1 flex items-center justify-center px-6 py-12">
+      <div className="relative z-10 flex-1 flex items-center justify-center px-5 sm:px-6 py-10 sm:py-12">
         <div className="max-w-2xl w-full">
           <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-4">
             Welcome
           </p>
-          <h1 className="text-[2rem] font-light text-slate-800 leading-tight tracking-[-0.015em] mb-6">
+          <h1 className="text-[1.6rem] sm:text-[2rem] font-light text-slate-800 leading-tight tracking-[-0.015em] mb-6">
             About this study
           </h1>
 
