@@ -479,6 +479,19 @@ app.post('/api/generated-response', async (req, res) => {
   }
 });
 
+// End-of-interview MERGE: fold this participant's confirmed GENERATED tasks into the bank
+// (async + serialized — taskBank.drainSession). Acks immediately and runs in the background, so the
+// participant never waits on the embed/NN/LLM work. 503 when the bank isn't enabled.
+app.post('/api/drain-session', async (req, res) => {
+  if (!taskBank) return res.status(503).json({ error: 'task bank not enabled' });
+  const { participant, occupation } = req.body ?? {};
+  if (!participant) return res.status(400).json({ error: 'participant required' });
+  res.json({ ok: true });                               // ack now; merge happens after
+  taskBank.drainSession({ participant, occupation: occupation || TASK_BANK_OCC })
+    .then(r => console.log(`[drain] ${participant}: merged ${r.merged} (insert ${r.inserted} / pool ${r.pooled})`))
+    .catch(e => console.warn('[drain] failed:', e.message));
+});
+
 // Generate attention-check tasks. These are O*NET-style task statements from
 // occupations clearly unrelated to the participant's role — used to confirm
 // the participant is reading carefully. Returns up to `count` items.

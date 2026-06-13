@@ -7,6 +7,7 @@ import {
   transcribeAudio,
   postTaskResponse,
   postGeneratedResponse,
+  drainSession,
 } from "../lib/api";
 import { useWorkflowStore } from "../store";
 import { BONUS_ENABLED } from "../lib/bonus";
@@ -574,6 +575,11 @@ export function TaskSelection() {
       },
       computedAt: new Date().toISOString(),
     });
+
+    // End-of-interview MERGE: fold this participant's confirmed GENERATED tasks into the bank
+    // (server-side, async + serialized). Fire-and-forget; no-ops when the bank is disabled.
+    drainSession({ participant: prolific.pid || useWorkflowStore.getState().sessionId });
+
     setPhase(condition === "short" ? "final-questions" : "task-priority");
   };
 

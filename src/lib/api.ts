@@ -403,9 +403,24 @@ export async function postTaskResponse(args: {
   }
 }
 
-// Staging write-back for GENERATED (non-bank) tasks. Online harvest is off, so a confirmed/denied
-// generated task is parked server-side (generated_responses) for periodic OFFLINE clustering into
-// the bank. Best-effort and fire-and-forget — never blocks the participant.
+// End-of-interview MERGE trigger: ask the server to fold this participant's confirmed GENERATED
+// tasks into the bank (async + serialized, see taskBank.drainSession). Call once when the participant
+// finishes the picker. Best-effort and fire-and-forget — the server acks immediately and merges after.
+export async function drainSession(args: { participant: string; occupation?: string }): Promise<void> {
+  try {
+    await fetch('/api/drain-session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(args),
+    });
+  } catch {
+    /* best-effort; never block the participant */
+  }
+}
+
+// Staging write-back for GENERATED (non-bank) tasks. A confirmed/denied generated task is parked
+// server-side (generated_responses); drainSession() later merges the confirms into the bank.
+// Best-effort and fire-and-forget — never blocks the participant.
 export async function postGeneratedResponse(args: {
   participant: string;
   statement: string;                               // the generated task exactly as shown

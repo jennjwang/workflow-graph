@@ -52,7 +52,7 @@ console.log(`Bank: ${bank.length} tasks · planted truth: ${nIN} IN / ${bank.len
 
 const prev = {}; for (const t of bank) prev[t.id] = 'UNDECIDED';
 for (let i = 1; i <= N; i++) {
-  const pool = acquire(rows(), [], bank.length, { classifyFrac: 0 });   // all UNDECIDED, most-decidable first
+  const pool = acquire(rows());   // all UNDECIDED, decidability-ordered (probe-only)
   const probes = pool.slice(0, probeBudget(pool.length, bank.length));  // adaptive count
 
   if (i <= 3) {
