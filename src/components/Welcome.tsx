@@ -29,18 +29,7 @@ export function Welcome() {
               task list for you to review — mark what applies, reword anything
               that doesn't quite fit, and add tasks we might have missed.
             </p>
-            <p>
-              Before you begin, please review the{" "}
-              <a
-                href="https://docs.google.com/document/d/15IlS2zdtZ9z28jNMu3i8KIb3YoaeIKk2/edit?usp=sharing&ouid=115842279112732201256&rtpof=true&sd=true"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-indigo-600 hover:text-indigo-700 underline font-medium"
-              >
-                consent form
-              </a>{" "}
-              (opens in a new tab).
-            </p>
+            <p>Before you begin, please review the consent form.</p>
             {/* <p>
               <strong className="font-medium text-slate-700">
                 How it works:
@@ -51,37 +40,41 @@ export function Welcome() {
             </p> */}
           </div>
 
-          <div className="mt-8 border border-slate-200 rounded-2xl p-5 bg-slate-50/50">
-            <h3 className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500 mb-3">
-              Privacy Notice
-            </h3>
-            <p className="text-sm text-slate-600 leading-relaxed">
-              You are{" "}
-              <strong className="font-medium text-slate-700">
-                not required
-              </strong>{" "}
-              to share any personally identifiable information. We do not
-              collect or store PII.
-            </p>
-            <p className="text-sm text-slate-600 leading-relaxed mt-3">
-              <strong className="font-medium text-slate-700">
-                You do not need to provide:
-              </strong>
-            </p>
-            <ul className="mt-2 space-y-1 text-sm text-slate-600">
-              {[
-                "Full name, age, or date of birth",
-                "Physical address or precise location",
-                "Contact information (phone, email)",
-                "Government IDs or financial information",
-              ].map((item) => (
-                <li key={item} className="flex items-start gap-2">
-                  <span className="mt-2 w-1 h-1 rounded-full bg-slate-400 shrink-0" />
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
+          <a
+            href="https://docs.google.com/document/d/15IlS2zdtZ9z28jNMu3i8KIb3YoaeIKk2/edit?usp=sharing&ouid=115842279112732201256&rtpof=true&sd=true"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-6 inline-flex items-center gap-2 px-5 py-2.5 border border-slate-300 text-slate-700 hover:border-indigo-400 hover:text-indigo-700 hover:bg-indigo-50/40 text-sm font-medium rounded-full transition-all active:scale-[0.98]"
+          >
+            <svg
+              className="w-4 h-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+              <line x1="8" y1="13" x2="16" y2="13" />
+              <line x1="8" y1="17" x2="16" y2="17" />
+            </svg>
+            Review consent form
+            <svg
+              className="w-3.5 h-3.5 opacity-60"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+              <polyline points="15 3 21 3 21 9" />
+              <line x1="10" y1="14" x2="21" y2="3" />
+            </svg>
+          </a>
 
           <p className="mt-12 text-xs text-slate-500 leading-relaxed">
             By clicking “Begin interview,” you confirm that you have read and

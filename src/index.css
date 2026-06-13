@@ -10,6 +10,18 @@ html, body, #root {
   -webkit-text-size-adjust: 100%;
 }
 
+/* iOS Safari zooms the page in whenever a focused input has a font-size below
+   16px (our fields use text-sm / 14px). That zoom also shoves the inline send
+   button out of the viewport. Forcing 16px on form controls at phone widths
+   stops the zoom-on-focus entirely and keeps the send button on screen. */
+@media (max-width: 640px) {
+  input:not([type="range"]),
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
 /* Full-viewport height for the fixed (non-scrolling shell) phases. The 100dvh
    line wins in browsers that support it, so the layout tracks the *visible*
    viewport on mobile — the footer/CTA isn't hidden behind the URL bar. Older
