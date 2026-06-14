@@ -76,10 +76,6 @@ const QUESTIONS: {
 const OUTRO_TEXT =
   "Great! From this quick interview, we'll generate a list of tasks for you to review and refine next.";
 
-// AI-interviewer intro screens, shown one at a time before the first question
-const INTRO_SCREENS = [
-  "To start, an AI interviewer will ask you a few short questions about your role. We know it might be unusual to be interviewed by an AI agent, so please answer in whatever way feels natural.",
-];
 
 // Reveals text one word at a time, each word rising and fading in (staggered).
 // Calls onDone once the last word has finished animating.
@@ -276,29 +272,9 @@ export function BackgroundInterview() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [questionVisible, setQuestionVisible] = useState(true);
 
-  // AI-interviewer intro screens, shown before the first question — these live
-  // in the SAME shell as the questions and reuse the question transition, so the
-  // whole thing reads as one continuous component.
-  const [showIntro, setShowIntro] = useState(true);
-  const [introStep, setIntroStep] = useState(0);
-  // Continue button only appears once the words finish popping in
-  const [introButtonReady, setIntroButtonReady] = useState(false);
   // Closing thank-you screen, shown after the last question
   const [showOutro, setShowOutro] = useState(false);
   const [outroButtonReady, setOutroButtonReady] = useState(false);
-
-  const advanceIntro = () => {
-    setIntroButtonReady(false);
-    setQuestionVisible(false);
-    setTimeout(() => {
-      if (introStep < INTRO_SCREENS.length - 1) {
-        setIntroStep((s) => s + 1);
-      } else {
-        setShowIntro(false);
-      }
-      setQuestionVisible(true);
-    }, 220);
-  };
 
   const finishOutro = () => {
     setIsSubmitting(true);
@@ -356,12 +332,9 @@ export function BackgroundInterview() {
     setDynamicQuestion(question);
   };
 
-  // Pre-load the opening question's phrasing in the background while the intro
-  // is on screen, so the first question is ready the moment the intro ends.
-  useEffect(() => {
-    loadDynamic(0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // The opening question is shown verbatim (canonical static text) so it reads
+  // the same for every participant — no dynamic rephrasing on question 0.
+  // Later questions still get their reworded phrasing via advanceStep.
 
   const advanceStep = async (finalAnswer: string) => {
     const newAnswers = { ...answers, [q.field]: finalAnswer };
@@ -575,7 +548,7 @@ export function BackgroundInterview() {
       {/* Header with step progress */}
       <div className="relative z-10 px-5 sm:px-10 pt-7 sm:pt-8 pb-5 shrink-0">
         <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-4">
-          {!showIntro && !showOutro
+          {!showOutro
             ? `Topic ${step + 1} of ${QUESTIONS.length}`
             : "Interview"}
         </p>
@@ -616,7 +589,7 @@ export function BackgroundInterview() {
               )}
             </div>
           ))}
-          {!showIntro && !showOutro && isFollowUpActive && (
+          {!showOutro && isFollowUpActive && (
             <span className="ml-2 text-xs text-indigo-400">· follow-up</span>
           )}
         </div>
@@ -633,15 +606,7 @@ export function BackgroundInterview() {
               transform: questionVisible ? "translateY(0)" : "translateY(10px)",
             }}
           >
-            {showIntro ? (
-              <p className="text-[1.3rem] sm:text-[1.6rem] font-light text-slate-800 leading-[1.55] tracking-[-0.01em]">
-                <PopInText
-                  key={introStep}
-                  text={INTRO_SCREENS[introStep]}
-                  onDone={() => setIntroButtonReady(true)}
-                />
-              </p>
-            ) : showOutro ? (
+            {showOutro ? (
               <p className="text-[1.3rem] sm:text-[1.6rem] font-light text-slate-800 leading-[1.55] tracking-[-0.01em]">
                 <PopInText
                   key="outro"
@@ -657,57 +622,6 @@ export function BackgroundInterview() {
               </>
             )}
           </div>
-
-          {/* Action slot — Continue (intro) or mic/text input (questions) */}
-          {showIntro && (
-            <div
-              className="mt-10 flex items-center gap-5 transition-all duration-500"
-              style={{
-                opacity: introButtonReady ? 1 : 0,
-                transform: introButtonReady
-                  ? "translateY(0)"
-                  : "translateY(8px)",
-                pointerEvents: introButtonReady ? "auto" : "none",
-              }}
-            >
-              <button
-                onClick={advanceIntro}
-                className="inline-flex items-center gap-5 px-6 py-3 bg-indigo-600 hover:bg-indigo-700
-                           text-white text-sm font-medium rounded-xl transition-all active:scale-95
-                           shadow-sm shadow-indigo-200"
-              >
-                {introStep < INTRO_SCREENS.length - 1
-                  ? "Continue"
-                  : "Let's begin"}
-                <svg
-                  className="w-4 h-4"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <line x1="5" y1="12" x2="19" y2="12" />
-                  <polyline points="12 5 19 12 12 19" />
-                </svg>
-              </button>
-              {INTRO_SCREENS.length > 1 && (
-                <div className="flex gap-1.5">
-                  {INTRO_SCREENS.map((_, i) => (
-                    <span
-                      key={i}
-                      className={`h-1.5 rounded-full transition-all duration-300 ${
-                        i === introStep
-                          ? "w-5 bg-indigo-400"
-                          : "w-1.5 bg-slate-200"
-                      }`}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
 
           {/* Action slot — Continue (outro) */}
           {showOutro && (
@@ -760,8 +674,7 @@ export function BackgroundInterview() {
           )}
 
           {/* Mic orb */}
-          {!showIntro &&
-            !showOutro &&
+          {!showOutro &&
             questionVisible &&
             !showTextInput &&
             !isEvaluating && (
@@ -843,7 +756,7 @@ export function BackgroundInterview() {
           )}
 
           {/* Type / speak toggle */}
-          {!showIntro && !showOutro && questionVisible && !isEvaluating && (
+          {!showOutro && questionVisible && !isEvaluating && (
             <div className="text-center">
               {showTextInput ? (
                 <button
