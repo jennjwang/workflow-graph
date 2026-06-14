@@ -1,0 +1,78 @@
+// Tests for the task-generation prompt builders (prompts/task-generator.js).
+// Focus on the invariants the pipeline relies on: the anchored-mode rewrites,
+// the burnout-count ceiling, the mentioned-tasks block, and the task-splitting
+// rule in the interview extractor. Run with: npm test
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  UPPER_LEVEL_TASKS_SYSTEM_PROMPT,
+  buildUpperLevelTasksPrompt,
+  INTERVIEW_TASK_EXTRACTOR_PROMPT,
+  mentionedTasksBlock,
+  buildAnchoredTaskSystemPrompt,
+  buildGapFillMessages,
+} from '../prompts/task-generator.js';
+
+test('non-anchored prompt is the base prompt verbatim', () => {
+  assert.equal(buildUpperLevelTasksPrompt({ anchored: false }), UPPER_LEVEL_TASKS_SYSTEM_PROMPT);
+  assert.equal(buildUpperLevelTasksPrompt(), UPPER_LEVEL_TASKS_SYSTEM_PROMPT);
+});
+
+test('anchored prompt relaxes collective-exhaustiveness', () => {
+  const anchored = buildUpperLevelTasksPrompt({ anchored: true, count: 20 });
+  // The base MECE line is rewritten; exhaustiveness moves to the interview.
+  assert.notEqual(anchored, UPPER_LEVEL_TASKS_SYSTEM_PROMPT);
+  assert.match(anchored, /ANCHORED COVERAGE/);
+  assert.doesNotMatch(anchored, /Aim for 25–30 tasks/);
+});
+
+test('anchored prompt enforces the count ceiling only when count is valid', () => {
+  assert.match(buildUpperLevelTasksPrompt({ anchored: true, count: 20 }), /must not exceed 20/);
+  assert.match(buildUpperLevelTasksPrompt({ anchored: true, count: 12.6 }), /must not exceed 13/); // rounded
+  assert.doesNotMatch(buildUpperLevelTasksPrompt({ anchored: true }), /must not exceed/);
+  assert.doesNotMatch(buildUpperLevelTasksPrompt({ anchored: true, count: 0 }), /must not exceed/);
+});
+
+test('mentionedTasksBlock is empty for no tasks and lists each task otherwise', () => {
+  assert.equal(mentionedTasksBlock([]), '');
+  assert.equal(mentionedTasksBlock(), '');
+
+  const block = mentionedTasksBlock(['Write proposals', 'Grade exams']);
+  assert.match(block, /EXPLICITLY MENTIONED/);
+  assert.match(block, /- Write proposals/);
+  assert.match(block, /- Grade exams/);
+});
+
+test('interview extractor carries the split-bundled-objects rule', () => {
+  assert.match(INTERVIEW_TASK_EXTRACTOR_PROMPT, /ONE THING PER TASK/);
+  assert.match(INTERVIEW_TASK_EXTRACTOR_PROMPT, /DON'T OVER-SPLIT/);
+  // Output contract is a JSON object with a tasks array.
+  assert.match(INTERVIEW_TASK_EXTRACTOR_PROMPT, /\{"tasks":/);
+});
+
+test('anchored system prompt threads the count through and names the mode', () => {
+  const prompt = buildAnchoredTaskSystemPrompt(15);
+  assert.match(prompt, /PARTICIPANT-ANCHORED MODE/);
+  assert.match(prompt, /must not exceed 15/);
+});
+
+test('gap-fill messages embed covered tasks, the cap, and the role context', () => {
+  const msgs = buildGapFillMessages({
+    jobTitle: 'Data Scientist',
+    responsibilities: 'Build models',
+    typicalWeek: 'Cleaning data, training models',
+    coveredTasks: ['Train models', 'Clean data'],
+    maxGap: 30,
+  });
+  assert.equal(msgs.length, 2);
+  const [system, user] = msgs;
+  assert.match(system.content, /up to 30 tasks/);
+  assert.match(user.content, /Data Scientist/);
+  assert.match(user.content, /- Train models/);
+  assert.match(user.content, /- Clean data/);
+});
+
+test('gap-fill renders "(none)" when no tasks are covered yet', () => {
+  const [, user] = buildGapFillMessages({ jobTitle: 'Nurse', maxGap: 10 });
+  assert.match(user.content, /\(none\)/);
+});
