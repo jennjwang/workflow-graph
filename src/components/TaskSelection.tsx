@@ -288,6 +288,7 @@ export function TaskSelection() {
           interviewTasks,
           (name, meta) => onTask(name, meta),
           MAX_TASKS,
+          prolific.pid || useWorkflowStore.getState().sessionId,
         );
         // If the stream returned zero tasks (model fluke), surface an error
         // state so the participant sees something rather than a frozen loader.
@@ -824,10 +825,9 @@ function IntroScreen({ onStart }: { onStart: () => void }) {
             style={{ animationDelay: "160ms" }}
           >
             No interview catches everything — the routine, in-the-background
-            work is the easiest to overlook. So we've put together some
-            suggested tasks for your role as a prompt for anything we missed:
-            some are common to roles like yours, in case we missed them, others
-            are ones we inferred from what you told us.
+            work is the easiest to overlook. So we've pulled together some
+            suggested tasks for your role to jog your memory: some are common to
+            roles like yours, others are ones we inferred from what you told us.
           </p>
           <p
             className="text-slate-500 mt-4 text-[15px] leading-[1.7] animate-fadeSlideUp"
