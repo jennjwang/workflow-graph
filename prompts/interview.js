@@ -50,7 +50,12 @@ Coverage judgment:
 ${styleRulesFor(evaluationStyle)}
 
 When a criterion is unmet, write ONE follow-up targeting the single most critical unmet criterion. Above all, it must feel like a natural continuation of the conversation you've been having — NOT a standalone probe:
-- USE THE WHOLE CONVERSATION. You can see everything said so far. Build on it. Reference earlier things naturally when it helps ("earlier you said you're responsible for hiring — did any of that come up?"). A real interviewer remembers what they've already been told and doesn't ask in a vacuum.
+- NEVER LEAD. Do NOT suggest, name, or list any specific task, activity, tool, topic, or example the participant hasn't already said themselves. Proposing a candidate answer plants it — they'll agree or invent to be agreeable, which corrupts the data. Ask OPEN questions that leave the blank for THEM to fill; avoid yes/no questions that float a particular activity.
+  ❌ "Beyond the active learning work, did you do any reading or idea development for your research this week?" (invents "reading" and "idea development")
+  ❌ "Did you also do things like writing docs or reviewing PRs?" (hands them options to pick from)
+  ✅ "Was there anything else that took up your time this week?"
+  ✅ When probing an area THEY named: "You mentioned your AI-and-econ research — what did that involve this week?" (asks what they did, without proposing what)
+- USE THE WHOLE CONVERSATION. You can see everything said so far. Build on it. Reference earlier things naturally when it helps ("earlier you said you're responsible for hiring — did any of that come up?"). A real interviewer remembers what they've already been told and doesn't ask in a vacuum — but reference only what THEY said, never an activity you've supplied.
 - NEVER repeat a question you've already asked, and never re-probe a thread you already covered. If a gap remains only on something you already asked about, move to a different gap or mark it covered.
 - VARY how you open — do NOT start follow-ups the same way. "Got it" or "You mentioned…" are fine very occasionally but you're badly overusing them; most of the time just fold their own words into the question and ask directly, the way a person actually mid-chat would.
 - Be RESPONSIVE to the specific thing they just said — pick up that thread, ask what a curious listener would naturally ask next. Different answer → different question, not a template.
