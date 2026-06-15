@@ -227,11 +227,12 @@ export function TaskSelection() {
     if (didLoadRef.current) return;
     didLoadRef.current = true;
     async function load() {
+      // Keep the "Processing your interview…" screen up for the whole
+      // extraction + generation pass, with a 1.2s floor so it never flashes.
+      const minDisplay = new Promise((r) => setTimeout(r, 1200));
       try {
-        // Extract interview tasks — show processing screen while this runs.
-        // Enforce a minimum display of 1.2s so the screen doesn't flash.
+        // Extract interview tasks first (grounding for generation).
         let interviewTasks: string[] = [];
-        const minDisplay = new Promise((r) => setTimeout(r, 1200));
         try {
           interviewTasks = await extractInterviewTasks(backgroundTranscript, {
             jobTitle: userProfile.jobTitle,
@@ -244,16 +245,13 @@ export function TaskSelection() {
             e,
           );
         }
-        await minDisplay;
-        setShowProcessing(false);
-        setShowIntro(true);
 
-        // Stream tasks into the picker as they arrive — the participant can
-        // start rating the first task in ~1-2s instead of waiting ~7s for the
-        // whole list. Attention checks are spliced in inline at the same
-        // ATTENTION_CHECK_INTERVAL cadence; the hard 20-item cap still applies.
-        // Linear indexing into the (already shuffled) FALLBACK_ATTENTION_CHECKS
-        // guarantees no repeats within a session.
+        // Generate the full task list while the processing screen stays up, so
+        // the participant only reaches the intro/cards once every task is ready
+        // (no streaming-in behind the intro). Attention checks are spliced in
+        // inline at the same ATTENTION_CHECK_INTERVAL cadence; the hard 20-item
+        // cap still applies. Linear indexing into the (already shuffled)
+        // FALLBACK_ATTENTION_CHECKS guarantees no repeats within a session.
         let realCount = 0;
         const onTask = (
           name: string,
@@ -296,6 +294,12 @@ export function TaskSelection() {
       } catch (e) {
         console.error("Task load failed", e);
         setLoadState("error");
+      } finally {
+        // Leave the processing screen only once generation has finished (or
+        // failed), and never before the 1.2s minimum.
+        await minDisplay;
+        setShowProcessing(false);
+        setShowIntro(true);
       }
     }
     load();
