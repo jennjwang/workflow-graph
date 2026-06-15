@@ -824,10 +824,10 @@ function IntroScreen({ onStart }: { onStart: () => void }) {
             className="text-slate-500 mt-6 text-[15px] leading-[1.7] animate-fadeSlideUp"
             style={{ animationDelay: "160ms" }}
           >
-            No interview catches everything — the routine, in-the-background
-            work is the easiest to overlook. So we've pulled together some
-            suggested tasks for your role to jog your memory: some are common to
-            roles like yours, others are ones we inferred from what you told us.
+            We know the interview can't catch everything — routine,
+            behind-the-scenes work is the easiest to forget. To jog your memory,
+            here are some tasks you might do: a few common to roles like yours,
+            and a few we drew from what you told us.
           </p>
           <p
             className="text-slate-500 mt-4 text-[15px] leading-[1.7] animate-fadeSlideUp"
