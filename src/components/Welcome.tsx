@@ -41,7 +41,7 @@ export function Welcome() {
           </div>
 
           <a
-            href="https://docs.google.com/document/d/15IlS2zdtZ9z28jNMu3i8KIb3YoaeIKk2/edit?usp=sharing&ouid=115842279112732201256&rtpof=true&sd=true"
+            href="https://docs.google.com/document/d/1JbR54H8U-aRfE4K-pl4N_FQrhWMhq-25/edit?usp=sharing&ouid=115842279112732201256&rtpof=true&sd=true"
             target="_blank"
             rel="noopener noreferrer"
             className="mt-6 inline-flex items-center gap-2 px-5 py-2.5 border border-slate-300 text-slate-700 hover:border-indigo-400 hover:text-indigo-700 hover:bg-indigo-50/40 text-sm font-medium rounded-full transition-all active:scale-[0.98]"

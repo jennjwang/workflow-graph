@@ -102,16 +102,17 @@ test('rewordQuestionMessages omits the framing line when none given', () => {
   assert.match(system.content, /"question"/);
 });
 
-test('checkCoverageMessages embeds the question + criteria and biases conservative', () => {
+test('checkCoverageMessages embeds the question + criteria and biases toward asking', () => {
   const msgs = checkCoverageMessages({
     question: 'What do you produce or deliver?',
     criteria: ['Named at least one output.', 'Tasks behind it are clear.'],
     conversation: 'Interviewer: hi\nParticipant: I write the weekly report.',
   });
   assert.equal(msgs.length, 2);
-  // Conservative by design: when in doubt, NOT covered (ask the question).
+  // Framed as "worth asking?", leaning toward ASK when unsure.
   assert.match(msgs[0].content, /covered=true/);
-  assert.match(msgs[0].content, /CONSERVATIVE/);
+  assert.match(msgs[0].content, /worth asking/i);
+  assert.match(msgs[0].content, /lean toward asking/i);
   assert.match(msgs[0].content, /"covered"/);
   // The upcoming question, its criteria, and the transcript are all present.
   assert.match(msgs[1].content, /What do you produce or deliver\?/);

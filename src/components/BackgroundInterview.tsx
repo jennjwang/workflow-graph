@@ -25,6 +25,17 @@ const QUESTIONS: {
   evaluationStyle?: "lenient" | "strict";
   // Constraints the dynamic question rephrasing MUST preserve
   framingNotes?: string;
+  // When true, show the canonical text VERBATIM — skip the per-session LLM
+  // rephrasing (used where a precise, concrete wording matters and rephrasing
+  // tends to drift vague).
+  staticText?: boolean;
+  // When true, feed the conversation so far to the rephraser so the question is
+  // TAILORED to the participant's role/work instead of reading generically.
+  contextual?: boolean;
+  // Static topic-transition lead-in shown above the question when entering this
+  // pass, to ease the jump between topics. (Static, not answer-reflecting —
+  // reactive lead-ins were tried and rejected.)
+  transition?: string;
 }[] = [
   {
     field: "jobTitle",
@@ -47,15 +58,15 @@ const QUESTIONS: {
     placeholder: "What you own or are accountable for",
     criteria: [
       "FLOOR — the participant has named at least one primary responsibility or area they own (e.g. 'I own the team's product specs', 'I'm responsible for patient care'). If they named NONE ('a bit of everything', 'various things'), follow up asking what they're mainly responsible for.",
-      "BREADTH — if they named only ONE responsibility or area, follow up ONCE: briefly ACKNOWLEDGE it, then ask whether there are other areas they own or are accountable for. If they named several distinct responsibilities, breadth is covered.",
-      "STAY AT OWNERSHIP ALTITUDE — this question maps WHAT they own, not how they spend their time. Do NOT drill into the specific tasks or activities under a responsibility — a later question ('a typical week') covers that. A responsibility named only at a high level is FINE here; do NOT treat missing task detail as uncovered.",
+      "STAY AT OWNERSHIP ALTITUDE — this question maps WHAT they own, not how they spend their time. Do NOT drill into the specific tasks or activities under a responsibility — a later question ('a typical week') covers that. A responsibility named only at a high level is FINE here; do NOT treat missing task detail as uncovered. Do NOT ask whether there are OTHER areas they're responsible for — breadth is gathered by the later task passes, not here.",
     ],
     maxFollowups: 2,
-    minFollowups: 1,
+    minFollowups: 0,
   },
   {
     field: "typicalWeek",
     text: "Walk me through a typical week. What are the recurring tasks you do?",
+    transition: "Next, let's think about your week as it usually goes.",
     framingNotes:
       "Ask them to walk through a typical week and name the recurring tasks they regularly do. Frame around what's TYPICAL and RECURRING — the things they do on a regular basis — NOT a specific recent week. You MAY invite them to walk through it loosely, but do NOT force a rigid hour-by-hour or day-by-day breakdown. KEEP the encouragement to be as specific as possible about the actual tasks they do.",
     placeholder:
@@ -63,17 +74,19 @@ const QUESTIONS: {
     criteria: [
       "FLOOR — the participant has named at least one real recurring activity or task. If they named NO actual activity at all ('the usual', 'just work stuff', 'hard to say'), follow up asking what they regularly do in a typical week.",
       "BREADTH — if they named only ONE activity or area (e.g. 'mostly building an app', 'just seeing patients'), follow up ONCE: briefly ACKNOWLEDGE it, then ask whether there are other tasks or activities they also do regularly. Do NOT push for more detail on that one activity. If they named several distinct activities, breadth is covered.",
-      "SUBSTANCE — the answer must give a concrete sense of WHAT the work actually is, not just generic activity labels. A bare list — e.g. 'I have some zooms and a standup, I go to networking events, otherwise I write proposals and do research' — names activities but says nothing about what the proposals are FOR, what the research is ON, or what the meetings cover. When a central activity is named only as a bare label (no topic, project, client, deliverable, audience, or tool), it is NOT covered — follow up: warmly pick the SINGLE most central still-vague activity and ask what it actually involves or is about (e.g. 'What kind of proposals are you writing, and who for?' or 'What's the research on?'). Probe ONE thread per turn — never interrogate every item at once, never sound skeptical. On later turns, if other central activities they named are STILL bare labels, you may probe ONE more of them; stop once the main parts of a typical week are reasonably concrete. If the central activities already carry concrete substance, this is covered.",
+      "SUBSTANCE — the answer must give a concrete sense of the TASKS the work involves, not just generic activity labels. A bare list — e.g. 'I have some zooms and a standup, otherwise I write proposals and do research' — names activities but not the actual tasks within them. When a central activity is named only as a bare label, it is NOT covered — follow up: warmly pick the SINGLE most central still-vague activity and ask what they have to DO for it — the smaller tasks it breaks into — NOT its topic or which specific one (e.g. they say 'I write proposals' → 'What do you need to do to put a proposal together?'; 'I do research' → 'What do you actually have to do when you work on that?'). Probe ONE thread per turn — never interrogate every item at once, never sound skeptical. On later turns, if other central activities they named are STILL bare labels, you may probe ONE more of them; stop once the main parts of a typical week are reasonably concrete. If the central activities already carry concrete task detail, this is covered.",
       "RESPONSIBILITY COVERAGE — earlier in the conversation the participant described their primary responsibilities. If any responsibility or area they named does NOT clearly map to a task they mentioned, it is NOT fully covered: follow up ONCE, warmly, asking whether they regularly do anything on that responsibility (e.g. earlier they said they're responsible for hiring but never mentioned it → 'Earlier you mentioned you're responsible for hiring — is that something you work on in a typical week?'). Probe ONE uncovered responsibility per turn. If they didn't describe their responsibilities, or every responsibility already maps to something they mentioned, this is covered.",
     ],
     maxFollowups: 3,
-    minFollowups: 0,
+    minFollowups: 2,
   },
   {
     field: "outputs",
-    text: "What are the actual things you make or hand off at work — like reports, documents, code, or decisions?",
+    text: "What do you produce or deliver in your work — like reports, documents, code, or designs?",
+    transition: "Let's shift from what you do to what you end up with.",
+    contextual: true,
     framingNotes:
-      "Elicit tasks via the participant's OUTPUTS — the tangible things they make, update, approve, send, maintain, or deliver, and anything with their name attached. Keep it CONCRETE and grounded: anchor the question in two or three real example artifacts (e.g. reports, documents, dashboards, code, decks, tickets, cases, decisions) so it lands as 'what's the actual stuff you produce' rather than an abstract list of verbs. Pick just a couple of examples — do NOT read the whole list as a checklist, and do NOT make it sound like an HR form. The point is to surface tangible things they'd skip when narrating activities, then decompose each output into the work behind it.",
+      "Elicit tasks via the participant's OUTPUTS — the tangible things they produce, update, approve, send, maintain, or deliver. Phrase it SPECIFICALLY and NATURALLY for THIS participant's role and the work they've described, with a couple of example artifacts that actually fit them — e.g. for a developer 'what do you usually ship or hand off?', for a lawyer 'what do you draft or file?', for an analyst 'what reports or analyses do you put out?' — WITHOUT naming specific things they haven't mentioned. Do NOT use the word 'actually', do NOT read a generic list of nouns, and do NOT include odd-fitting examples like 'a decision' for roles where that isn't a produced artifact. The point is to surface tangible things they'd skip when narrating activities, then decompose each into the work behind it.",
     placeholder: "What you produce, approve, send, or keep up to date",
     criteria: [
       "FLOOR — the participant has named at least one concrete output or artifact they own (e.g. 'the weekly sales report', 'patient charts', 'the onboarding deck'). If they named NONE ('not really anything', 'hard to say'), follow up warmly asking what they produce, maintain, or deliver.",
@@ -86,8 +99,10 @@ const QUESTIONS: {
   {
     field: "stakeholders",
     text: "Who do you do your work for or with — the people, teams, or clients you deal with?",
+    transition: "Now let's turn to the people side of your work.",
+    contextual: true,
     framingNotes:
-      "Elicit tasks via the participant's STAKEHOLDERS — the people, teams, roles, clients, or outside parties they do work FOR or WITH. Draw on the social side of work: who they depend on and who depends on them (handoffs both ways), who they coordinate or communicate with, who they report to or support, and anyone OUTSIDE their team or organization (clients, customers, partners, the public). Keep it warm and concrete; you MAY name a couple of example relationships to prompt them, but do NOT read a checklist. The point is to surface interactions that carry tasks — meetings, handoffs, coordinating, reporting, supporting — that they'd skip when narrating solo activities, then draw out what they actually do with or for each.",
+      "Elicit tasks via the participant's STAKEHOLDERS — the people, teams, roles, clients, or outside parties they do work FOR or WITH. Draw on the social side of work: who they depend on and who depends on them (handoffs both ways), who they coordinate or communicate with, who they report to or support, and anyone OUTSIDE their team or organization (clients, customers, partners, the public). IMPORTANT: phrase this SPECIFICALLY for THIS participant's role and the work they've described — a generic 'who do you work with or for?' is too broad. Use their role to make it concrete (e.g. for a nurse, who they work alongside on a shift and who they care for; for a freelancer, which clients and collaborators on their projects), WITHOUT naming specific people they haven't mentioned. The point is to surface interactions that carry tasks — meetings, handoffs, coordinating, reporting, supporting — then draw out what they actually do with or for each.",
     placeholder: "Who you work for or with — teammates, clients, other teams",
     criteria: [
       "FLOOR — the participant has named at least one person, team, role, or outside party they do work for or with (e.g. 'my manager', 'the sales team', 'patients', 'external vendors'). If they named NONE ('I mostly work alone', 'no one really'), follow up warmly asking who they work for or with, even occasionally.",
@@ -99,29 +114,33 @@ const QUESTIONS: {
   },
   {
     field: "tools",
-    text: "What systems or tools do you use for work — and do any of them create tasks for you?",
+    text: "What tools or systems do you use at work, and have any of them changed how you work?",
+    transition: "Switching gears for a moment —",
     framingNotes:
-      "Elicit tasks via the TOOLS and SYSTEMS the participant uses — the software, platforms, equipment, or systems that are part of their work, and ESPECIALLY the ones that GENERATE work for them (a ticket or case queue, an inbox, alerts or notifications, a dashboard that flags issues, an EHR worklist, a CRM, a calendar). Keep it warm and concrete; you MAY offer a couple of examples that fit any job, but do NOT read a checklist. The point is to surface tool-driven tasks — responding to tickets, clearing a queue, acting on alerts, updating records in a system — that they'd skip when narrating activities, then draw out what they actually do in each tool.",
+      "Elicit tasks via the TOOLS and SYSTEMS the participant uses — the software, platforms, or equipment that are part of their work — and especially how those tools have CHANGED THE WAY THEY WORK: new tasks a tool created (e.g. reviewing or correcting its output, keeping records up to date), steps a tool automated away, or a different process they now follow because of it. Keep it warm and concrete; you MAY offer a couple of examples that fit any job, but do NOT read a checklist. The point is to surface tool-shaped tasks and workflow changes they'd skip when narrating activities, then draw out what they actually do with each tool.",
     placeholder: "The software, systems, or equipment you use",
     criteria: [
-      "FLOOR — the participant has named at least one tool, system, or piece of equipment they use for work (e.g. 'Jira', 'the EHR', 'Excel', 'our CRM', 'the register'). If they named NONE ('nothing really', 'just the usual'), follow up warmly asking what software, systems, or equipment they use.",
-      "TASK-GENERATING SYSTEMS — surface tools that CREATE work, not just tools they happen to use. If they listed tools but it's unclear whether any FEED them tasks (a queue, inbox, ticket system, alerts, notifications, a worklist), follow up ONCE asking whether any of those systems generate work or things they have to act on. If they already made clear which systems drive their tasks, this is covered.",
-      "USE SUBSTANCE — for the main tools, it should be clear what they actually DO in or with them (the task), not just the tool's name. When a tool is named only as a bare label, follow up ONCE: warmly pick the SINGLE most central one and ask what they use it for or do in it. Probe ONE tool per turn, never skeptically. If the main tools already carry a concrete sense of use, this is covered.",
+      "FLOOR — the participant has either named at least one tool/system/equipment they use, OR indicated they don't really use notable tools. A 'no', 'not really', 'I don't focus on specific tools', or 'just the basics' is a COMPLETE, valid answer — accept it and move on; do NOT re-ask the same thing in another form. Only if they haven't addressed tools AT ALL may you ask ONCE, warmly, what software, systems, or equipment they use; if they then decline, that's covered.",
+      "WORKFLOW CHANGE — ONLY relevant if they actually named tools. In that case, surface HOW a tool changed what they do: a new task it created, a step it automated away, or a different way they now work. If they listed tools but said nothing about their effect, you MAY follow up ONCE. If they said they don't use notable tools, or already described an effect, this is covered — do NOT push someone who said they don't use specific tools.",
+      "USE SUBSTANCE — ONLY relevant if they named tools, and only as bare labels: follow up ONCE, warmly picking the SINGLE most central one and asking what they use it for. Probe ONE tool per turn, never skeptically. If they declined, or the tools already carry a concrete sense of use, this is covered.",
     ],
-    maxFollowups: 3,
+    maxFollowups: 2,
     minFollowups: 0,
   },
   {
     field: "invisibleWork",
-    text: "What would people only notice if you stopped doing it?",
+    text: "Is there any work you do that tends to go unnoticed — that people would only notice if it stopped?",
+    transition:
+      "One last thing — I want you to think about the invisible tasks in your work.",
+    staticText: true,
     framingNotes:
-      "Elicit the INVISIBLE or under-recognized work — the necessary background tasks that keep things running but go unnoticed until they STOP: maintenance, checking and monitoring, coordinating, cleanup, chasing loose ends, preventing problems before they happen, the 'glue' work, the quiet emotional labor. This is a reflective question, so keep it warm and low-pressure and give them room to think; you MAY offer one gentle example, but do NOT supply a list. The point is to surface real tasks that don't show up when people narrate their visible deliverables and activities.",
-    placeholder: "The behind-the-scenes work that keeps things running",
+      "Elicit the INVISIBLE or under-recognized work — the necessary background tasks that keep things running but go unnoticed until they STOP: maintenance, checking and monitoring, coordinating, cleanup, chasing loose ends, preventing problems before they happen, the 'glue' work, the quiet emotional labor. This is a reflective, optional-feeling question: keep it warm and low-pressure, and a simple 'no' is a perfectly fine answer. You MAY offer one gentle example, but do NOT supply a list and do NOT pressure them to produce something.",
+    placeholder: "Something behind-the-scenes that keeps things running",
     criteria: [
-      "FLOOR — the participant has named at least one task or kind of work that would be noticed mainly in its ABSENCE. If they drew a blank or stayed abstract ('not sure', 'I guess everything'), follow up ONCE, gently — e.g. what quietly keeps things running, or what would start to slip if they were out for a couple of weeks. A 'nothing really' after a genuine think is acceptable; do NOT push hard.",
-      "SUBSTANCE — for the invisible work they named, it should be reasonably clear what the actual TASK is, not just a vague label ('I keep things organized', 'I smooth things over'). When it's named only as a vague label, follow up ONCE: warmly ask what they concretely do — the actual task behind it. Probe ONE thread per turn, never skeptically. If what they named already carries concrete substance, this is covered.",
+      "FLOOR — a 'no', 'nothing comes to mind', or 'not really' is a COMPLETE, valid answer here: accept it and move on, do NOT follow up to push for something. Only if they gave a partial or abstract gesture toward something ('I guess I keep things organized') without a concrete task may you follow up ONCE, gently, asking what that looks like. Never pressure them to name invisible work they don't feel they have.",
+      "SUBSTANCE — if they DID name some invisible work but only as a vague label ('I keep things organized', 'I smooth things over'), follow up ONCE: warmly ask what they concretely do — the actual task behind it. Probe ONE thread per turn, never skeptically. If they declined ('no') or what they named already carries concrete substance, this is covered.",
     ],
-    maxFollowups: 3,
+    maxFollowups: 2,
     minFollowups: 0,
   },
 ];
@@ -422,8 +441,20 @@ export function BackgroundInterview() {
   // a slow call never stalls the flow — fall back to the canonical static text.
   const loadDynamic = async (index: number) => {
     const target = QUESTIONS[index];
+    // Static questions are shown verbatim — no rephrasing.
+    if (target.staticText) {
+      setDynamicQuestion(null);
+      return;
+    }
+    // Contextual questions get the conversation so far so the rephraser can
+    // tailor them to the participant's role/work.
+    const context = target.contextual
+      ? convoRef.current
+          .map((t) => `Interviewer: ${t.q}\nParticipant: ${t.a}`)
+          .join("\n")
+      : "";
     const question = await Promise.race([
-      fetchInterviewQuestion(target.text, target.framingNotes ?? ""),
+      fetchInterviewQuestion(target.text, target.framingNotes ?? "", context),
       new Promise<string | null>((r) => setTimeout(() => r(null), 1600)),
     ]);
     setDynamicQuestion(question);
@@ -442,6 +473,10 @@ export function BackgroundInterview() {
     // Fade the CURRENT text out FIRST; only swap to the next screen once it's
     // invisible, so stale text (e.g. the old follow-up) never flashes mid-fade.
     setQuestionVisible(false);
+    // Keep the loading indicator up across the whole gap (coverage checks +
+    // rephrasing can take a couple of seconds) so the screen never sits blank —
+    // it's turned off only once the next question is ready to show.
+    setIsEvaluating(true);
 
     const resetQuestionState = () => {
       setFollowUpQ(null);
@@ -486,6 +521,7 @@ export function BackgroundInterview() {
       ]);
       resetQuestionState();
       setStep(nextIndex);
+      setIsEvaluating(false);
       setQuestionVisible(true);
     } else {
       // Exhausted all questions (some may have been skipped). Persist the
@@ -499,6 +535,7 @@ export function BackgroundInterview() {
       setAccumulatedAnswer("");
       await new Promise((r) => setTimeout(r, 260));
       setFollowUpQ(FINAL_CATCHALL);
+      setIsEvaluating(false);
       setQuestionVisible(true);
     }
   };
@@ -570,30 +607,31 @@ export function BackgroundInterview() {
         // MANUAL skip: the evaluator detected the participant asked to skip this
         // question. End it now — no more follow-ups for it. Keep any substance
         // from earlier in this topic; the skip turn itself is dropped. (The final
-        // catch-all still runs once at the end, via advanceStep.)
+        // catch-all still runs once at the end, via advanceStep.) Leave the
+        // loader ON — advanceStep keeps it up until the next question shows.
         if (result.skipRequested) {
-          setIsEvaluating(false);
           await advanceStep(isFollowUpActive ? accumulatedAnswer : "");
           return;
         }
         if (!result.allCovered && result.followUp) {
-          // Fade the answered question out, then swap in the follow-up (invisible).
+          // Fade the answered question out, then swap in the follow-up. Keep the
+          // loader up through the fade; clear it only when the follow-up shows.
           const followUp = result.followUp;
           setAccumulatedAnswer(combined);
           setFollowUpCount(newFollowUpCount);
-          setIsEvaluating(false);
           setQuestionVisible(false);
           setTimeout(() => {
             setFollowUpQ(followUp);
+            setIsEvaluating(false);
             setQuestionVisible(true);
           }, 260);
           return;
         }
       } catch (e) {
         console.error("Coverage evaluation failed", e);
-      } finally {
-        setIsEvaluating(false);
       }
+      // Loader stays ON here; advanceStep (below) carries it until the next
+      // question is ready, then clears it.
     }
 
     // All covered (or max follow-ups reached, or evaluation failed) — advance.
@@ -724,6 +762,11 @@ export function BackgroundInterview() {
               </p>
             ) : (
               <>
+                {!isFollowUpActive && !isClosingActive && q.transition && (
+                  <p className="text-[15px] text-indigo-400 mb-3 font-medium">
+                    {q.transition}
+                  </p>
+                )}
                 <p className="text-[1.4rem] sm:text-[1.75rem] font-light text-slate-800 leading-[1.4] sm:leading-[1.45] tracking-[-0.015em]">
                   {displayQuestion}
                 </p>

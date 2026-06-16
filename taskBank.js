@@ -4,9 +4,10 @@
 //   responses  — append-only participant answers (recordResponse).
 //
 // The Beta prevalence posterior + AI-exposure live in SQL views (schema.postgres.sql), so this
-// module just reads/writes rows; acquire() selects representative PROBES (decidability-ordered) over
-// the UNDECIDED tasks. The decision logic here is a port of final/active_learning/evidence.py —
-// keep the two in sync.
+// module just reads/writes rows; acquire() selects representative PROBES (knowledge-gradient-ordered:
+// decidability discounted by the one-step P(this probe closes the decision)) over the UNDECIDED tasks.
+// The decision logic here is a port of final/active_learning/evidence.py + simulate_active_learning.py
+// (kg_value) — keep the two in sync.
 //
 // Requires:  npm install pg   ·   env: DATABASE_URL   ·   ESM (matches server.js)
 import pg from 'pg';
@@ -31,10 +32,10 @@ const C     = Number(process.env.TASK_BANK_C     ?? 0.95);
 const DELTA = Number(process.env.TASK_BANK_DELTA ?? 0.12);
 const PROBE_MAX = Number(process.env.TASK_BANK_PROBE_MAX ?? 12);  // fatigue ceiling: max probes / session
 const PROBE_MIN = Number(process.env.TASK_BANK_PROBE_MIN ?? 2);   // floor while ANY task is still undecided
-// Thompson-style randomization of the decidability order (softmax/Gumbel temperature). Concurrent
+// Gumbel-softmax randomization of the KG-discounted decidability order (softmax temperature). Concurrent
 // participants read the same posterior, so a DETERMINISTIC top-k herds them onto identical probes;
 // τ>0 spreads the picks. Sim-validated: τ≈0.1 ties deterministic when sequential and ~4× better under
-// heavy concurrency. 0 = deterministic.
+// heavy concurrency; KG discount keeps the score on decidability's scale so this τ transfers unchanged. 0 = deterministic.
 const PROBE_TAU = Number(process.env.TASK_BANK_PROBE_TAU ?? 0.1);
 
 // ── seed (factory artifact → tasks) ──────────────────────────────────────────
@@ -214,9 +215,32 @@ async function stageGeneratedResponse({ participant, occupation = null, statemen
 // while lots is undecided (probe hard to resolve the inventory), and cede slots to generation as it
 // firms up — bounded by PROBE_MAX (fatigue) and by how many tasks are actually still UNDECIDED, with
 // a PROBE_MIN trickle while any work remains. So probes/session = a demand-driven hump, not a constant.
-async function pickProbes(occupation) {
+// Read-only: which bank task does each already-mentioned statement cover? Returns Map(statement → bankId)
+// for the matches. The embedding NN only RETRIEVES the top-K candidates; an LLM (llmEquivalent, the same
+// arbiter harvest uses) makes the actual same-task decision — no cosine threshold (cosine over-merges).
+// Used to (a) dedup the probe set and (b) record the mention as evidence. No lock (pure reads); the
+// per-statement LLM calls run concurrently so latency ≈ one call.
+async function matchToBankIds(occupation, statements) {
+  const clean = [...new Set((statements || []).map(s => String(s).trim()).filter(Boolean))];
+  if (!clean.length) return new Map();
+  const embs = await embedMany(clean);
+  const pairs = await Promise.all(clean.map(async (stmt, i) => {
+    const { rows } = await pool.query(
+      `SELECT id, statement FROM tasks
+         WHERE occupation = $1 AND embedding IS NOT NULL
+         ORDER BY embedding <=> $2::vector LIMIT $3`,            // NN = retrieval only; LLM decides below
+      [occupation, vlit(embs[i]), HARVEST_TOPK]);
+    if (!rows.length) return null;
+    const id = await llmEquivalent(stmt, rows);                 // same-task? → bank id, else null
+    return id ? [stmt, id] : null;
+  }));
+  return new Map(pairs.filter(Boolean));
+}
+
+async function pickProbes(occupation, { coveredIds = new Set() } = {}) {
   const rows = await loadBank(occupation);
-  const pool = acquire(rows);                                        // ALL undecided, most-decidable first
+  const pool = acquire(rows, { priorIds: coveredIds });             // undecided & NOT already volunteered
+  if (coveredIds.size) console.log(`[pickProbes] ${occupation}: deduped ${coveredIds.size} volunteered task(s)`);
   if (!pool.length) return [];                                       // inventory resolved → no probes owed
   const undecidedFrac = pool.length / Math.max(1, rows.length);
   const budget = Math.min(pool.length,
@@ -264,31 +288,49 @@ function decidability(conf, deny, { theta = THETA, c = C } = {}) {
   return Math.min(c - p, p - (1 - c));
 }
 
+// One-step KNOWLEDGE GRADIENT (mirror simulate_active_learning.py `kg_value`): P(the next representative
+// answer CLOSES the decision). A probe of (conf,deny) confirms w.p. p̂→(conf+1,deny) or denies→(conf,deny+1),
+// and kg = the probability that one such probe makes the task terminal (IN/OUT/BOUNDARY). It is the exact
+// expected-decisions-closed objective that `decidability` approximates (validated ≈-equivalent). Used to
+// DISCOUNT decidability in acquire(): a task can only resolve in one step when it is ALREADY near a bound, so
+// dist·(1−kg) sharpens the order among about-to-resolve tasks while staying on decidability's [0,C−½] scale.
+function kgValue(conf, deny, { theta = THETA, c = C, delta = DELTA } = {}) {
+  conf = Number(conf); deny = Number(deny);
+  const phat = (1 + conf) / (2 + conf + deny);
+  const term = (x, y) => (decide(x, y, { theta, c, delta }) !== 'UNDECIDED' ? 1 : 0);
+  return phat * term(conf + 1, deny) + (1 - phat) * term(conf, deny + 1);
+}
+
 // ── acquisition: representative PROBE selection over the bank ──
-// Keep only UNDECIDED tasks (IN/OUT/BOUNDARY are resolved → p≈0, never re-shown); order them by
-// DECIDABILITY (closest to a confidence bound first). Probes are UNFILTERED by relevance — that
-// representativeness is what makes the in/out decision unbiased; engagement and recall come from
-// generation/discovery, not from the bank. Order is randomized via a Gumbel-softmax over decidability
-// (key = _dec/τ + log(−log U), ascending; τ=0 → deterministic) so concurrent participants reading the
-// same posterior don't herd onto the same tasks. Key is computed ONCE per task.
+// Keep only UNDECIDED tasks (IN/OUT/BOUNDARY are resolved → p≈0, never re-shown); order them by the
+// KNOWLEDGE-GRADIENT-discounted decidability score dist·(1−kg) (smallest ⇒ probe me next — exact one-step
+// expected-decisions-closed; closest to a confidence bound first, sharpened by the probability the next
+// probe actually closes the call). Probes are UNFILTERED by relevance — that representativeness is what
+// makes the in/out decision unbiased; engagement and recall come from generation/discovery, not the bank.
+// Order is randomized via a Gumbel-softmax over the score (key = score/τ + log(−log U), ascending; τ=0 →
+// deterministic) so concurrent participants reading the same posterior don't herd. Score computed ONCE/task.
 // NOTE: decision uses REPRESENTATIVE counts — loadBank's task_posterior must filter is_probe=true.
-function acquire(bankRows, { priorTasks = [] } = {}) {
+function acquire(bankRows, { priorTasks = [], priorIds = null } = {}) {
   const prior = new Set((priorTasks || []).map(s => String(s).trim().toLowerCase()));
+  const exclude = priorIds instanceof Set ? priorIds : new Set(priorIds || []);  // bank ids already covered
   const undecided = [];
   for (const r of bankRows) {
+    if (exclude.has(r.id)) continue;                              // worker already volunteered this task
     if (prior.has(r.statement.trim().toLowerCase())) continue;
     const conf = Number(r.n_confirmed) || 0;
     const deny = (Number(r.n_shown) || 0) - conf;
     if (decide(conf, deny) !== 'UNDECIDED') continue;            // IN/OUT/BOUNDARY → resolved
-    undecided.push({ ...r, _dec: decidability(conf, deny) });
+    const dec = decidability(conf, deny);
+    undecided.push({ ...r, _dec: dec, _score: dec * (1 - kgValue(conf, deny)) });  // KG-discounted decidability
   }
   return undecided
-    .map(r => ({ r, k: PROBE_TAU > 0 ? r._dec / PROBE_TAU + Math.log(-Math.log(Math.random())) : r._dec }))
+    .map(r => ({ r, k: PROBE_TAU > 0 ? r._score / PROBE_TAU + Math.log(-Math.log(Math.random())) : r._score }))
     .sort((a, b) => a.k - b.k)
     .map(({ r }) => ({ id: r.id, statement: r.statement, level: r.level, ai: r.ai,
-                       isProbe: true, decidability: Number(r._dec.toFixed(4)) }));
+                       isProbe: true, decidability: Number(r._dec.toFixed(4)),
+                       kgScore: Number(r._score.toFixed(4)) }));
 }
 
 export { pool, seedTasks, loadBank, nParticipants, recordResponse,
-         stageGeneratedResponse, pickProbes, drainSession, acquire, decide, decidability,
-         probGe };
+         stageGeneratedResponse, pickProbes, matchToBankIds, drainSession, acquire, decide, decidability,
+         kgValue, probGe };

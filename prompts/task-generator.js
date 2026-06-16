@@ -285,11 +285,13 @@ export function buildGapFillMessages({ jobTitle, responsibilities, typicalWeek, 
 
 BE EXHAUSTIVE, BUT DO NOT PAD. List the COMPLETE set of real recurring tasks for THIS role that aren't already covered — the core work plus the surrounding admin, communication, coordination, scheduling, upkeep/maintenance, reporting, learning, and compliance tasks. "Exhaustive" means don't MISS a genuine task — it does NOT mean inflate the list: every item must be a real, recurring task a typical person in this role actually does. No padding, no marginal one-offs, no near-duplicates to lengthen it.
 
+DISJOINT — MAXIMIZE COVERAGE SPREAD. Every task you list must be DISJOINT: non-overlapping with each other AND with the COVERED tasks, each occupying a clearly SEPARATE part of the job. Carve the role into distinct, non-redundant pieces and spread across its different areas — core work, admin, communication, coordination, scheduling, upkeep/maintenance, reporting, learning, compliance — rather than offering several angles on the same activity. If two candidate tasks could describe the SAME slice of someone's day, they are NOT disjoint: keep only the single most central one and spend the freed slot on an area you haven't covered yet.
+
 RANK by IMPORTANCE / RELEVANCE to THIS person — most central and most likely tasks FIRST, peripheral/occasional/generic ones LAST. A later step trims from the BOTTOM, so ordering is critical: never bury an obviously-core task below filler.
 
 Rules:
 - Each must be a realistic, recurring task for THIS role, grounded in their job title, responsibilities, and week. NEVER import tasks from a different job, and never invent something implausible.
-- Do NOT overlap or duplicate any COVERED task (compare meaning, not wording), and no near-duplicates among your own (e.g. monitoring vs. investigating vs. tracking metrics are ONE task).
+- Do NOT overlap or duplicate any COVERED task (compare meaning, not wording), and no near-duplicates among your own (e.g. monitoring vs. investigating vs. tracking metrics are ONE task) — see DISJOINT above.
 - O*NET task-statement style: verb-led, 8–18 words, plain language, specific, sentence case, terminal period. Use the role's real vocabulary.
 - Output up to ${maxGap} tasks, ordered MOST IMPORTANT FIRST.
 

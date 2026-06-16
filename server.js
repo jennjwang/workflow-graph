@@ -249,13 +249,13 @@ app.post('/api/check-coverage', async (req, res) => {
 // intent and framing, so it doesn't sound canned. Fails open to null so the
 // client falls back to the canonical static text.
 app.post('/api/interview-question', async (req, res) => {
-  const { canonicalQuestion, framingNotes = '' } = req.body;
+  const { canonicalQuestion, framingNotes = '', context = '' } = req.body;
   try {
     const response = await client.chat.completions.create({
       model: QUESTION_MODEL,
       temperature: 0.5,
       response_format: { type: 'json_object' },
-      messages: rewordQuestionMessages({ canonicalQuestion, framingNotes }),
+      messages: rewordQuestionMessages({ canonicalQuestion, framingNotes, context }),
     });
     const parsed = JSON.parse(response.choices[0].message.content);
     const question = typeof parsed.question === 'string' && parsed.question.trim()

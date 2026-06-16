@@ -32,7 +32,7 @@ export function evaluateAnswerMessages({
   // Minimum follow-ups: ask at least this many even when criteria are already
   // met — the extra one digs a little deeper into a task they mentioned.
   const minBlock = minFollowups > followupCount
-    ? `\n\nMINIMUM FOLLOW-UPS: you must ask at least ${minFollowups} follow-up(s) for this question and have asked ${followupCount} so far. So EVEN IF every criterion is already satisfied, you still need to ask one more — a natural, curious follow-up that digs a little deeper into the single most interesting or central task they mentioned (what it involves, how they go about it, what it's for). When you do this, set "allCovered" to false and provide the followUp.`
+    ? `\n\nMINIMUM FOLLOW-UPS: you must ask at least ${minFollowups} follow-up(s) for this question and have asked ${followupCount} so far. So EVEN IF every criterion is already satisfied, you still need to ask one more — a natural, curious follow-up that digs a little deeper into the single most interesting or central activity they mentioned — surfacing what they ACTUALLY DO in it (the concrete tasks/steps), phrased freshly per the rules above (not the "what does it involve" mold, and never which specific one or what it's about). When you do this, set "allCovered" to false and provide the followUp.`
     : '';
 
   // The full interview conversation so far — lets the interviewer ask the next
@@ -56,9 +56,12 @@ When a criterion is unmet, write ONE follow-up targeting the single most critica
   ✅ "Was there anything else that took up your time this week?"
   ✅ When probing an area THEY named: "You mentioned your AI-and-econ research — what did that involve this week?" (asks what they did, without proposing what)
 - USE THE WHOLE CONVERSATION. You can see everything said so far. Build on it. Reference earlier things naturally when it helps ("earlier you said you're responsible for hiring — did any of that come up?"). A real interviewer remembers what they've already been told and doesn't ask in a vacuum — but reference only what THEY said, never an activity you've supplied.
+- SURFACE MORE TASKS. The whole point of every follow-up is to draw out MORE of the participant's tasks — to come away with concrete tasks you didn't have before. When they name an activity (e.g. "I write papers", "I see patients", "I run trainings"), the most productive move is to ask what they actually have to DO for it — the smaller tasks it breaks into. Do NOT fish for the CONTENT of their work: the topic or subject, what a paper / project / case is "about", or WHICH specific one it was. Knowing the title or topic adds NO new task.
+  ❌ "What's one paper you worked on recently?" / "What was the report about?" (content — surfaces no new task)
+  ✅ "When you write a paper, what do you need to do to get it done?" or "What does doing research actually look like for you?" (both pull out the constituent tasks — drafting, lit review, revising, making figures…)
 - NEVER repeat a question you've already asked, and never re-probe a thread you already covered. If a gap remains only on something you already asked about, move to a different gap or mark it covered.
 - VARY how you open — do NOT start follow-ups the same way. "Got it" or "You mentioned…" are fine very occasionally but you're badly overusing them; most of the time just fold their own words into the question and ask directly, the way a person actually mid-chat would.
-- Do NOT reuse the same stock SHAPE or filler phrases. You badly overuse "what does that look like", "what does that involve", "what does that usually look like for you", and especially "day to day" / "day-to-day" — across several follow-ups they blur into one repetitive question. Do NOT tack "day to day" onto a question as filler. Ask instead about the CONCRETE specific that fits THIS thread: what they actually make or produce, who it's for, the steps they go through, what's hard about it, how often it happens, what tools they use. Each follow-up should sound like a different question, not the same template with a new noun.
+- Do NOT reuse the same stock SHAPE or filler phrases. You badly overuse the "what does X actually involve / tend to be / look like" mold — e.g. "what does that look like", "what does that involve", "what does the actual work itself tend to be", "what does that usually look like for you" — and the filler "day to day" / "day-to-day". Across the interview these blur into one repetitive question. A phrasing like "what does doing research look like for you?" or "what does that involve?" is FINE occasionally — but do NOT lean on the SAME shape for every follow-up. The filler "day to day" / "day-to-day" may appear AT MOST ONCE in the whole interview: if it already shows up earlier in the conversation, do NOT use it again. Keep VARYING the angle, always aiming at what they DO — what they need to do for it ("what do you need to do to get a paper done?"), the STEPS ("how do you go about that?"), the ACTIONS ("what do you actually do when you do that?"), the PARTS ("what are the different pieces of that work?"), the OUTPUT ("what do you end up producing?"), the PEOPLE ("who do you do that with?"), or the HARD PART ("what's the trickiest bit?"). Do NOT reach for a content example ("which one recently?"). Each follow-up should sound like a genuinely different question, not the same template with a new noun.
 - Be RESPONSIVE to the specific thing they just said — pick up that thread, ask what a curious listener would naturally ask next. Different answer → different question, not a template.
 - Warm and LOW PRESSURE. Any one concrete thing is a fine answer. NEVER sound skeptical or invalidating; avoid challenge words like "actually". A "no" is valid data.
 - One sentence, conversational, no double-barreled questions, no PII.
@@ -77,11 +80,11 @@ Return JSON: { "allCovered": boolean, "followUp": string | null, "skipRequested"
 // ── /api/check-coverage ───────────────────────────────────────────────────────
 
 // Builds the [system, user] messages that decide whether an UPCOMING question is
-// already redundant — i.e. earlier answers in this same conversation have already
-// satisfied every one of its coverage criteria, so asking it would just repeat
-// ground already covered. Deliberately conservative: when in doubt, NOT covered
-// (ask the question), so we never silently drop a question that could yield new
-// tasks. Used to auto-skip a pass the participant has effectively already answered.
+// still WORTH ASKING, given what the participant already said in earlier passes.
+// Skip it when asking would just repeat ground they've covered; ask it when it
+// could surface something new. Leans toward asking when unsure, so we never
+// silently drop a question that could yield a new task. Used to auto-skip a pass
+// the participant has effectively already answered.
 export function checkCoverageMessages({ question, criteria, conversation = '' }) {
   const criteriaList = criteria.map((c, i) => `${i + 1}. ${c}`).join('\n');
   const convoBlock = conversation && conversation.trim()
@@ -91,18 +94,21 @@ export function checkCoverageMessages({ question, criteria, conversation = '' })
   return [
     {
       role: 'system',
-      content: `You decide whether an UPCOMING interview question is REDUNDANT — meaning the participant has ALREADY, earlier in this same conversation, said enough to satisfy EVERY one of its coverage criteria, so asking it now would only repeat ground already covered.
+      content: `You decide whether an UPCOMING interview question is still WORTH ASKING, given everything the participant has already said in earlier passes of this same interview. The question is part of a multi-pass interview that surfaces a person's work tasks from different angles, so by the time we reach it they may have already answered it in passing.
 
-Be CONSERVATIVE. Only answer covered=true when ALL criteria are CLEARLY and SUBSTANTIVELY already met by what the participant ACTUALLY said. When in doubt, answer false so the question still gets asked — missing a question is far worse than asking one that turns out slightly redundant.
-- Surface overlap in topic is NOT enough; the specific criteria must each be satisfied by concrete things they said.
-- Different questions probe different angles. The fact that an earlier question touched the same area does not mean THIS question's criteria are met.
-- If the conversation is short or thin, answer false.
+Set covered=true (SKIP it) when asking would essentially just repeat ground they've already covered — they've effectively answered it, and it is unlikely to surface any task or detail they haven't already given.
+Set covered=false (ASK it) when there's a real chance it surfaces something new.
+
+Lean toward ASKING when genuinely unsure — dropping a question that could surface a new task is worse than asking a slightly redundant one. But DO skip when the answer is clearly already on the table.
+- Judge by what they ACTUALLY said, not mere topic overlap: a different question can probe a genuinely different angle even within the same area.
+- The criteria below describe what this question is trying to surface — use them to judge whether that's already been covered.
+- If the conversation so far is short or thin, ASK.
 
 Return JSON: { "covered": boolean, "reason": string } — reason is one short phrase.`,
     },
     {
       role: 'user',
-      content: `${convoBlock}\nThe UPCOMING question is: "${question}"\n\nIts coverage criteria:\n${criteriaList}\n\nHas the participant ALREADY said enough, earlier in this conversation, to satisfy ALL of these criteria? Return the JSON.`,
+      content: `${convoBlock}\nThe UPCOMING question is: "${question}"\n\nWhat this question is trying to surface:\n${criteriaList}\n\nGiven everything said so far, is this question still worth asking, or has the participant effectively already answered it in an earlier pass? Return the JSON.`,
     },
   ];
 }
@@ -110,7 +116,12 @@ Return JSON: { "covered": boolean, "reason": string } — reason is one short ph
 // ── /api/interview-question ───────────────────────────────────────────────────
 
 // Builds the [system, user] chat messages to reword a canonical question.
-export function rewordQuestionMessages({ canonicalQuestion, framingNotes = '' }) {
+// When `context` (the conversation so far) is provided, the question is TAILORED
+// to the participant's role/work so it doesn't read generically.
+export function rewordQuestionMessages({ canonicalQuestion, framingNotes = '', context = '' }) {
+  const contextBlock = context && context.trim()
+    ? `\n\nWHAT THE PARTICIPANT HAS ALREADY TOLD YOU (earlier in this interview):\n${context.trim()}\n\nTAILOR the question to THIS person so it lands specifically, not generically — ground it in their role and the kind of work they've described (e.g. for a nurse, who they work alongside on a shift and who they care for; for a freelance designer, which clients and collaborators). You may reference their role or field. But do NOT invent, name, or list specific people, teams, clients, tasks, or tools they haven't mentioned themselves — only ground it in what they actually said. Still ONE short, natural question.`
+    : '';
   return [
     {
       role: 'system',
@@ -123,7 +134,7 @@ Rules:
 - Use plain, universal language that fits ANY job (a nurse, a barista, a teacher, an engineer). Do NOT introduce words that presume seniority or a managerial role — e.g. "oversee", "manage", "lead", "in charge of", "key areas" — unless the canonical question itself used them. Never make the question sound more senior or corporate than the original.
 
 Canonical question: "${canonicalQuestion}"
-${framingNotes ? `Framing notes (MUST preserve): ${framingNotes}` : ''}
+${framingNotes ? `Framing notes (MUST preserve): ${framingNotes}` : ''}${contextBlock}
 
 Return JSON: { "question": string }`,
     },

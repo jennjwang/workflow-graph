@@ -67,6 +67,7 @@ test('gap-fill messages embed covered tasks, the cap, and the role context', () 
   assert.equal(msgs.length, 2);
   const [system, user] = msgs;
   assert.match(system.content, /up to 30 tasks/);
+  assert.match(system.content, /DISJOINT/); // gap-fill must seek non-overlapping tasks
   assert.match(user.content, /Data Scientist/);
   assert.match(user.content, /- Train models/);
   assert.match(user.content, /- Clean data/);

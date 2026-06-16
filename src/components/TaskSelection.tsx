@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   generateTasksFromInterview,
+  generateAttentionChecks,
   extractInterviewTasks,
   recordScreenOut,
   transcribeAudio,
@@ -52,17 +53,150 @@ const RELEVANCE_OPTIONS: {
 // generated list must never exceed it. The generator produces normalized +
 // gap-fill tasks freely; if the combined list exceeds this, the server
 // down-samples both groups, preserving their natural proportion.
-const MAX_TASKS = 20;
+const MAX_TASKS = 15;
 
 // Number of tasks the participant must rate before the "Finish early"
 // affordance unlocks. Pinned to MAX_TASKS so the threshold tracks the picker
 // cap — finishing early now means "after the full list".
 const DONE_THRESHOLD = MAX_TASKS;
 
+// Attention checks: O*NET-style tasks from clearly unrelated occupations,
+// spliced into the picker. Any honest participant marks them "I don't do this";
+// answering "yes" counts as a fail (see advance()). The count is part of the
+// MAX_TASKS budget — real tasks are capped at MAX_TASKS - ATTENTION_CHECK_COUNT
+// so the combined list never exceeds the burnout cap.
+const ATTENTION_CHECK_COUNT = 2;
+
+// Used when the LLM call fails or returns too few items — guarantees the picker
+// still carries attention checks. Each is a real task from an occupation with no
+// overlap with knowledge/office work.
+const FALLBACK_ATTENTION_CHECKS: string[] = [
+  "Replace worn brake pads and rotors on a customer's vehicle, then road-test it to confirm the repair.",
+  "Administer prescribed vaccines to patients and record each dose in their medical chart.",
+  "Inspect overhead power lines from a bucket truck and replace damaged insulators.",
+  "Harvest ripe produce by hand and sort it into crates for shipment to distributors.",
+  "Cut, bend, and join sheet-metal ducting for a building's heating and cooling system.",
+];
+
+// Build TaskItem cards for the attention checks, padding from the fallback list
+// when the model returns too few. De-dupes case-insensitively and returns up to
+// `count` items.
+function buildAttentionCheckItems(
+  generated: string[],
+  count: number,
+): TaskItem[] {
+  const seen = new Set<string>();
+  const pool: string[] = [];
+  for (const raw of [...generated, ...FALLBACK_ATTENTION_CHECKS]) {
+    const name = raw.trim();
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) continue;
+    seen.add(key);
+    pool.push(name);
+    if (pool.length >= count) break;
+  }
+  return pool.map((name) => ({
+    name,
+    originalName: name,
+    status: "unreviewed" as const,
+    isAttentionCheck: true,
+  }));
+}
+
+// Intersperse attention checks among the real tasks at even intervals, never at
+// index 0 (the first card orients the participant) and preferably not trailing.
+// Real-task order is preserved.
+function spliceAttentionChecks(
+  real: TaskItem[],
+  checks: TaskItem[],
+): TaskItem[] {
+  if (checks.length === 0) return real;
+  if (real.length <= 1) return [...real, ...checks];
+  const interval = Math.max(1, Math.floor(real.length / (checks.length + 1)));
+  const out: TaskItem[] = [];
+  let ci = 0;
+  for (let i = 0; i < real.length; i++) {
+    out.push(real[i]);
+    if (ci < checks.length && (i + 1) % interval === 0 && i + 1 < real.length) {
+      out.push(checks[ci++]);
+    }
+  }
+  // Safety net: append any checks the interval math didn't place.
+  while (ci < checks.length) out.push(checks[ci++]);
+  return out;
+}
+
 // The "Make it yours" edit nudge stays hidden until the participant has passed
 // this many task cards without editing any task name. Once they edit any task,
 // the nudge stops appearing for the rest of the flow.
 const NUDGE_AFTER_UNEDITED = 3;
+
+// Confirmed tasks (with per-task hours) seeded for the ?dev=task-selection&hours=1
+// preview so the hours breakdown has content without running the real pipeline.
+// Their sum (17h) deliberately differs from the seeded weekly total (40h) so the
+// "Rescale to match" note shows.
+const DEV_HOURS_SEED: TaskItem[] = [
+  {
+    name: "Build and ship UI components",
+    originalName: "Build and ship UI components",
+    status: "confirmed",
+    hoursPerWeek: 6,
+  },
+  {
+    name: "Review pull requests",
+    originalName: "Review pull requests",
+    status: "confirmed",
+    hoursPerWeek: 4,
+  },
+  {
+    name: "Debug production issues",
+    originalName: "Debug production issues",
+    status: "confirmed",
+    hoursPerWeek: 3,
+  },
+  {
+    name: "Write integration tests",
+    originalName: "Write integration tests",
+    status: "confirmed",
+    hoursPerWeek: 2.5,
+  },
+  {
+    name: "Sync with design",
+    originalName: "Sync with design",
+    status: "confirmed",
+    hoursPerWeek: 1.5,
+  },
+  {
+    name: "Plan the sprint and groom the backlog",
+    originalName: "Plan the sprint and groom the backlog",
+    status: "confirmed",
+    hoursPerWeek: 2,
+  },
+  {
+    name: "Pair with teammates on tricky features",
+    originalName: "Pair with teammates on tricky features",
+    status: "confirmed",
+    hoursPerWeek: 3,
+  },
+  {
+    name: "Update technical documentation",
+    originalName: "Update technical documentation",
+    status: "confirmed",
+    hoursPerWeek: 1,
+  },
+  {
+    name: "Investigate and triage bug reports",
+    originalName: "Investigate and triage bug reports",
+    status: "confirmed",
+    hoursPerWeek: 2,
+  },
+  {
+    name: "Mentor junior engineers",
+    originalName: "Mentor junior engineers",
+    status: "confirmed",
+    hoursPerWeek: 1.5,
+  },
+];
 
 // Three separate bonus pools:
 //  • EDIT bonus:    per-character on tasks the participant rewords (Levenshtein distance).
@@ -127,7 +261,8 @@ export function TaskSelection() {
     setPhase,
     prolific,
     setProlific,
-    condition,
+    avgWeeklyHours,
+    setAvgWeeklyHours,
   } = useWorkflowStore(
     useShallow((s) => ({
       userProfile: s.userProfile,
@@ -139,7 +274,8 @@ export function TaskSelection() {
       setPhase: s.setPhase,
       prolific: s.prolific,
       setProlific: s.setProlific,
-      condition: s.condition,
+      avgWeeklyHours: s.avgWeeklyHours,
+      setAvgWeeklyHours: s.setAvgWeeklyHours,
     })),
   );
 
@@ -156,7 +292,9 @@ export function TaskSelection() {
   const devSkipToCard = _devPhase && _search.get("card") === "1";
   const devSkipToHours = _devPhase && _search.get("hours") === "1";
 
-  const [tasks, setTasks] = useState<TaskItem[]>([]);
+  const [tasks, setTasks] = useState<TaskItem[]>(
+    devSkipToHours ? DEV_HOURS_SEED : [],
+  );
   const [currentIdx, setCurrentIdx] = useState(0);
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">(
     "loading",
@@ -214,6 +352,20 @@ export function TaskSelection() {
   const aiHowSoCapped =
     aiHowSoChars * AI_HOWSO_BONUS_PER_CHAR_USD >= AI_HOWSO_BONUS_MAX_USD;
 
+  // Dev preview: when jumping straight to the breakdown (&step=breakdown), seed
+  // a weekly total so the "Rescale" note renders. NOT seeded for the plain
+  // hours=1 link, so the step-1 question still starts empty.
+  useEffect(() => {
+    if (
+      devSkipToHours &&
+      _search.get("step") === "breakdown" &&
+      avgWeeklyHours == null
+    ) {
+      setAvgWeeklyHours(40);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Kick off task load immediately (runs during intro screen).
   // We skip the domain-generation step and ask the model directly for a breadth-spanning
   // set of tasks for this role. Faster (one LLM call instead of N+1) and the model handles
@@ -246,12 +398,29 @@ export function TaskSelection() {
           );
         }
 
-        // Generate the full task list while the processing screen stays up, so
+        // Kick off attention-check generation in parallel with the real task
+        // stream so it adds no latency to the processing screen. Fail-open:
+        // buildAttentionCheckItems pads from the fallback list if this rejects
+        // or returns too few. Request a couple extra for de-dupe headroom.
+        const attnPromise = generateAttentionChecks(
+          userProfile.jobTitle,
+          userProfile.responsibilities,
+          userProfile.typicalWeek,
+          ATTENTION_CHECK_COUNT + 2,
+        ).catch((e) => {
+          console.warn(
+            "[task-selection] attention-check fetch failed, using fallback:",
+            e,
+          );
+          return [] as string[];
+        });
+
+        // Generate the real task list while the processing screen stays up, so
         // the participant only reaches the intro/cards once every task is ready
-        // (no streaming-in behind the intro). Attention checks are spliced in
-        // inline at the same ATTENTION_CHECK_INTERVAL cadence; the hard 20-item
-        // cap still applies. Linear indexing into the (already shuffled)
-        // FALLBACK_ATTENTION_CHECKS guarantees no repeats within a session.
+        // (no streaming-in behind the intro). Real tasks are capped at
+        // REAL_BUDGET = MAX_TASKS - ATTENTION_CHECK_COUNT so the spliced list
+        // never exceeds the burnout cap.
+        const REAL_BUDGET = MAX_TASKS - ATTENTION_CHECK_COUNT;
         let realCount = 0;
         const onTask = (
           name: string,
@@ -263,7 +432,7 @@ export function TaskSelection() {
         ) => {
           realCount += 1;
           setTasks((prev) => {
-            if (prev.length >= MAX_TASKS) return prev;
+            if (prev.length >= REAL_BUDGET) return prev;
             return [
               ...prev,
               {
@@ -285,12 +454,21 @@ export function TaskSelection() {
           userProfile.responsibilities,
           interviewTasks,
           (name, meta) => onTask(name, meta),
-          MAX_TASKS,
+          REAL_BUDGET,
           prolific.pid || useWorkflowStore.getState().sessionId,
         );
         // If the stream returned zero tasks (model fluke), surface an error
         // state so the participant sees something rather than a frozen loader.
         if (realCount === 0) setLoadState("error");
+
+        // Splice the attention checks into the generated list at even intervals.
+        const attnItems = buildAttentionCheckItems(
+          await attnPromise,
+          ATTENTION_CHECK_COUNT,
+        );
+        if (attnItems.length > 0) {
+          setTasks((prev) => spliceAttentionChecks(prev, attnItems));
+        }
       } catch (e) {
         console.error("Task load failed", e);
         setLoadState("error");
@@ -388,12 +566,19 @@ export function TaskSelection() {
       }
     }
 
+    // Per-task dwell time: shownAt was stamped when this card became active.
+    const answeredAt = Date.now();
     setTasks((prev) =>
       prev.map((t, i) => {
         if (i !== currentIdx) return t;
+        const timed = {
+          ...t,
+          answeredAt,
+          timeSpentMs: t.shownAt != null ? answeredAt - t.shownAt : undefined,
+        };
         const withRel = meta?.relevance
-          ? { ...t, relevance: meta.relevance }
-          : t;
+          ? { ...timed, relevance: meta.relevance }
+          : timed;
         if (answer === "no") return { ...withRel, status: "removed" };
         return {
           ...withRel,
@@ -418,7 +603,15 @@ export function TaskSelection() {
         }
         setTaskItems(
           tasks.map((t, i) =>
-            i !== currentIdx ? t : { ...t, status: "confirmed" },
+            i !== currentIdx
+              ? t
+              : {
+                  ...t,
+                  status: "confirmed",
+                  answeredAt,
+                  timeSpentMs:
+                    t.shownAt != null ? answeredAt - t.shownAt : undefined,
+                },
           ),
         );
         setPhase("screen-out");
@@ -522,8 +715,15 @@ export function TaskSelection() {
     }));
 
     const allTasks = [...tasks, ...extraItems];
+    // selectedTasks is the participant's real confirmed work — never an
+    // attention check (one answered "yes" carries status "confirmed" but must
+    // not pollute the list). It's still retained in taskItems with its status.
     const confirmed = allTasks
-      .filter((t) => t.status === "confirmed" || t.status === "edited")
+      .filter(
+        (t) =>
+          (t.status === "confirmed" || t.status === "edited") &&
+          !t.isAttentionCheck,
+      )
       .map((t) => t.name);
 
     // Freeze the bonus the participant earned at submit time. Char counts are
@@ -583,9 +783,15 @@ export function TaskSelection() {
 
     // End-of-interview MERGE: fold this participant's confirmed GENERATED tasks into the bank
     // (server-side, async + serialized). Fire-and-forget; no-ops when the bank is disabled.
-    drainSession({ participant: prolific.pid || useWorkflowStore.getState().sessionId });
+    drainSession({
+      participant: prolific.pid || useWorkflowStore.getState().sessionId,
+    });
 
-    setPhase(condition === "short" ? "final-questions" : "task-priority");
+    // This study has no Part-3 priority/workflow phases, so every condition goes
+    // straight to the final feedback questions. (Routing the default 'full'
+    // condition to 'task-priority' dead-ended at StudyComplete — App.tsx has no
+    // renderer for that phase — silently skipping the feedback form.)
+    setPhase("final-questions");
   };
 
   const confirmedCount = tasks.filter(
@@ -597,6 +803,27 @@ export function TaskSelection() {
   const loading =
     loadState === "loading" ||
     (loadState === "ready" && !currentTask && !isExhausted);
+
+  // Per-task timing: stamp shownAt the first time a card becomes the active
+  // question (answeredAt + timeSpentMs are set in advance()). cardActive gates
+  // out the processing/intro/hours screens where no card is visible; the
+  // shownAt == null guard makes it idempotent across re-renders.
+  const cardActive =
+    !showProcessing &&
+    !showIntro &&
+    !showHoursSummary &&
+    !!currentTask &&
+    !isExhausted;
+  useEffect(() => {
+    if (!cardActive) return;
+    setTasks((prev) =>
+      prev.map((t, i) =>
+        i === currentIdx && t.shownAt == null
+          ? { ...t, shownAt: Date.now() }
+          : t,
+      ),
+    );
+  }, [cardActive, currentIdx]);
 
   if (showProcessing) {
     return (
@@ -635,9 +862,15 @@ export function TaskSelection() {
       <HoursSummaryScreen
         confirmedPickerTasks={confirmedPickerTasks}
         extraTasks={extraTasks}
+        avgWeeklyHours={avgWeeklyHours}
+        onSetAvgWeeklyHours={setAvgWeeklyHours}
         onSetTaskHours={setTaskHours}
         onSetExtraHours={setExtraHours}
+        onAddTask={addExtraTask}
         onConfirm={finalize}
+        initialStep={
+          _search.get("step") === "breakdown" ? "breakdown" : "total"
+        }
       />
     );
   }
@@ -719,7 +952,7 @@ export function TaskSelection() {
       {/* Task area */}
       <div
         className={`relative z-10 flex-1 flex flex-col min-h-0 overflow-y-auto w-full mx-auto
-        ${isExhausted ? "justify-start pt-6 pb-12 px-5 sm:px-8 max-w-[860px]" : "px-5 sm:px-8 max-w-[780px]"}`}
+        ${isExhausted ? "justify-start pt-6 pb-[48vh] px-5 sm:px-8 max-w-[860px]" : "px-5 sm:px-8 max-w-[780px]"}`}
       >
         {loading ? (
           <div className="flex-1 flex items-center justify-center">
@@ -905,9 +1138,6 @@ function IntroScreen({ onStart }: { onStart: () => void }) {
 
 // ── Hours distribution summary ──────────────────────────────────────────────────
 
-// Reference point for the plausibility hint — a conventional full-time week.
-const FULL_WEEK_HOURS = 40;
-
 function formatHours(n: number): string {
   // Drop the trailing ".0" but keep halves etc. (e.g. 3, 3.5, 10).
   return Number.isInteger(n) ? `${n}` : `${n.toFixed(1)}`;
@@ -1026,16 +1256,31 @@ function HoursSliderRow({
 function HoursSummaryScreen({
   confirmedPickerTasks,
   extraTasks,
+  avgWeeklyHours,
+  onSetAvgWeeklyHours,
   onSetTaskHours,
   onSetExtraHours,
+  onAddTask,
   onConfirm,
+  initialStep = "total",
 }: {
   confirmedPickerTasks: { t: TaskItem; idx: number }[];
   extraTasks: { name: string; addedAt: number; hoursPerWeek?: number }[];
+  avgWeeklyHours: number | null;
+  onSetAvgWeeklyHours: (hours: number | null) => void;
   onSetTaskHours: (idx: number, hours: number | undefined) => void;
   onSetExtraHours: (idx: number, hours: number | undefined) => void;
+  onAddTask: (name: string) => void;
   onConfirm: () => void;
+  initialStep?: "total" | "breakdown";
 }) {
+  const [addInput, setAddInput] = useState("");
+  const submitAdd = () => {
+    const t = addInput.trim();
+    if (!t) return;
+    onAddTask(t);
+    setAddInput("");
+  };
   // One unified list so the bar segment, total, and legend all share an order
   // and color index.
   const items = [
@@ -1061,124 +1306,273 @@ function HoursSummaryScreen({
   // Every listed task needs a valid figure before we let them confirm — picker
   // tasks already collected hours during review; added tasks may still be blank.
   const allFilled = items.every((it) => typeof it.hours === "number");
+  // The total-hours question is its own first step; the per-task breakdown is
+  // the second. Always start on the question so it's asked before the breakdown.
+  const avgValid = typeof avgWeeklyHours === "number" && avgWeeklyHours > 0;
+  const [hoursStep, setHoursStep] = useState<"total" | "breakdown">(
+    initialStep,
+  );
 
-  // Soft plausibility hint — never blocks, just orients them.
-  const hint =
-    total === 0
-      ? null
-      : total > FULL_WEEK_HOURS * 2
-        ? `That's more than ${FULL_WEEK_HOURS * 2} hours — more than most people work in a week. Adjust any that look off.`
-        : total > FULL_WEEK_HOURS * 1.25
-          ? `That's well above a typical ${FULL_WEEK_HOURS}-hour week. That's fine if it's accurate — just double-check.`
-          : null;
+  // Seed the breakdown so the per-task hours sum EXACTLY to the weekly total the
+  // participant entered in step 1. Each task keeps its share of the per-task
+  // hours collected on the cards (or an even split if none were given), scaled
+  // to the total and rounded to half-hours via largest-remainder so the rounded
+  // values still add up to the target. Runs once, when advancing to step 2; they
+  // can fine-tune freely after.
+  const normalizeHoursToTotal = () => {
+    if (!avgValid || items.length === 0) return;
+    const targetUnits = Math.round((avgWeeklyHours as number) * 2); // half-hour units
+    if (targetUnits <= 0) return;
+    const currentSum = items.reduce((s, it) => s + (it.hours ?? 0), 0);
+    const weights = items.map((it) =>
+      currentSum > 0 ? (it.hours ?? 0) / currentSum : 1 / items.length,
+    );
+    const raw = weights.map((w) => w * targetUnits);
+    const units = raw.map((r) => Math.floor(r));
+    let leftover = targetUnits - units.reduce((s, u) => s + u, 0);
+    // Hand out the remaining half-hour units to the largest fractional parts.
+    raw
+      .map((r, i) => ({ i, frac: r - Math.floor(r) }))
+      .sort((a, b) => b.frac - a.frac)
+      .forEach(({ i }) => {
+        if (leftover > 0) {
+          units[i] += 1;
+          leftover -= 1;
+        }
+      });
+    items.forEach((it, i) => it.onChange(units[i] / 2));
+  };
 
   return (
     <div className="flex flex-col h-full bg-transparent relative overflow-hidden">
       {/* Header */}
       <div className="relative z-10 px-5 sm:px-8 pt-7 sm:pt-8 pb-5 shrink-0">
         <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-4">
-          Task Review
+          Time breakdown
         </p>
       </div>
 
-      <div className="relative z-10 flex-1 flex flex-col min-h-0 overflow-y-auto justify-start pb-12 px-5 sm:px-8">
-        <div className="w-full max-w-4xl mx-auto animate-fadeSlideIn">
-          <h2 className="text-[1.5rem] font-light text-slate-800 leading-snug tracking-tight">
-            Your week at a glance
-          </h2>
-          <p className="text-sm text-slate-500 mt-2 leading-relaxed">
-            Here's how your hours add up across tasks. Drag a bar for a quick
-            estimate, then use −/+ to fine-tune to the half hour.
-          </p>
-
-          {/* Total pill + stacked breakdown bar */}
-          <div className="mt-6 px-6 py-5 rounded-2xl bg-indigo-50/70">
-            <div>
-              <span className="text-3xl font-semibold text-indigo-600 tabular-nums align-middle">
-                {formatHours(total)}
-              </span>
-              <span className="ml-2 text-sm text-slate-500 align-middle">
-                hours / week across {taskCount} task{taskCount !== 1 ? "s" : ""}
-              </span>
-            </div>
-
-            <div className="mt-4 flex w-full h-12 rounded-xl overflow-hidden bg-indigo-100/60 ring-1 ring-inset ring-indigo-200/50">
-              {total > 0 ? (
-                items.map((it, i) => {
-                  const pct = ((it.hours ?? 0) / total) * 100;
-                  if (pct <= 0) return null;
-                  return (
-                    <div
-                      key={it.key}
-                      className="flex items-center justify-center text-white text-sm font-semibold border-r-[3px] border-white last:border-r-0 overflow-hidden whitespace-nowrap transition-[width] duration-300 ease-out"
-                      style={{
-                        width: `${pct}%`,
-                        background: segmentColor(i),
-                        textShadow: "0 1px 2px rgba(15,23,42,0.18)",
-                      }}
-                      title={`${it.name}: ${formatHours(it.hours ?? 0)}h`}
-                    >
-                      {pct >= 6 ? formatHours(it.hours ?? 0) : ""}
-                    </div>
-                  );
-                })
-              ) : (
-                <div className="flex items-center justify-center w-full text-xs text-slate-400">
-                  Set hours below to see your week
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Per-task rows — colored slider + −/value/+ stepper */}
-          <div className="mt-4 divide-y divide-slate-100">
-            {items.map((it, i) => (
-              <HoursSliderRow
-                key={it.key}
-                name={it.name}
-                hours={it.hours}
-                color={segmentColor(i)}
-                badge={it.badge}
-                onChange={it.onChange}
-              />
-            ))}
-          </div>
-
-          {hint && (
-            <p className="mt-4 flex items-start gap-2 text-sm leading-relaxed text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
-              <svg
-                className="w-4 h-4 mt-0.5 shrink-0 text-amber-500"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-                <line x1="12" y1="9" x2="12" y2="13" />
-                <line x1="12" y1="17" x2="12.01" y2="17" />
-              </svg>
-              <span>{hint}</span>
-            </p>
-          )}
-
-          <div className="mt-8 flex items-center justify-end gap-3">
-            {!allFilled && (
-              <p className="text-xs text-slate-400">
-                Enter hours for every task to continue.
+      {hoursStep === "total" ? (
+        <div className="relative z-10 flex-1 flex flex-col min-h-0 overflow-y-auto py-12 px-5 sm:px-8">
+          {/* my-auto centers when short; collapses to scroll when tall. */}
+          <div className="w-full my-auto animate-fadeSlideIn">
+            <div className="text-center max-w-xl mx-auto">
+              {/* Step 1 — total weekly hours, asked first and on its own. */}
+              <h2 className="text-[1.5rem] font-light text-slate-800 leading-snug tracking-tight">
+                In an average week, how many hours do you work?
+              </h2>
+              <p className="text-sm text-slate-500 mt-2 leading-relaxed">
+                Your best estimate of total hours across all your work in a
+                typical week.
               </p>
-            )}
-            <button
-              onClick={onConfirm}
-              disabled={!allFilled}
-              className="shrink-0 inline-flex items-center gap-2 px-7 py-3 bg-gradient-to-br from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed text-white text-sm font-medium rounded-full transition-all active:scale-[0.98] shadow-md shadow-indigo-200/70"
-            >
-              Continue
-            </button>
+              <div className="mt-6 flex items-center justify-center gap-3">
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  step={0.5}
+                  value={avgWeeklyHours ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value.trim();
+                    if (v === "") return onSetAvgWeeklyHours(null);
+                    const parsed = parseFloat(v);
+                    onSetAvgWeeklyHours(
+                      Number.isFinite(parsed) && parsed >= 0 ? parsed : null,
+                    );
+                  }}
+                  placeholder=""
+                  className="w-28 rounded-xl border border-slate-200 bg-white px-4 py-3 text-lg text-center text-slate-800 tabular-nums transition focus:border-indigo-300 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+                />
+                <span className="text-sm text-slate-500">hours / week</span>
+              </div>
+
+              <div className="mt-8 flex justify-center">
+                <button
+                  onClick={() => setHoursStep("breakdown")}
+                  disabled={!avgValid}
+                  className="shrink-0 inline-flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed text-white text-sm font-medium rounded-full transition-all active:scale-[0.98] shadow-sm shadow-indigo-200"
+                >
+                  Continue
+                </button>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
+      ) : (
+        <div className="relative z-10 flex-1 flex flex-col min-h-0 overflow-y-auto w-full max-w-4xl mx-auto px-5 sm:px-8 animate-fadeSlideIn">
+          {/* my-auto centers the whole block vertically when it fits the panel,
+              and collapses to scroll when the task list is long. */}
+          <div className="my-auto w-full py-4">
+          {/* Heading + total bar */}
+          <div className="pb-4">
+            <h2 className="text-[1.5rem] font-light text-slate-800 leading-snug tracking-tight">
+              Your week at a glance
+            </h2>
+            <p className="text-sm text-slate-500 mt-2 leading-relaxed">
+              Here's how your hours add up across tasks. Drag a bar for a quick
+              estimate, then use −/+ to fine-tune to the half hour.
+            </p>
+
+            {/* Total pill + stacked breakdown bar */}
+            <div className="mt-6 px-6 py-5 rounded-2xl bg-indigo-50/70">
+              <div>
+                <span className="text-3xl font-semibold text-indigo-600 tabular-nums align-middle">
+                  {formatHours(total)}
+                </span>
+                <span className="ml-2 text-sm text-slate-500 align-middle">
+                  hours / week across {taskCount} task
+                  {taskCount !== 1 ? "s" : ""}
+                </span>
+              </div>
+
+              <div className="mt-4 flex w-full h-12 rounded-xl overflow-hidden bg-indigo-100/60 ring-1 ring-inset ring-indigo-200/50">
+                {total > 0 ? (
+                  items.map((it, i) => {
+                    const pct = ((it.hours ?? 0) / total) * 100;
+                    if (pct <= 0) return null;
+                    return (
+                      <div
+                        key={it.key}
+                        className="flex items-center justify-center text-white text-sm font-semibold border-r-[3px] border-white last:border-r-0 overflow-hidden whitespace-nowrap transition-[width] duration-300 ease-out"
+                        style={{
+                          width: `${pct}%`,
+                          background: segmentColor(i),
+                          textShadow: "0 1px 2px rgba(15,23,42,0.18)",
+                        }}
+                        title={`${it.name}: ${formatHours(it.hours ?? 0)}h`}
+                      >
+                        {pct >= 6 ? formatHours(it.hours ?? 0) : ""}
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="flex items-center justify-center w-full text-xs text-slate-400">
+                    Set hours below to see your week
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Task rows + footer flow together under the bar. */}
+          <div>
+            <div className="divide-y divide-slate-100">
+              {items.map((it, i) => (
+                <HoursSliderRow
+                  key={it.key}
+                  name={it.name}
+                  hours={it.hours}
+                  color={segmentColor(i)}
+                  badge={it.badge}
+                  onChange={it.onChange}
+                />
+              ))}
+            </div>
+
+            {/* Footer — add-a-missed-task + Continue, just below the rows. */}
+            <div className="pt-4 pb-4 mt-2 border-t border-slate-100">
+            {/* Add a task they only thought of now — feeds the same added-task
+                flow, then needs its own hours set before they can continue. The
+                add action is embedded in the field (matches the review screen's
+                mic affordance) so it reads as one compact control. */}
+            <div className="relative">
+              <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-300">
+                <svg
+                  className="w-4 h-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+              </span>
+              <input
+                type="text"
+                value={addInput}
+                onChange={(e) => setAddInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    submitAdd();
+                  }
+                }}
+                placeholder="Add a task we missed…"
+                className="w-full pl-10 pr-24 py-3 text-sm text-slate-700 placeholder:text-slate-400 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 transition"
+              />
+              <button
+                type="button"
+                onClick={submitAdd}
+                disabled={!addInput.trim()}
+                className="absolute right-2 top-1/2 -translate-y-1/2 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed text-white text-xs font-medium rounded-lg transition-all active:scale-[0.97]"
+              >
+                Add
+              </button>
+            </div>
+
+            {/* Over/under-budget warning — the per-task hours don't sum to the
+                weekly total they stated. One-click rescale, or add a task above. */}
+            {avgValid &&
+              Math.abs(total - (avgWeeklyHours as number)) >= 0.5 && (
+                <div className="mt-4 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                  <div className="flex items-start gap-2">
+                    <svg
+                      className="w-4 h-4 mt-0.5 shrink-0 text-amber-500"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                      <line x1="12" y1="9" x2="12" y2="13" />
+                      <line x1="12" y1="17" x2="12.01" y2="17" />
+                    </svg>
+                    <p className="text-sm text-amber-800 leading-relaxed">
+                      You said about{" "}
+                      <span className="font-semibold">
+                        {formatHours(avgWeeklyHours as number)}
+                      </span>{" "}
+                      hours/week, but your tasks add up to{" "}
+                      <span className="font-semibold">
+                        {formatHours(total)}
+                      </span>
+                      . Rescale them to match, or add a task you missed above.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={normalizeHoursToTotal}
+                    className="shrink-0 px-4 py-2.5 bg-white border border-amber-300 text-amber-700 hover:bg-amber-100 text-sm font-medium rounded-lg transition-all active:scale-[0.98]"
+                  >
+                    Rescale to {formatHours(avgWeeklyHours as number)}
+                  </button>
+                </div>
+              )}
+
+            <div className="mt-4 flex items-center justify-end gap-3">
+              {!allFilled && (
+                <p className="text-xs text-slate-400">
+                  Enter hours for every task to continue.
+                </p>
+              )}
+              <button
+                onClick={() => onConfirm()}
+                disabled={!allFilled}
+                className="shrink-0 inline-flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed text-white text-sm font-medium rounded-full transition-all active:scale-[0.98] shadow-sm shadow-indigo-200"
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+          </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1249,7 +1643,11 @@ function TaskReviewCard({
         inputRef.current.style.height = "auto";
         inputRef.current.style.height = inputRef.current.scrollHeight + "px";
         inputRef.current.focus();
-        inputRef.current.select();
+        // Place the caret at the end rather than selecting all — selecting all
+        // means the first keystroke wipes the statement, which makes small
+        // tweaks awkward. End-caret lets the participant edit in place.
+        const end = inputRef.current.value.length;
+        inputRef.current.setSelectionRange(end, end);
       }
     }, 20);
   };
@@ -1261,10 +1659,26 @@ function TaskReviewCard({
   };
 
   return (
-    <div className="h-full relative">
-      {/* Centered: task name + buttons. pb reserves space for the bottom section
-          so the centering point never shifts when nudge/continue appear. */}
-      <div className="h-full flex flex-col justify-center gap-6 sm:gap-7 pb-24 sm:pb-48">
+    <div
+      className={
+        HOURS_ENABLED
+          ? "h-full flex flex-col justify-center gap-6 sm:gap-8 relative"
+          : "h-full relative"
+      }
+    >
+      {/* Layout. Binary mode (no hours): task name + buttons are vertically
+          centered, with the Continue button absolutely pinned to the bottom; the
+          big pb reserves that space so the centering point never shifts. Hours
+          mode: the whole group (name + buttons + hours follow-up) is centered
+          together via the wrapper above, so the follow-up sits right under the
+          buttons instead of being stranded at the bottom. */}
+      <div
+        className={
+          HOURS_ENABLED
+            ? "flex flex-col gap-8 sm:gap-10"
+            : "h-full flex flex-col justify-center gap-6 sm:gap-7 pb-24 sm:pb-48"
+        }
+      >
         {/* Task name */}
         <div className="pb-1">
           {editing ? (
@@ -1432,14 +1846,22 @@ function TaskReviewCard({
           </div>
         )}
       </div>
-      {/* end centered section */}
+      {/* end primary section */}
 
-      {/* Bottom: absolutely pinned so it never affects the centered layout */}
-      <div className="absolute bottom-0 left-0 right-0 space-y-4 pb-12">
+      {/* Hours follow-up + Continue. In hours mode this flows directly under the
+          buttons; in binary mode it's empty (buttons auto-advance) so it stays
+          absolutely pinned and never disturbs the centered layout. */}
+      <div
+        className={
+          HOURS_ENABLED
+            ? "space-y-8"
+            : "absolute bottom-0 left-0 right-0 space-y-4 pb-12"
+        }
+      >
         {/* Hours follow-up — only when the participant does this task and the
           hours feature is on */}
         {HOURS_ENABLED && primaryAnswer === "yes" && (
-          <div className="space-y-5 pt-5 animate-fadeSlideIn">
+          <div className="space-y-5 animate-fadeSlideIn">
             <p className="text-base font-normal text-slate-500">
               In a typical week, how many hours do you spend on this?
             </p>
@@ -1584,7 +2006,9 @@ function ReviewAndAddScreen({
   };
 
   return (
-    <div className="w-full animate-fadeSlideIn">
+    // my-auto centers vertically; the extra bottom padding on the scroll
+    // container (see isExhausted branch) biases it slightly above center.
+    <div className="w-full my-auto animate-fadeSlideIn">
       {totalDisplayedSoFar > 0 && (
         <section>
           <h3 className="text-[1.35rem] font-light text-slate-800 leading-snug tracking-tight">

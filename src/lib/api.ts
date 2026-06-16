@@ -341,12 +341,13 @@ export async function checkQuestionCoverage(
 export async function fetchInterviewQuestion(
   canonicalQuestion: string,
   framingNotes: string,
+  context: string = '',
 ): Promise<string | null> {
   try {
     const res = await fetch('/api/interview-question', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ canonicalQuestion, framingNotes }),
+      body: JSON.stringify({ canonicalQuestion, framingNotes, context }),
     });
     if (!res.ok) return null;
     const json = await res.json();

@@ -38,6 +38,10 @@ interface WorkflowStore {
   // (task-priority → workflow-kickoff → workflow). `short` skips it and jumps
   // straight from task-selection to final-questions.
   condition: StudyCondition;
+  // Free-form run tag from the ?status= URL param (e.g. "exp" for an
+  // experimental/pilot deploy). Saved with the session so experimental runs can
+  // be filtered out of the real dataset. Null when the link doesn't carry one.
+  status: string | null;
   phase: Phase;
   // Millisecond epoch when the store first initialized (≈ page load). Used as
   // a session-start proxy for time-spent analysis.
@@ -171,7 +175,21 @@ interface WorkflowStore {
   // into the defense-in-depth save fired from StudyComplete on mount.
   experienceRating: number | null;
   feedback: string;
-  setFinalAnswers: (answers: { experienceRating: number; feedback: string }) => void;
+  // Stage-specific final-survey answers: the AI background interview and the
+  // binary task-review ("I do this") stage each get a 1–5 rating plus an
+  // optional free-text comment.
+  interviewRating: number | null;
+  interviewComment: string;
+  selectionRating: number | null;
+  selectionComment: string;
+  setFinalAnswers: (answers: {
+    experienceRating: number;
+    feedback: string;
+    interviewRating: number | null;
+    interviewComment: string;
+    selectionRating: number | null;
+    selectionComment: string;
+  }) => void;
   // Self-reported total hours worked in an average week, collected at the top of
   // the time-allocation section (distinct from the sum of per-task hours).
   avgWeeklyHours: number | null;
@@ -209,6 +227,11 @@ const initialExternalId = rawExternalId
   ? (rawExternalId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64) || null)
   : null;
 const initialCondition: StudyCondition = urlParams.get('cond') === 'short' ? 'short' : 'full';
+// Optional run tag (?status=exp). Sanitized to a short alphanumeric token.
+const rawStatus = urlParams.get('status');
+const initialStatus = rawStatus
+  ? (rawStatus.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32) || null)
+  : null;
 const initialProlific: ProlificContext = {
   pid: urlParams.get('PROLIFIC_PID'),
   studyId: urlParams.get('STUDY_ID'),
@@ -246,6 +269,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   sessionId: getOrCreateSessionId(),
   externalId: initialExternalId,
   condition: initialCondition,
+  status: initialStatus,
   phase: devPhase,
   sessionStartedAt: SESSION_START_MS,
   // Seed the initial phase with the same start time so phaseEnteredAt always
@@ -723,7 +747,12 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   })),
   experienceRating: null,
   feedback: '',
-  setFinalAnswers: ({ experienceRating, feedback }) => set({ experienceRating, feedback }),
+  interviewRating: null,
+  interviewComment: '',
+  selectionRating: null,
+  selectionComment: '',
+  setFinalAnswers: ({ experienceRating, feedback, interviewRating, interviewComment, selectionRating, selectionComment }) =>
+    set({ experienceRating, feedback, interviewRating, interviewComment, selectionRating, selectionComment }),
   avgWeeklyHours: null,
   setAvgWeeklyHours: (avgWeeklyHours) => set({ avgWeeklyHours }),
   setLoading: (isLoading) => set({ isLoading }),
@@ -912,7 +941,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     }),
 
   getExportData: () => {
-    const { sessionId, externalId, condition, prolific, userProfile, backgroundTranscript, selectedTasks, taskItems, taskCategories, interviewExtractedTasks, coreTask, typicalWorkflow, bonusSnapshot, nodes, edges, messages, taskWorkflows, currentTaskIdx, experienceRating, feedback, avgWeeklyHours, sessionStartedAt, phaseEnteredAt, mappingEditChars, mappingAddedNodes } = get();
+    const { sessionId, externalId, condition, status, prolific, userProfile, backgroundTranscript, selectedTasks, taskItems, taskCategories, interviewExtractedTasks, coreTask, typicalWorkflow, bonusSnapshot, nodes, edges, messages, taskWorkflows, currentTaskIdx, experienceRating, feedback, interviewRating, interviewComment, selectionRating, selectionComment, avgWeeklyHours, sessionStartedAt, phaseEnteredAt, mappingEditChars, mappingAddedNodes } = get();
     // Live-computed mapping bonus, recorded on every save so the persisted
     // session always reflects what the participant has earned so far in the
     // workflow-mapping phase (raw counters are alongside for verification).
@@ -944,6 +973,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
       sessionId,
       externalId,
       condition,
+      status,
       phase: get().phase,
       completed,
       completedAt,
@@ -965,6 +995,10 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
       mappingBonusSnapshot,
       experienceRating,
       feedback,
+      interviewRating,
+      interviewComment,
+      selectionRating,
+      selectionComment,
       avgWeeklyHours,
       sessionStartedAt,
       phaseEnteredAt,
@@ -1003,6 +1037,9 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     if (typeof d.externalId === 'string' && state.externalId === null) {
       next.externalId = d.externalId;
     }
+    if (typeof d.status === 'string' && state.status === null) {
+      next.status = d.status;
+    }
     if (d.userProfile && typeof d.userProfile === 'object') {
       next.userProfile = { ...state.userProfile, ...(d.userProfile as Partial<UserProfile>) };
     }
@@ -1024,6 +1061,10 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     }
     if (typeof d.experienceRating === 'number') next.experienceRating = d.experienceRating;
     if (typeof d.feedback === 'string') next.feedback = d.feedback;
+    if (typeof d.interviewRating === 'number') next.interviewRating = d.interviewRating;
+    if (typeof d.interviewComment === 'string') next.interviewComment = d.interviewComment;
+    if (typeof d.selectionRating === 'number') next.selectionRating = d.selectionRating;
+    if (typeof d.selectionComment === 'string') next.selectionComment = d.selectionComment;
     if (typeof d.avgWeeklyHours === 'number') next.avgWeeklyHours = d.avgWeeklyHours;
     if (d.phaseEnteredAt && typeof d.phaseEnteredAt === 'object') {
       next.phaseEnteredAt = d.phaseEnteredAt as WorkflowStore['phaseEnteredAt'];
