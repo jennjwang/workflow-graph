@@ -83,47 +83,6 @@ const QUESTIONS: {
     maxFollowups: 3,
     minFollowups: 0,
   },
-  {
-    field: "stakeholders",
-    text: "Who do you do your work for or with — the people, teams, or clients you deal with?",
-    framingNotes:
-      "Elicit tasks via the participant's STAKEHOLDERS — the people, teams, roles, clients, or outside parties they do work FOR or WITH. Draw on the social side of work: who they depend on and who depends on them (handoffs both ways), who they coordinate or communicate with, who they report to or support, and anyone OUTSIDE their team or organization (clients, customers, partners, the public). Keep it warm and concrete; you MAY name a couple of example relationships to prompt them, but do NOT read a checklist. The point is to surface interactions that carry tasks — meetings, handoffs, coordinating, reporting, supporting — that they'd skip when narrating solo activities, then draw out what they actually do with or for each.",
-    placeholder: "Who you work for or with — teammates, clients, other teams",
-    criteria: [
-      "FLOOR — the participant has named at least one person, team, role, or outside party they do work for or with (e.g. 'my manager', 'the sales team', 'patients', 'external vendors'). If they named NONE ('I mostly work alone', 'no one really'), follow up warmly asking who they work for or with, even occasionally.",
-      "BREADTH — surface the RANGE of people, not just one: if they named only their immediate team, follow up ONCE asking whether there are others they work for or with — people they depend on, people who depend on them, or anyone outside their team or organization (clients, customers, partners). If they named several distinct parties, breadth is covered.",
-      "INTERACTION SUBSTANCE — for the main relationships, it should be clear WHAT the working relationship actually involves task-wise: what they do with or for that person or group (hand off to, coordinate with, report to, support, get input or feedback from). When a stakeholder is named only as a bare label with no sense of the actual exchange, follow up ONCE: warmly pick the SINGLE most central one and ask what they actually do with or for them (e.g. 'You mentioned the design team — what do you usually go to them for, or do for them?'). Probe ONE relationship per turn, never skeptically. If the main relationships already carry concrete substance, this is covered.",
-    ],
-    maxFollowups: 3,
-    minFollowups: 0,
-  },
-  {
-    field: "tools",
-    text: "What systems or tools do you use for work — and do any of them create tasks for you?",
-    framingNotes:
-      "Elicit tasks via the TOOLS and SYSTEMS the participant uses — the software, platforms, equipment, or systems that are part of their work, and ESPECIALLY the ones that GENERATE work for them (a ticket or case queue, an inbox, alerts or notifications, a dashboard that flags issues, an EHR worklist, a CRM, a calendar). Keep it warm and concrete; you MAY offer a couple of examples that fit any job, but do NOT read a checklist. The point is to surface tool-driven tasks — responding to tickets, clearing a queue, acting on alerts, updating records in a system — that they'd skip when narrating activities, then draw out what they actually do in each tool.",
-    placeholder: "The software, systems, or equipment you use",
-    criteria: [
-      "FLOOR — the participant has named at least one tool, system, or piece of equipment they use for work (e.g. 'Jira', 'the EHR', 'Excel', 'our CRM', 'the register'). If they named NONE ('nothing really', 'just the usual'), follow up warmly asking what software, systems, or equipment they use.",
-      "TASK-GENERATING SYSTEMS — surface tools that CREATE work, not just tools they happen to use. If they listed tools but it's unclear whether any FEED them tasks (a queue, inbox, ticket system, alerts, notifications, a worklist), follow up ONCE asking whether any of those systems generate work or things they have to act on. If they already made clear which systems drive their tasks, this is covered.",
-      "USE SUBSTANCE — for the main tools, it should be clear what they actually DO in or with them (the task), not just the tool's name. When a tool is named only as a bare label, follow up ONCE: warmly pick the SINGLE most central one and ask what they use it for or do in it. Probe ONE tool per turn, never skeptically. If the main tools already carry a concrete sense of use, this is covered.",
-    ],
-    maxFollowups: 3,
-    minFollowups: 0,
-  },
-  {
-    field: "invisibleWork",
-    text: "What would people only notice if you stopped doing it?",
-    framingNotes:
-      "Elicit the INVISIBLE or under-recognized work — the necessary background tasks that keep things running but go unnoticed until they STOP: maintenance, checking and monitoring, coordinating, cleanup, chasing loose ends, preventing problems before they happen, the 'glue' work, the quiet emotional labor. This is a reflective question, so keep it warm and low-pressure and give them room to think; you MAY offer one gentle example, but do NOT supply a list. The point is to surface real tasks that don't show up when people narrate their visible deliverables and activities.",
-    placeholder: "The behind-the-scenes work that keeps things running",
-    criteria: [
-      "FLOOR — the participant has named at least one task or kind of work that would be noticed mainly in its ABSENCE. If they drew a blank or stayed abstract ('not sure', 'I guess everything'), follow up ONCE, gently — e.g. what quietly keeps things running, or what would start to slip if they were out for a couple of weeks. A 'nothing really' after a genuine think is acceptable; do NOT push hard.",
-      "SUBSTANCE — for the invisible work they named, it should be reasonably clear what the actual TASK is, not just a vague label ('I keep things organized', 'I smooth things over'). When it's named only as a vague label, follow up ONCE: warmly ask what they concretely do — the actual task behind it. Probe ONE thread per turn, never skeptically. If what they named already carries concrete substance, this is covered.",
-    ],
-    maxFollowups: 3,
-    minFollowups: 0,
-  },
 ];
 
 // Closing thank-you shown after the last question, before task selection
@@ -139,13 +98,7 @@ const FINAL_CATCHALL =
 // AUTO skip (#3): questions eligible to be skipped automatically when earlier
 // answers already cover their criteria. The opening role question and the
 // responsibilities question always run.
-const AUTO_SKIP_FIELDS = new Set<string>([
-  "typicalWeek",
-  "outputs",
-  "stakeholders",
-  "tools",
-  "invisibleWork",
-]);
+const AUTO_SKIP_FIELDS = new Set<string>(["typicalWeek", "outputs"]);
 
 // Reveals text one word at a time, each word rising and fading in (staggered).
 // Calls onDone once the last word has finished animating.
@@ -328,9 +281,6 @@ export function BackgroundInterview() {
     typicalWeek: "",
     aiUsage: "",
     outputs: "",
-    stakeholders: "",
-    tools: "",
-    invisibleWork: "",
   });
 
   // Follow-up state for current question

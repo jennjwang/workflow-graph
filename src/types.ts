@@ -116,16 +116,6 @@ export interface UserProfile {
   // Output pass: what the participant produces, maintains, approves, sends, or
   // delivers — task elicitation via the artifacts they own.
   outputs: string;
-  // Stakeholder pass: who the participant does work for or with — task
-  // elicitation via the social side of work (interdependence, coordination,
-  // external interaction, feedback).
-  stakeholders: string;
-  // Tool pass: the systems/tools the participant uses — task elicitation via the
-  // software and systems that generate or carry their work (queues, alerts, etc.).
-  tools: string;
-  // Invisible-work pass: necessary but under-recognized work that would only be
-  // noticed if it stopped — task elicitation for background/maintenance/glue work.
-  invisibleWork: string;
 }
 
 export interface BackgroundTurn {
