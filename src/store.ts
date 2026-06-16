@@ -172,6 +172,10 @@ interface WorkflowStore {
   experienceRating: number | null;
   feedback: string;
   setFinalAnswers: (answers: { experienceRating: number; feedback: string }) => void;
+  // Self-reported total hours worked in an average week, collected at the top of
+  // the time-allocation section (distinct from the sum of per-task hours).
+  avgWeeklyHours: number | null;
+  setAvgWeeklyHours: (hours: number | null) => void;
   addMessage: (role: 'user' | 'assistant', content: string) => void;
   setLoading: (loading: boolean) => void;
   applyGraphUpdates: (updates: GraphUpdate[]) => void;
@@ -256,6 +260,10 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     jobTitle: '',
     typicalWeek: '',
     aiUsage: '',
+    outputs: '',
+    stakeholders: '',
+    tools: '',
+    invisibleWork: '',
   },
   setUserProfile: (userProfile) => set({ userProfile }),
   backgroundTranscript: [],
@@ -716,6 +724,8 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   experienceRating: null,
   feedback: '',
   setFinalAnswers: ({ experienceRating, feedback }) => set({ experienceRating, feedback }),
+  avgWeeklyHours: null,
+  setAvgWeeklyHours: (avgWeeklyHours) => set({ avgWeeklyHours }),
   setLoading: (isLoading) => set({ isLoading }),
   setEditingNodeId: (editingNodeId) => set({ editingNodeId }),
 
@@ -902,7 +912,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     }),
 
   getExportData: () => {
-    const { sessionId, externalId, condition, prolific, userProfile, backgroundTranscript, selectedTasks, taskItems, taskCategories, interviewExtractedTasks, coreTask, typicalWorkflow, bonusSnapshot, nodes, edges, messages, taskWorkflows, currentTaskIdx, experienceRating, feedback, sessionStartedAt, phaseEnteredAt, mappingEditChars, mappingAddedNodes } = get();
+    const { sessionId, externalId, condition, prolific, userProfile, backgroundTranscript, selectedTasks, taskItems, taskCategories, interviewExtractedTasks, coreTask, typicalWorkflow, bonusSnapshot, nodes, edges, messages, taskWorkflows, currentTaskIdx, experienceRating, feedback, avgWeeklyHours, sessionStartedAt, phaseEnteredAt, mappingEditChars, mappingAddedNodes } = get();
     // Live-computed mapping bonus, recorded on every save so the persisted
     // session always reflects what the participant has earned so far in the
     // workflow-mapping phase (raw counters are alongside for verification).
@@ -955,6 +965,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
       mappingBonusSnapshot,
       experienceRating,
       feedback,
+      avgWeeklyHours,
       sessionStartedAt,
       phaseEnteredAt,
       exportedAt: new Date().toISOString(),
@@ -1013,6 +1024,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     }
     if (typeof d.experienceRating === 'number') next.experienceRating = d.experienceRating;
     if (typeof d.feedback === 'string') next.feedback = d.feedback;
+    if (typeof d.avgWeeklyHours === 'number') next.avgWeeklyHours = d.avgWeeklyHours;
     if (d.phaseEnteredAt && typeof d.phaseEnteredAt === 'object') {
       next.phaseEnteredAt = d.phaseEnteredAt as WorkflowStore['phaseEnteredAt'];
     }

@@ -1,12 +1,10 @@
-import OpenAI from 'openai';
+import OpenAI, { toFile } from 'openai';
 import express from 'express';
 import fs from 'fs/promises';
-import { createReadStream } from 'fs';
 import path from 'path';
-import os from 'os';
 import { fileURLToPath } from 'url';
 import { SUBTASK_WORKER_SYSTEM_PROMPT, INTERVIEW_TASK_EXTRACTOR_PROMPT, mentionedTasksBlock, buildAnchoredTaskSystemPrompt, buildGapFillMessages } from './prompts/task-generator.js';
-import { evaluateAnswerMessages, rewordQuestionMessages } from './prompts/interview.js';
+import { evaluateAnswerMessages, rewordQuestionMessages, checkCoverageMessages } from './prompts/interview.js';
 import { retrieveExemplarBlock } from './lib/retrieval.js';
 import { streamGapTasks } from './gapTasks.js';
 
@@ -208,7 +206,7 @@ app.post('/api/evaluate-answer', async (req, res) => {
   try {
     // Never follow up beyond the allowed limit
     if (followupCount >= maxFollowups) {
-      return res.json({ allCovered: true, followUp: null });
+      return res.json({ allCovered: true, followUp: null, skipRequested: false });
     }
 
     const response = await client.chat.completions.create({
@@ -218,10 +216,32 @@ app.post('/api/evaluate-answer', async (req, res) => {
     });
 
     const result = JSON.parse(response.choices[0].message.content);
-    res.json({ allCovered: !!result.allCovered, followUp: result.followUp ?? null });
+    res.json({ allCovered: !!result.allCovered, followUp: result.followUp ?? null, skipRequested: !!result.skipRequested });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Decide whether an upcoming question is already covered by earlier answers, so
+// the interview can auto-skip it. Fails open to covered=false (ask the question).
+app.post('/api/check-coverage', async (req, res) => {
+  const { question, criteria = [], conversation = '' } = req.body;
+  if (!question || !Array.isArray(criteria) || criteria.length === 0) {
+    return res.json({ covered: false });
+  }
+  try {
+    const response = await client.chat.completions.create({
+      model: MODEL,
+      temperature: 0,
+      response_format: { type: 'json_object' },
+      messages: checkCoverageMessages({ question, criteria, conversation }),
+    });
+    const parsed = JSON.parse(response.choices[0].message.content);
+    res.json({ covered: parsed.covered === true, reason: parsed.reason ?? '' });
+  } catch (err) {
+    console.error(err);
+    res.json({ covered: false });
   }
 });
 
@@ -322,28 +342,30 @@ app.post('/api/generate-tasks-from-interview', async (req, res) => {
     res.flush?.();
   };
 
-  const { jobTitle, typicalWeek, aiUsage, responsibilities, interviewTasks = [], count } = req.body;
+  const { jobTitle, typicalWeek, aiUsage, responsibilities, interviewTasks = [], count, participant = null } = req.body;
   // Burnout cap (tracks the picker). Both groups are generated freely; if the
   // combined list exceeds the cap, we down-sample BOTH preserving their proportion.
   const targetCount = Number.isFinite(+count) && +count > 0 ? Math.round(+count) : 22;
+  // Uncertainty anchor: surface the participant's OWN (normalized) tasks that we
+  // are NOT confident about — anything we had to merge, rephrase, or infer
+  // (confidence < threshold) — for them to confirm or reword. Confidently-stated
+  // tasks (>= threshold) are already captured verbatim and don't need validating,
+  // so we don't re-show them; the rest of the budget goes to gap-fill (recognition
+  // of UNmentioned work) + bank probes. The normalize pass still runs in full (it
+  // feeds gap-fill's exclusion list); we just stop emitting the confident ones.
+  const ANCHOR_CONF_THRESHOLD = 0.8;
 
   const interviewBlock = mentionedTasksBlock(interviewTasks);
   const streamingSystem = `${buildAnchoredTaskSystemPrompt(targetCount)}
 
-OUTPUT FORMAT: emit one task per line as JSONL. Each line must be a complete JSON object: {"name": "..."}
-No surrounding array. No markdown. No commentary. Just one {"name": "..."} per line.`;
-
-  // Random k items from arr (partial Fisher–Yates) — uniform within a group.
-  const sample = (arr, k) => {
-    if (k >= arr.length) return arr.slice();
-    if (k <= 0) return [];
-    const a = arr.slice();
-    for (let i = 0; i < k; i++) {
-      const j = i + Math.floor(Math.random() * (a.length - i));
-      [a[i], a[j]] = [a[j], a[i]];
-    }
-    return a.slice(0, k);
-  };
+OUTPUT FORMAT: emit one task per line as JSONL. Each line must be a complete JSON object:
+{"name": "...", "confidence": 0.0-1.0}
+"confidence" is HOW SURE YOU ARE that this is a real task the participant actually does, judged ONLY from their own words:
+ - HIGH (0.8-1.0): they stated it clearly and explicitly.
+ - MEDIUM (0.4-0.7): you had to merge it from several mentions, or normalize/rephrase a loose statement.
+ - LOW (0.0-0.3): you INFERRED it — plausible for their role and implied by their answers, but never explicitly said.
+Calibrate honestly and use the full range — do NOT mark everything high; the lowest-confidence ones get shown back for the participant to verify.
+No surrounding array. No markdown. No commentary. Just one JSON object per line.`;
 
   // Sample k items from an importance-RANKED list (index 0 = most important),
   // weighted by rank so the top is much likelier to survive but lower items can
@@ -369,7 +391,13 @@ No surrounding array. No markdown. No commentary. Just one {"name": "..."} per l
     // ── PASS 1: normalize the participant's mentioned tasks (buffered, not emitted
     //    yet — proportional down-sampling may need to trim this group too) ──
     const normalized = [];
-    const pushNorm = (name) => { const n = String(name).trim(); if (n) normalized.push(n); };
+    const pushNorm = (name, confidence) => {
+      const n = String(name).trim();
+      if (!n) return;
+      let c = Number(confidence);
+      if (!Number.isFinite(c)) c = 0.5;           // missing/garbled → neutral, never anchored on
+      normalized.push({ name: n, confidence: Math.min(1, Math.max(0, c)) });
+    };
     const stream = await client.chat.completions.create({
       model: MODEL,
       temperature: 0.7,
@@ -387,10 +415,13 @@ No surrounding array. No markdown. No commentary. Just one {"name": "..."} per l
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) continue;
-        try { const obj = JSON.parse(trimmed); if (obj.name) pushNorm(obj.name); } catch { /* keep buffering */ }
+        try { const obj = JSON.parse(trimmed); if (obj.name) pushNorm(obj.name, obj.confidence); } catch { /* keep buffering */ }
       }
     }
-    if (buffer.trim()) { try { const obj = JSON.parse(buffer.trim()); if (obj.name) pushNorm(obj.name); } catch { /* ignore */ } }
+    if (buffer.trim()) { try { const obj = JSON.parse(buffer.trim()); if (obj.name) pushNorm(obj.name, obj.confidence); } catch { /* ignore */ } }
+    // Names-only view for the consumers that just need the task text (gap-fill
+    // exclusion list, bank matching). Confidence is used only to pick the anchor.
+    const normalizedNames = normalized.map((t) => t.name);
 
     // ── PASS 2: gap-fill — exhaustive, importance-RANKED pool (most important
     //    first). GAP_POOL_CAP just bounds cost; it's well above any real role. ──
@@ -401,7 +432,7 @@ No surrounding array. No markdown. No commentary. Just one {"name": "..."} per l
         model: MODEL,
         temperature: 0.7,
         response_format: { type: 'json_object' },
-        messages: buildGapFillMessages({ jobTitle, responsibilities, typicalWeek, coveredTasks: normalized, maxGap: GAP_POOL_CAP }),
+        messages: buildGapFillMessages({ jobTitle, responsibilities, typicalWeek, coveredTasks: normalizedNames, maxGap: GAP_POOL_CAP }),
       });
       const parsed = JSON.parse(r.choices[0].message.content);
       gapPool = (Array.isArray(parsed.tasks) ? parsed.tasks : [])
@@ -415,33 +446,53 @@ No surrounding array. No markdown. No commentary. Just one {"name": "..."} per l
     //    inventory resolves, pickProbes returns fewer (only UNDECIDED) → probe volume is a hump. ──
     let bankProbes = [];
     if (taskBank && TASK_BANK_OCC) {
-      try { bankProbes = await taskBank.pickProbes(TASK_BANK_OCC); }   // adaptive count (see pickProbes)
-      catch (e) { console.warn('[generate-tasks-from-interview] bank probes failed:', e.message); }
+      try {
+        // Match the worker's volunteered (normalized) tasks to bank ids ONCE (LLM-decided). Two uses:
+        //  (1) record each as a SPONTANEOUS MENTION — evidence, is_probe=false, so task_posterior's
+        //      `WHERE is_probe` keeps it OUT of the representative posterior (it never moves the in/out call);
+        //  (2) dedup the probe set so we don't re-ask a task they just told us.
+        const matches = normalizedNames.length ? await taskBank.matchToBankIds(TASK_BANK_OCC, normalizedNames) : new Map();
+        if (participant && matches.size) {
+          await Promise.all([...matches].map(([statement, bankId]) =>     // best-effort; never block the draw
+            taskBank.recordResponse({ participant, task: bankId, occupation: TASK_BANK_OCC,
+              isProbe: false, shownStatement: statement, response: 'confirm' }).catch(() => {})));
+        }
+        bankProbes = await taskBank.pickProbes(TASK_BANK_OCC, { coveredIds: new Set(matches.values()) });
+      } catch (e) { console.warn('[generate-tasks-from-interview] bank probes failed:', e.message); }
     }
 
-    // ── COMPOSE: keep ALL their own (normalized) tasks — never sample those away — then fill
-    //    the remaining (probe-reserved) burnout budget with an importance-weighted gap sample. ──
+    // ── COMPOSE: open with a small ANCHOR of the MOST UNCERTAIN extractions —
+    //    the normalized tasks PASS 1 was least confident it captured correctly —
+    //    surfaced for the participant to confirm or reword (targeted validation,
+    //    uncertainty sampling). Then spend the rest of the burnout budget on
+    //    gap-fill (UNmentioned work) interleaved with bank probes. The full
+    //    normalized list still fed gap-fill's exclusion set above. ──
     const genTarget = Math.max(1, targetCount - bankProbes.length);
     const N = normalized.length, G = gapPool.length;
-    const outNorm = N > genTarget ? sample(normalized, genTarget) : normalized;
+    // Anchor = EVERY uncertain extraction (confidence below threshold), least
+    // confident first, capped only by the overall burnout budget.
+    const outNorm = [...normalized]
+      .filter((t) => t.confidence < ANCHOR_CONF_THRESHOLD)
+      .sort((a, b) => a.confidence - b.confidence)   // least-confident first
+      .slice(0, genTarget)
+      .map((t) => t.name);
     const gapBudget = Math.max(0, genTarget - outNorm.length);
     const outGap = weightedSampleByRank(gapPool, gapBudget);
 
-    // Interleave bank probes through the generated list so the unfiltered probes (some
-    // obviously-irrelevant) aren't a skippable block at the end. Generated tasks have no bankId.
-    const generated = [
-      ...outNorm.map((name) => ({ name, source: 'interview' })),
-      ...outGap.map((name) => ({ name, source: 'gap' })),
-    ];
-    for (let i = 0; i < Math.max(generated.length, bankProbes.length); i++) {
+    // Anchor (their own tasks) first, so the picker opens on something they
+    // recognize. Then interleave gap-fill with bank probes so the unfiltered
+    // probes (some obviously-irrelevant) aren't a skippable block at the end.
+    for (const name of outNorm) sendEvent('task', { name, source: 'interview' });
+    for (let i = 0; i < Math.max(outGap.length, bankProbes.length); i++) {
       if (i < bankProbes.length) {
         const b = bankProbes[i];
         sendEvent('task', { name: b.statement, source: 'bank', bankId: b.id, isProbe: true });
       }
-      if (i < generated.length) sendEvent('task', generated[i]);
+      if (i < outGap.length) sendEvent('task', { name: outGap[i], source: 'gap' });
     }
 
-    console.log(`[generate-tasks-from-interview] role=${jobTitle} mentioned=${interviewTasks.length} normalized=${N}->${outNorm.length} gapPool=${G}->kept=${outGap.length} bankProbes=${bankProbes.length}`);
+    const confDebug = [...normalized].sort((a, b) => a.confidence - b.confidence).map((t) => t.confidence.toFixed(2)).join(',');
+    console.log(`[generate-tasks-from-interview] role=${jobTitle} mentioned=${interviewTasks.length} normalized=${N}->anchor=${outNorm.length} gapPool=${G}->kept=${outGap.length} bankProbes=${bankProbes.length} conf=[${confDebug}]`);
     sendEvent('done', {});
     res.end();
   } catch (err) {
@@ -1426,17 +1477,15 @@ app.post('/api/transcribe', async (req, res) => {
   try {
     const buffer = Buffer.from(audio, 'base64');
     const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
-    const tmpPath = path.join(os.tmpdir(), `audio_${Date.now()}.${ext}`);
-    await fs.writeFile(tmpPath, buffer);
-    let transcription;
-    try {
-      transcription = await client.audio.transcriptions.create({
-        file: createReadStream(tmpPath),
-        model: 'whisper-1',
-      });
-    } finally {
-      fs.unlink(tmpPath).catch(() => {});
-    }
+    // Hand the audio straight to the API as an in-memory file — no temp-file
+    // write+read round-trip. The model defaults to gpt-4o-mini-transcribe, which
+    // is markedly faster than whisper-1 on these short answers (override via
+    // TRANSCRIBE_MODEL).
+    const file = await toFile(buffer, `audio.${ext}`, { type: mimeType });
+    const transcription = await client.audio.transcriptions.create({
+      file,
+      model: process.env.TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe',
+    });
     res.json({ text: transcription.text });
   } catch (err) {
     console.error(err);

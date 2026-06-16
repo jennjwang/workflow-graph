@@ -58,15 +58,51 @@ When a criterion is unmet, write ONE follow-up targeting the single most critica
 - USE THE WHOLE CONVERSATION. You can see everything said so far. Build on it. Reference earlier things naturally when it helps ("earlier you said you're responsible for hiring — did any of that come up?"). A real interviewer remembers what they've already been told and doesn't ask in a vacuum — but reference only what THEY said, never an activity you've supplied.
 - NEVER repeat a question you've already asked, and never re-probe a thread you already covered. If a gap remains only on something you already asked about, move to a different gap or mark it covered.
 - VARY how you open — do NOT start follow-ups the same way. "Got it" or "You mentioned…" are fine very occasionally but you're badly overusing them; most of the time just fold their own words into the question and ask directly, the way a person actually mid-chat would.
+- Do NOT reuse the same stock SHAPE or filler phrases. You badly overuse "what does that look like", "what does that involve", "what does that usually look like for you", and especially "day to day" / "day-to-day" — across several follow-ups they blur into one repetitive question. Do NOT tack "day to day" onto a question as filler. Ask instead about the CONCRETE specific that fits THIS thread: what they actually make or produce, who it's for, the steps they go through, what's hard about it, how often it happens, what tools they use. Each follow-up should sound like a different question, not the same template with a new noun.
 - Be RESPONSIVE to the specific thing they just said — pick up that thread, ask what a curious listener would naturally ask next. Different answer → different question, not a template.
 - Warm and LOW PRESSURE. Any one concrete thing is a fine answer. NEVER sound skeptical or invalidating; avoid challenge words like "actually". A "no" is valid data.
 - One sentence, conversational, no double-barreled questions, no PII.
 
-Return JSON: { "allCovered": boolean, "followUp": string | null }`,
+SKIP DETECTION: if the participant's latest answer is not a genuine attempt to answer but a request to SKIP or move past this question — e.g. "skip", "skip this", "pass", "next", "I'd rather not answer", "no comment", "prefer not to say", "can we move on" — set "skipRequested" to true. A real answer, even a short or negative one ("no", "none", "not really", "nothing comes to mind"), is NOT a skip. When unsure, set it false.
+
+Return JSON: { "allCovered": boolean, "followUp": string | null, "skipRequested": boolean }`,
     },
     {
       role: 'user',
       content: `${convoBlock}\nThe CURRENT question is: "${question}"\nTheir answer to it (so far): "${answer}"\n\nCoverage criteria for the current question:\n${criteriaList}${minBlock}\n\nAre all criteria satisfied? If not (or if the minimum follow-ups above haven't been met), what is the single most natural follow-up to ask next, continuing this conversation?`,
+    },
+  ];
+}
+
+// ── /api/check-coverage ───────────────────────────────────────────────────────
+
+// Builds the [system, user] messages that decide whether an UPCOMING question is
+// already redundant — i.e. earlier answers in this same conversation have already
+// satisfied every one of its coverage criteria, so asking it would just repeat
+// ground already covered. Deliberately conservative: when in doubt, NOT covered
+// (ask the question), so we never silently drop a question that could yield new
+// tasks. Used to auto-skip a pass the participant has effectively already answered.
+export function checkCoverageMessages({ question, criteria, conversation = '' }) {
+  const criteriaList = criteria.map((c, i) => `${i + 1}. ${c}`).join('\n');
+  const convoBlock = conversation && conversation.trim()
+    ? `\n\nTHE CONVERSATION SO FAR (the whole interview, most recent last):\n${conversation.trim()}\n`
+    : '';
+
+  return [
+    {
+      role: 'system',
+      content: `You decide whether an UPCOMING interview question is REDUNDANT — meaning the participant has ALREADY, earlier in this same conversation, said enough to satisfy EVERY one of its coverage criteria, so asking it now would only repeat ground already covered.
+
+Be CONSERVATIVE. Only answer covered=true when ALL criteria are CLEARLY and SUBSTANTIVELY already met by what the participant ACTUALLY said. When in doubt, answer false so the question still gets asked — missing a question is far worse than asking one that turns out slightly redundant.
+- Surface overlap in topic is NOT enough; the specific criteria must each be satisfied by concrete things they said.
+- Different questions probe different angles. The fact that an earlier question touched the same area does not mean THIS question's criteria are met.
+- If the conversation is short or thin, answer false.
+
+Return JSON: { "covered": boolean, "reason": string } — reason is one short phrase.`,
+    },
+    {
+      role: 'user',
+      content: `${convoBlock}\nThe UPCOMING question is: "${question}"\n\nIts coverage criteria:\n${criteriaList}\n\nHas the participant ALREADY said enough, earlier in this conversation, to satisfy ALL of these criteria? Return the JSON.`,
     },
   ];
 }

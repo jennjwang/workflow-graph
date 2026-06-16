@@ -36,6 +36,9 @@ export interface TaskItem {
   edits?: TaskEdit[];          // full chronological history of edits made to this task
   isAttentionCheck?: boolean;  // tasks from clearly unrelated occupations; expected answer is "no"
   addedByParticipant?: boolean; // tasks the participant typed in on the all-done screen
+  shownAt?: number;            // epoch ms the card first became the active question
+  answeredAt?: number;         // epoch ms the participant answered (yes/no) this card
+  timeSpentMs?: number;        // answeredAt - shownAt: dwell time on this card
 }
 
 export type ClarificationNeeded = 'statement' | 'subtasks' | 'none';
@@ -110,6 +113,19 @@ export interface UserProfile {
   // there tasks you're using AI for? Either tasks AI enabled you to do, or
   // new tasks that exist because of AI (like verifying AI output)."
   aiUsage: string;
+  // Output pass: what the participant produces, maintains, approves, sends, or
+  // delivers — task elicitation via the artifacts they own.
+  outputs: string;
+  // Stakeholder pass: who the participant does work for or with — task
+  // elicitation via the social side of work (interdependence, coordination,
+  // external interaction, feedback).
+  stakeholders: string;
+  // Tool pass: the systems/tools the participant uses — task elicitation via the
+  // software and systems that generate or carry their work (queues, alerts, etc.).
+  tools: string;
+  // Invisible-work pass: necessary but under-recognized work that would only be
+  // noticed if it stopped — task elicitation for background/maintenance/glue work.
+  invisibleWork: string;
 }
 
 export interface BackgroundTurn {

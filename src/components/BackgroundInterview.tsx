@@ -3,6 +3,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useWorkflowStore } from "../store";
 import {
   evaluateAnswer,
+  checkQuestionCoverage,
   fetchInterviewQuestion,
   transcribeAudio,
 } from "../lib/api";
@@ -46,29 +47,82 @@ const QUESTIONS: {
     placeholder: "What you own or are accountable for",
     criteria: [
       "FLOOR — the participant has named at least one primary responsibility or area they own (e.g. 'I own the team's product specs', 'I'm responsible for patient care'). If they named NONE ('a bit of everything', 'various things'), follow up asking what they're mainly responsible for.",
-      "TASKS UNDER RESPONSIBILITIES — when they've named responsibilities or areas at a high level but NOT the concrete tasks those involve, it's NOT fully covered: follow up by picking ONE responsibility they named and asking what specific tasks or activities fall under it (e.g. they say 'I'm responsible for the backend' → 'When it comes to the backend, what are the main things you do?'; 'I handle patient care' → 'What does patient care involve day to day for you?'). On a later turn, if OTHER responsibilities they named are still just high-level areas, you may drill into ONE more of them. Stop once the tasks under their main responsibilities are reasonably clear. If they've already described the concrete tasks under their responsibilities, this is covered. Probe ONE responsibility per turn, warmly, never skeptically.",
+      "BREADTH — if they named only ONE responsibility or area, follow up ONCE: briefly ACKNOWLEDGE it, then ask whether there are other areas they own or are accountable for. If they named several distinct responsibilities, breadth is covered.",
+      "STAY AT OWNERSHIP ALTITUDE — this question maps WHAT they own, not how they spend their time. Do NOT drill into the specific tasks or activities under a responsibility — a later question ('a typical week') covers that. A responsibility named only at a high level is FINE here; do NOT treat missing task detail as uncovered.",
     ],
-    maxFollowups: 3,
-    minFollowups: 2,
+    maxFollowups: 2,
+    minFollowups: 1,
   },
   {
     field: "typicalWeek",
-    text: "Think back over this past week — what did you actually work on? The more specific you can be about the tasks you do, the better.",
+    text: "Walk me through a typical week. What are the recurring tasks you do?",
     framingNotes:
-      "CRITICAL — keep the critical-incident framing: anchor on what they ACTUALLY did over THIS PAST WEEK specifically (a concrete, recent week), NOT a hypothetical 'typical' week. Just ask what they worked on — do NOT ask them to go day by day or break it down by each day. KEEP the closing encouragement to be as specific as possible about the tasks they do.",
+      "Ask them to walk through a typical week and name the recurring tasks they regularly do. Frame around what's TYPICAL and RECURRING — the things they do on a regular basis — NOT a specific recent week. You MAY invite them to walk through it loosely, but do NOT force a rigid hour-by-hour or day-by-day breakdown. KEEP the encouragement to be as specific as possible about the actual tasks they do.",
     placeholder:
-      "What you did this past week — meetings, deliverables, the day-to-day",
+      "The tasks you do regularly — meetings, deliverables, the day-to-day",
     criteria: [
-      "FLOOR — the participant has named at least one real activity or task they did. If they named NO actual activity at all ('the usual', 'just work stuff', 'hard to say'), follow up asking what they worked on this week.",
-      "BREADTH — if they named only ONE activity or area (e.g. 'mostly building an app', 'just seeing patients'), follow up ONCE: briefly ACKNOWLEDGE it, then ask whether there are other tasks or activities they also do. Do NOT push for more detail on that one activity. If they named several distinct activities, breadth is covered.",
-      "SUBSTANCE — the answer must give a concrete sense of WHAT the work actually is, not just generic activity labels. A bare list — e.g. 'I have some zooms and a standup, I go to networking events, otherwise I write proposals and do research' — names activities but says nothing about what the proposals are FOR, what the research is ON, or what the meetings cover. When a central activity is named only as a bare label (no topic, project, client, deliverable, audience, or tool), it is NOT covered — follow up: warmly pick the SINGLE most central still-vague activity and ask what it actually involves or is about (e.g. 'What kind of proposals are you writing, and who for?' or 'What's the research on?'). Probe ONE thread per turn — never interrogate every item at once, never sound skeptical. On later turns, if other central activities they named are STILL bare labels, you may probe ONE more of them; stop once the main parts of their week are reasonably concrete. If the central activities already carry concrete substance, this is covered.",
-      "RESPONSIBILITY COVERAGE — earlier in the conversation the participant described their primary responsibilities. If any responsibility or area they named does NOT clearly map to a task they mentioned this week, it is NOT fully covered: follow up ONCE, warmly, asking whether they did anything on that responsibility this week (e.g. earlier they said they're responsible for hiring but never mentioned it → 'Earlier you mentioned you're responsible for hiring — did you get to any of that this week?'). Probe ONE uncovered responsibility per turn. If they didn't describe their responsibilities, or every responsibility already maps to something they mentioned, this is covered.",
-      "Representativeness — ONLY if the participant explicitly signals the recent week was unusual or atypical (e.g. 'last week was crazy', 'that's not a normal week', 'I was on leave/traveling'), follow up ONCE asking what a normal week usually looks like. If they give no such signal, treat the recent week as representative and do NOT ask about it — accept and move on.",
+      "FLOOR — the participant has named at least one real recurring activity or task. If they named NO actual activity at all ('the usual', 'just work stuff', 'hard to say'), follow up asking what they regularly do in a typical week.",
+      "BREADTH — if they named only ONE activity or area (e.g. 'mostly building an app', 'just seeing patients'), follow up ONCE: briefly ACKNOWLEDGE it, then ask whether there are other tasks or activities they also do regularly. Do NOT push for more detail on that one activity. If they named several distinct activities, breadth is covered.",
+      "SUBSTANCE — the answer must give a concrete sense of WHAT the work actually is, not just generic activity labels. A bare list — e.g. 'I have some zooms and a standup, I go to networking events, otherwise I write proposals and do research' — names activities but says nothing about what the proposals are FOR, what the research is ON, or what the meetings cover. When a central activity is named only as a bare label (no topic, project, client, deliverable, audience, or tool), it is NOT covered — follow up: warmly pick the SINGLE most central still-vague activity and ask what it actually involves or is about (e.g. 'What kind of proposals are you writing, and who for?' or 'What's the research on?'). Probe ONE thread per turn — never interrogate every item at once, never sound skeptical. On later turns, if other central activities they named are STILL bare labels, you may probe ONE more of them; stop once the main parts of a typical week are reasonably concrete. If the central activities already carry concrete substance, this is covered.",
+      "RESPONSIBILITY COVERAGE — earlier in the conversation the participant described their primary responsibilities. If any responsibility or area they named does NOT clearly map to a task they mentioned, it is NOT fully covered: follow up ONCE, warmly, asking whether they regularly do anything on that responsibility (e.g. earlier they said they're responsible for hiring but never mentioned it → 'Earlier you mentioned you're responsible for hiring — is that something you work on in a typical week?'). Probe ONE uncovered responsibility per turn. If they didn't describe their responsibilities, or every responsibility already maps to something they mentioned, this is covered.",
     ],
     maxFollowups: 3,
-    minFollowups: 2,
-    closingQuestion:
-      "Finally,  are there any other tasks you do at work that you haven't mentioned yet?",
+    minFollowups: 0,
+  },
+  {
+    field: "outputs",
+    text: "What are the actual things you make or hand off at work — like reports, documents, code, or decisions?",
+    framingNotes:
+      "Elicit tasks via the participant's OUTPUTS — the tangible things they make, update, approve, send, maintain, or deliver, and anything with their name attached. Keep it CONCRETE and grounded: anchor the question in two or three real example artifacts (e.g. reports, documents, dashboards, code, decks, tickets, cases, decisions) so it lands as 'what's the actual stuff you produce' rather than an abstract list of verbs. Pick just a couple of examples — do NOT read the whole list as a checklist, and do NOT make it sound like an HR form. The point is to surface tangible things they'd skip when narrating activities, then decompose each output into the work behind it.",
+    placeholder: "What you produce, approve, send, or keep up to date",
+    criteria: [
+      "FLOOR — the participant has named at least one concrete output or artifact they own (e.g. 'the weekly sales report', 'patient charts', 'the onboarding deck'). If they named NONE ('not really anything', 'hard to say'), follow up warmly asking what they produce, maintain, or deliver.",
+      "DECOMPOSITION — for each main output they named, the TASKS that go into creating or maintaining it should be reasonably clear. When an output is named as a bare noun with no sense of the work behind it, it is NOT covered — follow up ONCE: pick the SINGLE most central output and ask what goes into producing or maintaining it (e.g. they say 'I own the monthly board deck' → 'What goes into putting that together each month?'). Probe ONE output per turn, warmly, never skeptically. On later turns, if other central outputs are still bare nouns, you may decompose ONE more; stop once the work behind their main outputs is reasonably clear.",
+      "BREADTH — if they named only ONE output, follow up ONCE: briefly ACKNOWLEDGE it, then ask whether there are other things they produce, maintain, or are accountable for. If they named several distinct outputs, breadth is covered.",
+    ],
+    maxFollowups: 3,
+    minFollowups: 0,
+  },
+  {
+    field: "stakeholders",
+    text: "Who do you do your work for or with — the people, teams, or clients you deal with?",
+    framingNotes:
+      "Elicit tasks via the participant's STAKEHOLDERS — the people, teams, roles, clients, or outside parties they do work FOR or WITH. Draw on the social side of work: who they depend on and who depends on them (handoffs both ways), who they coordinate or communicate with, who they report to or support, and anyone OUTSIDE their team or organization (clients, customers, partners, the public). Keep it warm and concrete; you MAY name a couple of example relationships to prompt them, but do NOT read a checklist. The point is to surface interactions that carry tasks — meetings, handoffs, coordinating, reporting, supporting — that they'd skip when narrating solo activities, then draw out what they actually do with or for each.",
+    placeholder: "Who you work for or with — teammates, clients, other teams",
+    criteria: [
+      "FLOOR — the participant has named at least one person, team, role, or outside party they do work for or with (e.g. 'my manager', 'the sales team', 'patients', 'external vendors'). If they named NONE ('I mostly work alone', 'no one really'), follow up warmly asking who they work for or with, even occasionally.",
+      "BREADTH — surface the RANGE of people, not just one: if they named only their immediate team, follow up ONCE asking whether there are others they work for or with — people they depend on, people who depend on them, or anyone outside their team or organization (clients, customers, partners). If they named several distinct parties, breadth is covered.",
+      "INTERACTION SUBSTANCE — for the main relationships, it should be clear WHAT the working relationship actually involves task-wise: what they do with or for that person or group (hand off to, coordinate with, report to, support, get input or feedback from). When a stakeholder is named only as a bare label with no sense of the actual exchange, follow up ONCE: warmly pick the SINGLE most central one and ask what they actually do with or for them (e.g. 'You mentioned the design team — what do you usually go to them for, or do for them?'). Probe ONE relationship per turn, never skeptically. If the main relationships already carry concrete substance, this is covered.",
+    ],
+    maxFollowups: 3,
+    minFollowups: 0,
+  },
+  {
+    field: "tools",
+    text: "What systems or tools do you use for work — and do any of them create tasks for you?",
+    framingNotes:
+      "Elicit tasks via the TOOLS and SYSTEMS the participant uses — the software, platforms, equipment, or systems that are part of their work, and ESPECIALLY the ones that GENERATE work for them (a ticket or case queue, an inbox, alerts or notifications, a dashboard that flags issues, an EHR worklist, a CRM, a calendar). Keep it warm and concrete; you MAY offer a couple of examples that fit any job, but do NOT read a checklist. The point is to surface tool-driven tasks — responding to tickets, clearing a queue, acting on alerts, updating records in a system — that they'd skip when narrating activities, then draw out what they actually do in each tool.",
+    placeholder: "The software, systems, or equipment you use",
+    criteria: [
+      "FLOOR — the participant has named at least one tool, system, or piece of equipment they use for work (e.g. 'Jira', 'the EHR', 'Excel', 'our CRM', 'the register'). If they named NONE ('nothing really', 'just the usual'), follow up warmly asking what software, systems, or equipment they use.",
+      "TASK-GENERATING SYSTEMS — surface tools that CREATE work, not just tools they happen to use. If they listed tools but it's unclear whether any FEED them tasks (a queue, inbox, ticket system, alerts, notifications, a worklist), follow up ONCE asking whether any of those systems generate work or things they have to act on. If they already made clear which systems drive their tasks, this is covered.",
+      "USE SUBSTANCE — for the main tools, it should be clear what they actually DO in or with them (the task), not just the tool's name. When a tool is named only as a bare label, follow up ONCE: warmly pick the SINGLE most central one and ask what they use it for or do in it. Probe ONE tool per turn, never skeptically. If the main tools already carry a concrete sense of use, this is covered.",
+    ],
+    maxFollowups: 3,
+    minFollowups: 0,
+  },
+  {
+    field: "invisibleWork",
+    text: "What would people only notice if you stopped doing it?",
+    framingNotes:
+      "Elicit the INVISIBLE or under-recognized work — the necessary background tasks that keep things running but go unnoticed until they STOP: maintenance, checking and monitoring, coordinating, cleanup, chasing loose ends, preventing problems before they happen, the 'glue' work, the quiet emotional labor. This is a reflective question, so keep it warm and low-pressure and give them room to think; you MAY offer one gentle example, but do NOT supply a list. The point is to surface real tasks that don't show up when people narrate their visible deliverables and activities.",
+    placeholder: "The behind-the-scenes work that keeps things running",
+    criteria: [
+      "FLOOR — the participant has named at least one task or kind of work that would be noticed mainly in its ABSENCE. If they drew a blank or stayed abstract ('not sure', 'I guess everything'), follow up ONCE, gently — e.g. what quietly keeps things running, or what would start to slip if they were out for a couple of weeks. A 'nothing really' after a genuine think is acceptable; do NOT push hard.",
+      "SUBSTANCE — for the invisible work they named, it should be reasonably clear what the actual TASK is, not just a vague label ('I keep things organized', 'I smooth things over'). When it's named only as a vague label, follow up ONCE: warmly ask what they concretely do — the actual task behind it. Probe ONE thread per turn, never skeptically. If what they named already carries concrete substance, this is covered.",
+    ],
+    maxFollowups: 3,
+    minFollowups: 0,
   },
 ];
 
@@ -76,6 +130,22 @@ const QUESTIONS: {
 const OUTRO_TEXT =
   "Great! From this quick interview, we'll generate a list of tasks for you to review and refine next.";
 
+// The catch-all is asked ONCE at the very end, as a final step before the outro —
+// independent of any single question, so it always runs even when the last
+// question(s) were auto- or manually skipped.
+const FINAL_CATCHALL =
+  "Last one: if someone shadowed you for two weeks, what tasks would they see that we haven't named yet?";
+
+// AUTO skip (#3): questions eligible to be skipped automatically when earlier
+// answers already cover their criteria. The opening role question and the
+// responsibilities question always run.
+const AUTO_SKIP_FIELDS = new Set<string>([
+  "typicalWeek",
+  "outputs",
+  "stakeholders",
+  "tools",
+  "invisibleWork",
+]);
 
 // Reveals text one word at a time, each word rising and fading in (staggered).
 // Calls onDone once the last word has finished animating.
@@ -230,6 +300,18 @@ function MicOrb({
   );
 }
 
+// Desktop (mouse/trackpad) benefits from auto-focusing the answer box so the
+// participant can just start typing. On touch devices, auto-focus instead pops
+// the on-screen keyboard and scrolls the viewport on every question transition
+// (the textarea unmounts during evaluation and remounts for the next question),
+// which feels jarring. Gate auto-focus to fine pointers so mobile users open
+// the keyboard by tapping the field themselves. User-initiated focuses (the
+// "Prefer to type?" toggle, post-transcription edit) are intentionally left on.
+const AUTOFOCUS_ANSWER =
+  typeof window !== "undefined" &&
+  !!window.matchMedia &&
+  window.matchMedia("(pointer: fine)").matches;
+
 export function BackgroundInterview() {
   const { setUserProfile, setPhase, addBackgroundTurn } = useWorkflowStore(
     useShallow((s) => ({
@@ -245,6 +327,10 @@ export function BackgroundInterview() {
     jobTitle: "",
     typicalWeek: "",
     aiUsage: "",
+    outputs: "",
+    stakeholders: "",
+    tools: "",
+    invisibleWork: "",
   });
 
   // Follow-up state for current question
@@ -254,8 +340,7 @@ export function BackgroundInterview() {
   // Full interview conversation (every Q/A across all questions), so the
   // evaluator asks follow-ups as a natural continuation, not a templated probe.
   const convoRef = useRef<{ q: string; a: string }[]>([]);
-  // Closing catch-all question state (asked once, after follow-ups)
-  const [closingAsked, setClosingAsked] = useState(false);
+  // Final catch-all state (asked once at the very end, before the outro)
   const [isClosingActive, setIsClosingActive] = useState(false);
 
   // Live (LLM-generated) phrasing for the current question; falls back to the
@@ -314,6 +399,18 @@ export function BackgroundInterview() {
   const isFollowUpActive = followUpQ !== null;
   const placeholderText = isFollowUpActive ? "Your answer…" : q.placeholder;
 
+  // Continuous progress (0–1) for the header bar. Robust to auto-skips, which
+  // would make a fixed "Topic X of N" misleading: the bar just advances. The
+  // active question gets half credit; a follow-up or the final catch-all pushes
+  // it the rest of the way toward the next step.
+  const progress = showOutro
+    ? 1
+    : Math.min(
+        1,
+        (step + (isFollowUpActive || isClosingActive ? 1 : 0.5)) /
+          QUESTIONS.length,
+      );
+
   // Re-size the input whenever its content, its placeholder (question/follow-up
   // change), or its visibility (voice↔text toggle, mount) changes.
   useEffect(() => {
@@ -350,12 +447,37 @@ export function BackgroundInterview() {
       setFollowUpQ(null);
       setFollowUpCount(0);
       setAccumulatedAnswer("");
-      setClosingAsked(false);
       setIsClosingActive(false);
     };
 
-    if (step < QUESTIONS.length - 1) {
-      const nextIndex = step + 1;
+    // Pick the next question, AUTO-SKIPPING any eligible upcoming question whose
+    // criteria are already satisfied by what's been said so far (#3).
+    const conversation = convoRef.current
+      .map((t) => `Interviewer: ${t.q}\nParticipant: ${t.a}`)
+      .join("\n");
+    let nextIndex = step + 1;
+    while (nextIndex < QUESTIONS.length) {
+      const next = QUESTIONS[nextIndex];
+      if (!AUTO_SKIP_FIELDS.has(next.field)) break;
+      const covered = await checkQuestionCoverage(
+        next.text,
+        next.criteria,
+        conversation,
+      );
+      if (!covered) break;
+      // Record the auto-skip so analysts can see it, but DON'T push it to
+      // convoRef — it must not pollute later coverage checks or task extraction.
+      addBackgroundTurn({
+        field: next.field,
+        question: next.text,
+        answer: "(auto-skipped — already covered earlier)",
+        isFollowUp: false,
+        timestamp: Date.now(),
+      });
+      nextIndex += 1;
+    }
+
+    if (nextIndex < QUESTIONS.length) {
       // Wait out the fade (matches the 250ms CSS) and load the next question's
       // phrasing, THEN swap content + fade back in.
       await Promise.all([
@@ -366,12 +488,33 @@ export function BackgroundInterview() {
       setStep(nextIndex);
       setQuestionVisible(true);
     } else {
-      await new Promise((r) => setTimeout(r, 260));
-      resetQuestionState();
+      // Exhausted all questions (some may have been skipped). Persist the
+      // profile, then ALWAYS ask the catch-all once before the outro — it's the
+      // one step that runs no matter what. Its answer is captured in the
+      // transcript (addBackgroundTurn), not in a profile field, so it can't
+      // overwrite the last question's answer.
       setUserProfile(newAnswers as UserProfile);
-      setShowOutro(true);
+      setIsClosingActive(true);
+      setFollowUpCount(0);
+      setAccumulatedAnswer("");
+      await new Promise((r) => setTimeout(r, 260));
+      setFollowUpQ(FINAL_CATCHALL);
       setQuestionVisible(true);
     }
+  };
+
+  // The catch-all is the final step: any answer (or a skip) ends the interview.
+  const finishInterview = async () => {
+    setInput("");
+    setShowTextInput(false);
+    setQuestionVisible(false);
+    await new Promise((r) => setTimeout(r, 260));
+    setFollowUpQ(null);
+    setFollowUpCount(0);
+    setAccumulatedAnswer("");
+    setIsClosingActive(false);
+    setShowOutro(true);
+    setQuestionVisible(true);
   };
 
   const advance = async (value: string) => {
@@ -397,9 +540,9 @@ export function BackgroundInterview() {
       ? `${accumulatedAnswer}\n${trimmed}`
       : trimmed;
 
-    // They just answered the closing catch-all question — accept and move on.
+    // They just answered the final catch-all — finish up (any answer, or skip).
     if (isClosingActive) {
-      await advanceStep(combined);
+      await finishInterview();
       return;
     }
 
@@ -424,6 +567,15 @@ export function BackgroundInterview() {
           conversation,
           q.minFollowups ?? 0,
         );
+        // MANUAL skip: the evaluator detected the participant asked to skip this
+        // question. End it now — no more follow-ups for it. Keep any substance
+        // from earlier in this topic; the skip turn itself is dropped. (The final
+        // catch-all still runs once at the end, via advanceStep.)
+        if (result.skipRequested) {
+          setIsEvaluating(false);
+          await advanceStep(isFollowUpActive ? accumulatedAnswer : "");
+          return;
+        }
         if (!result.allCovered && result.followUp) {
           // Fade the answered question out, then swap in the follow-up (invisible).
           const followUp = result.followUp;
@@ -444,21 +596,9 @@ export function BackgroundInterview() {
       }
     }
 
-    // Follow-ups done — ask the fixed catch-all question once before advancing.
-    if (q.closingQuestion && !closingAsked) {
-      const closing = q.closingQuestion;
-      setClosingAsked(true);
-      setIsClosingActive(true);
-      setAccumulatedAnswer(combined);
-      setQuestionVisible(false);
-      setTimeout(() => {
-        setFollowUpQ(closing);
-        setQuestionVisible(true);
-      }, 260);
-      return;
-    }
-
-    // All covered (or max follow-ups reached, or evaluation failed) — advance
+    // All covered (or max follow-ups reached, or evaluation failed) — advance.
+    // The catch-all is no longer asked per-question; advanceStep asks it once
+    // globally, after the last question, so it always runs.
     await advanceStep(combined);
   };
 
@@ -545,53 +685,21 @@ export function BackgroundInterview() {
     <div className="flex flex-col h-full bg-white relative overflow-hidden">
       <div className="absolute top-0 left-0 right-0 h-56 bg-gradient-to-b from-indigo-50/30 to-transparent pointer-events-none" />
 
-      {/* Header with step progress */}
-      <div className="relative z-10 px-5 sm:px-10 pt-7 sm:pt-8 pb-5 shrink-0">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-4">
-          {!showOutro
-            ? `Topic ${step + 1} of ${QUESTIONS.length}`
-            : "Interview"}
-        </p>
-        <div className="flex gap-2 items-center">
-          {QUESTIONS.map((_, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <div
-                className={`flex items-center justify-center w-6 h-6 rounded-full text-[11px] font-semibold transition-all duration-300 ${
-                  i < step
-                    ? "bg-indigo-500 text-white"
-                    : i === step
-                      ? "bg-indigo-100 text-indigo-600 ring-2 ring-indigo-400 ring-offset-1"
-                      : "bg-slate-100 text-slate-400"
-                }`}
-              >
-                {i < step ? (
-                  <svg
-                    className="w-3 h-3"
-                    viewBox="0 0 12 12"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <polyline points="2 6 5 9 10 3" />
-                  </svg>
-                ) : (
-                  i + 1
-                )}
-              </div>
-              {i < QUESTIONS.length - 1 && (
-                <div className="w-8 h-[2px] rounded-full overflow-hidden bg-slate-100">
-                  <div
-                    className={`h-full bg-indigo-400 transition-all duration-500 ${i < step ? "w-full" : "w-0"}`}
-                  />
-                </div>
-              )}
-            </div>
-          ))}
+      {/* Header with progress bar */}
+      <div className="relative z-10 px-5 sm:px-8 pt-7 sm:pt-8 pb-5 shrink-0 w-full mx-auto max-w-[780px]">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-3">
+          Interview
           {!showOutro && isFollowUpActive && (
-            <span className="ml-2 text-xs text-indigo-400">· follow-up</span>
+            <span className="ml-2 normal-case tracking-normal text-indigo-300">
+              · follow-up
+            </span>
           )}
+        </p>
+        <div className="h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-violet-400 transition-all duration-500 ease-out"
+            style={{ width: `${Math.round(progress * 100)}%` }}
+          />
         </div>
       </div>
 
@@ -674,23 +782,20 @@ export function BackgroundInterview() {
           )}
 
           {/* Mic orb */}
-          {!showOutro &&
-            questionVisible &&
-            !showTextInput &&
-            !isEvaluating && (
-              <div className="flex flex-col items-center py-4 mb-8 gap-3">
-                <MicOrb
-                  state={recordState}
-                  onToggle={toggleRecording}
-                  disabled={isEvaluating}
-                />
-                {recordTranscribeError && (
-                  <p className="text-xs text-red-500 text-center">
-                    {recordTranscribeError}
-                  </p>
-                )}
-              </div>
-            )}
+          {!showOutro && questionVisible && !showTextInput && !isEvaluating && (
+            <div className="flex flex-col items-center py-4 mb-8 gap-3">
+              <MicOrb
+                state={recordState}
+                onToggle={toggleRecording}
+                disabled={isEvaluating}
+              />
+              {recordTranscribeError && (
+                <p className="text-xs text-red-500 text-center">
+                  {recordTranscribeError}
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Text input */}
           {showTextInput && !isEvaluating && (
@@ -717,7 +822,7 @@ export function BackgroundInterview() {
                     }
                   }}
                   disabled={recordState !== "idle" || isEvaluating}
-                  autoFocus
+                  autoFocus={AUTOFOCUS_ANSWER}
                 />
                 <button
                   onClick={() => advance(input)}

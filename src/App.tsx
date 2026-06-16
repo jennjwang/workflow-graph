@@ -36,6 +36,10 @@ const DEV_PERSONAS: Record<
     responsibilities: string;
     typicalWeek: string;
     aiUsage: string;
+    outputs: string;
+    stakeholders: string;
+    tools: string;
+    invisibleWork: string;
   }
 > = {
   "frontend-engineer": {
@@ -45,6 +49,14 @@ const DEV_PERSONAS: Record<
     typicalWeek:
       "Writing React components, reviewing PRs, debugging UI issues, syncing with design, writing tests.",
     aiUsage: "I use Copilot for boilerplate and Cursor for refactoring.",
+    outputs:
+      "UI components and pages, the shared component library, merged pull requests, bug fixes, and component documentation.",
+    stakeholders:
+      "Designers, backend engineers, the product manager, and QA. I take specs from design, coordinate API contracts with backend, and hand off built components for QA to test.",
+    tools:
+      "VS Code, GitHub (PRs and issues), Jira for tickets, Figma to read designs, Slack, and Sentry alerts when something breaks in production.",
+    invisibleWork:
+      "Keeping the component library and docs up to date, triaging flaky tests, and answering teammates' questions so they aren't blocked — nobody notices until it's gone.",
   },
   "product-manager": {
     jobTitle: "Product Manager",
@@ -53,6 +65,14 @@ const DEV_PERSONAS: Record<
     typicalWeek:
       "Writing PRDs, running sprint planning, reviewing designs, talking to customers, tracking metrics.",
     aiUsage: "I use ChatGPT to draft requirements and summarize user research.",
+    outputs:
+      "PRDs and specs, the product roadmap, sprint plans, release notes, and the metrics dashboard I review weekly.",
+    stakeholders:
+      "Engineering, design, sales, customer success, and external customers. I gather requirements from customers, align engineering and design, and report progress to leadership.",
+    tools:
+      "Jira and Linear for the backlog, Notion for specs, Figma to review designs, Amplitude for metrics, and a shared inbox of customer feedback.",
+    invisibleWork:
+      "Unblocking the team, chasing down decisions, keeping stakeholders aligned, and writing context down so it isn't lost — invisible until it's missing.",
   },
   "data-scientist": {
     jobTitle: "Data Scientist",
@@ -62,6 +82,14 @@ const DEV_PERSONAS: Record<
       "Clean and reshape raw data for analysis and modeling. Cleaning data, training models, writing notebooks, presenting findings, syncing with engineers.",
     aiUsage:
       "I use Claude to help write and debug Python, and to explain statistical concepts.",
+    outputs:
+      "Trained models, analysis notebooks, dashboards, and the findings decks I present to stakeholders.",
+    stakeholders:
+      "Product managers, data engineers, and business leadership. I take questions from PMs, rely on data engineers for pipelines, and present findings to leadership.",
+    tools:
+      "Python and Jupyter notebooks, SQL and the data warehouse, dbt for pipelines, Tableau for dashboards, and a queue of analysis requests in Jira.",
+    invisibleWork:
+      "Data validation and sanity checks, maintaining pipelines and documentation, and catching bad numbers before they reach a dashboard — only noticed when something's wrong.",
   },
 };
 
@@ -83,13 +111,17 @@ export default function App() {
     const key = new URLSearchParams(window.location.search).get("persona");
     const persona = key ? DEV_PERSONAS[key] : null;
     if (!persona) return;
-    setUserProfile(persona);
+    setUserProfile({ ...persona, outputs: "" });
     // Seed a synthetic transcript so extractInterviewTasks has something to
     // extract from — without this, grounding is empty and the generator repeats
     // things the persona's profile already covers.
     addBackgroundTurn({ field: "responsibilities", question: "What are your primary responsibilities?", answer: persona.responsibilities, isFollowUp: false, timestamp: Date.now() });
     addBackgroundTurn({ field: "typicalWeek", question: "What does a typical week look like?", answer: persona.typicalWeek, isFollowUp: false, timestamp: Date.now() });
     if (persona.aiUsage) addBackgroundTurn({ field: "aiUsage", question: "Do you use AI in your work?", answer: persona.aiUsage, isFollowUp: false, timestamp: Date.now() });
+    if (persona.outputs) addBackgroundTurn({ field: "outputs", question: "What do you produce, maintain, approve, send, or deliver?", answer: persona.outputs, isFollowUp: false, timestamp: Date.now() });
+    if (persona.stakeholders) addBackgroundTurn({ field: "stakeholders", question: "Who do you do your work for or with?", answer: persona.stakeholders, isFollowUp: false, timestamp: Date.now() });
+    if (persona.tools) addBackgroundTurn({ field: "tools", question: "What systems or tools do you use for work?", answer: persona.tools, isFollowUp: false, timestamp: Date.now() });
+    if (persona.invisibleWork) addBackgroundTurn({ field: "invisibleWork", question: "What would people only notice if you stopped doing it?", answer: persona.invisibleWork, isFollowUp: false, timestamp: Date.now() });
     setPhase("task-selection");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

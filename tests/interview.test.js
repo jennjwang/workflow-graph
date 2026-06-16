@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import {
   evaluateAnswerMessages,
   rewordQuestionMessages,
+  checkCoverageMessages,
 } from '../prompts/interview.js';
 
 const baseArgs = {
@@ -42,6 +43,14 @@ test('declares the JSON output contract', () => {
   const [system] = evaluateAnswerMessages(baseArgs);
   assert.match(system.content, /"allCovered"/);
   assert.match(system.content, /"followUp"/);
+  assert.match(system.content, /"skipRequested"/);
+});
+
+test('carries the skip-detection rule (and protects real negative answers)', () => {
+  const [system] = evaluateAnswerMessages(baseArgs);
+  assert.match(system.content, /SKIP DETECTION/);
+  // A bare "no"/"none" must NOT be treated as a skip — the rule says so.
+  assert.match(system.content, /is NOT a skip/i);
 });
 
 test('minimum-follow-up block appears only when below the floor', () => {
@@ -91,4 +100,29 @@ test('rewordQuestionMessages omits the framing line when none given', () => {
   assert.doesNotMatch(system.content, /Framing notes \(MUST preserve\)/);
   assert.match(system.content, /What is your current role\?/);
   assert.match(system.content, /"question"/);
+});
+
+test('checkCoverageMessages embeds the question + criteria and biases conservative', () => {
+  const msgs = checkCoverageMessages({
+    question: 'What do you produce or deliver?',
+    criteria: ['Named at least one output.', 'Tasks behind it are clear.'],
+    conversation: 'Interviewer: hi\nParticipant: I write the weekly report.',
+  });
+  assert.equal(msgs.length, 2);
+  // Conservative by design: when in doubt, NOT covered (ask the question).
+  assert.match(msgs[0].content, /covered=true/);
+  assert.match(msgs[0].content, /CONSERVATIVE/);
+  assert.match(msgs[0].content, /"covered"/);
+  // The upcoming question, its criteria, and the transcript are all present.
+  assert.match(msgs[1].content, /What do you produce or deliver\?/);
+  assert.match(msgs[1].content, /Named at least one output\./);
+  assert.match(msgs[1].content, /weekly report/);
+});
+
+test('checkCoverageMessages omits the transcript block when none given', () => {
+  const [, user] = checkCoverageMessages({
+    question: 'Q?',
+    criteria: ['c'],
+  });
+  assert.doesNotMatch(user.content, /THE CONVERSATION SO FAR/);
 });

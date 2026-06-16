@@ -303,7 +303,7 @@ export async function evaluateAnswer(
   evaluationStyle: 'lenient' | 'strict' = 'lenient',
   conversation: string = '',
   minFollowups: number = 0,
-): Promise<{ allCovered: boolean; followUp: string | null }> {
+): Promise<{ allCovered: boolean; followUp: string | null; skipRequested?: boolean }> {
   const res = await fetch('/api/evaluate-answer', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -311,6 +311,28 @@ export async function evaluateAnswer(
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
+}
+
+// Coverage pre-check: has the participant already said enough, earlier in the
+// interview, to make this upcoming question redundant? Used to auto-skip a pass.
+// Fails open to false (ask the question) so a flaky call never drops a question.
+export async function checkQuestionCoverage(
+  question: string,
+  criteria: string[],
+  conversation: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch('/api/check-coverage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, criteria, conversation }),
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return data.covered === true;
+  } catch {
+    return false;
+  }
 }
 
 // Dynamic phrasing for an opening interview question: a natural reworded variant
@@ -345,11 +367,12 @@ export async function generateTasksFromInterview(
   interviewTasks: string[],
   onTask: (name: string, meta?: { source?: 'interview' | 'gap' | 'bank'; bankId?: string; isProbe?: boolean }) => void,
   count?: number,
+  participant?: string,                              // records volunteered tasks as spontaneous mentions
 ): Promise<void> {
   const res = await fetch('/api/generate-tasks-from-interview', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jobTitle, typicalWeek, aiUsage, responsibilities, interviewTasks, count }),
+    body: JSON.stringify({ jobTitle, typicalWeek, aiUsage, responsibilities, interviewTasks, count, participant }),
   });
   if (!res.ok || !res.body) throw new Error(await res.text());
   const reader = res.body.getReader();
