@@ -448,17 +448,24 @@ No surrounding array. No markdown. No commentary. Just one JSON object per line.
     let bankProbes = [];
     if (taskBank && TASK_BANK_OCC) {
       try {
-        // Match the worker's volunteered (normalized) tasks to bank ids ONCE (LLM-decided). Two uses:
-        //  (1) record each as a SPONTANEOUS MENTION — evidence, is_probe=false, so task_posterior's
-        //      `WHERE is_probe` keeps it OUT of the representative posterior (it never moves the in/out call);
-        //  (2) dedup the probe set so we don't re-ask a task they just told us.
+        // Match the worker's volunteered (normalized) tasks to bank ids ONCE (5-way relationship classifier,
+        // cover policy with direction). Each match carries a `credit`:
+        //  - full    → record a SPONTANEOUS MENTION (is_probe=false): prevalence + existence, and the worker
+        //              is a certain doer → suppress probing that task. (equivalence / is-a-up / part-of-whole)
+        //  - partial → EXISTENCE only (worker did a PART of the task): corroboration, NOT prevalence, and the
+        //              worker stays probe-eligible for the whole. (part-of where the bank task is the whole)
         const matches = normalizedNames.length ? await taskBank.matchToBankIds(TASK_BANK_OCC, normalizedNames) : new Map();
         if (participant && matches.size) {
-          await Promise.all([...matches].map(([statement, bankId]) =>     // best-effort; never block the draw
-            taskBank.recordResponse({ participant, task: bankId, occupation: TASK_BANK_OCC,
-              isProbe: false, shownStatement: statement, response: 'confirm' }).catch(() => {})));
+          await Promise.all([...matches].map(([statement, m]) =>          // best-effort; never block the draw
+            (m.credit === 'full'
+              ? taskBank.recordResponse({ participant, task: m.id, occupation: TASK_BANK_OCC,
+                  isProbe: false, shownStatement: statement, response: 'confirm' })
+              : taskBank.recordCorroboration({ participant, task: m.id, occupation: TASK_BANK_OCC, statement })
+            ).catch(() => {})));
         }
-        bankProbes = await taskBank.pickProbes(TASK_BANK_OCC, { coveredIds: new Set(matches.values()) });
+        // only FULL matches are certain doers → dedup them out of the probe set; partial stays probe-eligible
+        const coveredIds = new Set([...matches.values()].filter(m => m.credit === 'full').map(m => m.id));
+        bankProbes = await taskBank.pickProbes(TASK_BANK_OCC, { coveredIds });
       } catch (e) { console.warn('[generate-tasks-from-interview] bank probes failed:', e.message); }
     }
 

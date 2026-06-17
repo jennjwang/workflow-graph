@@ -1,0 +1,83 @@
+You classify the relationship between two {domain} tasks, A and B.
+
+A task decomposes into CORE SUBTASKS — the concrete actions-on-objects it is FOR
+(exclude mere precursors, setup, or follow-on steps). Judge on core subtasks, never on
+shared domain or broad shared objects ("code", "system") alone.
+
+Choose exactly ONE relationship:
+
+  equivalence   — SAME core activity at the SAME scope: same action(s) on same object(s),
+                  differing only in wording, examples, named counterparties, or scope
+                  qualifiers. Either could substitute for the other. (Scope must match —
+                  if one is clearly narrower in scope, that is instantiation, not this.)
+
+  instantiation — IS-A: B is the SAME activity as A but a NARROWER KIND/scope (or vice
+                  versa). Doing the narrower one already IS doing the broader one, on a
+                  specific case. Same action+object, one strictly more specific.
+                  (e.g. "review code" ⊃ "review backend pull requests")
+
+  composition   — PART-OF: one task is a NECESSARY COMPONENT STEP performed WHILE doing
+                  the other — a constituent sub-action or check carried out DURING the
+                  whole (the same sitting), and a DIFFERENT action/object (not a narrower
+                  version of the whole). It is NOT part-of if the step is a SEPARATE
+                  workflow phase handed off BEFORE or AFTER the whole — one finishes and
+                  the other begins (it precedes, enables, triggers, or follows / responds-to
+                  the whole): that is DISJOINT.
+                  ("resolve a reported bug" ⊃ "reproduce the reported bug", and "review
+                  code" ⊃ "check it for security flaws" — both done DURING the whole. But
+                  "review code" then "address the review feedback" are separate before/after
+                  phases → disjoint, NOT part-of.)
+
+  overlap       — the two SHARE a core subtask that is STRICTLY NARROWER than EACH task's
+                  own activity, yet NEITHER contains the other. PROPERNESS TEST (all must
+                  hold, else NOT overlap): the shared subtask is a specific action on a
+                  specific object; AND each side retains SUBSTANTIVE work OUTSIDE it (both
+                  "complements" non-empty). If the shared work IS one task's whole activity,
+                  that task is CONTAINED in the other → use instantiation/composition, NOT
+                  overlap. If the only thing in common is shared MATERIAL or a generic
+                  verb+object ("modify code", "work on the system") → DISJOINT, not overlap.
+                  (Schematically: A = {p, q, s} and B = {r, t, s} qualify ONLY if the shared
+                  s is itself a specific action-on-object AND both keep distinct core work
+                  {p,q} and {r,t}. If A's whole activity equals s, A is contained in B, not
+                  overlap. Do not infer overlap from a shared TOPIC or a generic step that
+                  could be tacked onto many tasks.)
+
+  disjoint      — no shared core subtask. Includes the case where one merely precedes,
+                  enables, or follows the other in a workflow (shared sequence is NOT
+                  shared core work), and the case of entirely different activities.
+
+Decision order — pick the FIRST that genuinely holds:
+  equivalence → instantiation → composition → overlap → disjoint
+
+Be conservative about containment and overlap: a broad task is NOT equivalent to, and does
+NOT overlap, a specific task merely because it could umbrella it — that is instantiation
+(IS-A) or composition (PART-OF), or disjoint.
+
+SHARED-SUBTASK BAR (applies to overlap and composition).
+The "shared" subtask you name must be a SPECIFIC action on a SPECIFIC object, and
+STRICTLY MORE SPECIFIC than either task's own headline activity — and STRICTLY NARROWER
+than BOTH (both sides keep substantive work outside it). It does NOT support overlap if:
+  - it is a restatement of ONE task's whole activity → that task is CONTAINED in the other:
+    use instantiation/composition (or disjoint if no containment actually holds); OR
+  - it is a generic verb+object or shared material/topic that could describe many tasks in
+    this domain → DISJOINT.
+If the only thing in common is a generic activity phrase or the same material, the tasks
+share a TOPIC, not a core subtask → DISJOINT.
+
+PHASE RULE.
+Different phases of the same lifecycle are DISJOINT, not composition. Analyzing /
+determining / recommending / PLANNING X is a different task from EXECUTING / COORDINATING
+/ PERFORMING X — the planner does not do the doer's work and neither contains the other.
+This also covers sequential HAND-OFFS in one workflow: REQUESTING / triggering X, DOING X,
+and RESPONDING-TO / acting on X's output are SEPARATE tasks, pairwise disjoint — none
+contains another. e.g. "request a code review", "review the code", and "address review
+feedback" are three different tasks; "generate code" and "review the generated code" are
+two different tasks; "implement a feature" and "deploy it" are two different tasks.
+
+For instantiation and composition, give direction: "a_is_parent" = A is the broader/whole.
+
+Respond ONLY with JSON:
+{"relationship":"equivalence|instantiation|composition|overlap|disjoint",
+ "direction":"a_is_parent"|"b_is_parent"|null,
+ "shared":"<the shared core subtask, if overlap/composition; else ''>",
+ "reason":"<one short phrase>"}
