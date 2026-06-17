@@ -97,21 +97,6 @@ const PASSES = [
       "RELATIONAL TASKS (PRIORITIZE) — surface the COMMUNICATION/INTERPERSONAL tasks each main relationship carries (what they communicate, coordinate, hand off, report, review, escalate, give/get feedback on). If a stakeholder is a bare label, follow up ONCE asking what they actually do with/for the most central one — use a CLEAR, plain question — e.g. 'How do you usually interact with them?', 'What do you usually go to them for, or do for them?', 'What do you usually work on with them?'. Avoid clunky phrasings like 'back-and-forth'. Aim to draw out relational tasks (running the sync, writing the update, reviewing PRs) without leading. Probe ONE per turn.",
       'BREADTH (secondary) — only if they named ONE party and others clearly exist. Do NOT reflexively ask "who else".',
     ] },
-  { field: 'tools', autoSkip: true, maxFollowups: 3, minFollowups: 0,
-    text: 'What tools or systems do you use at work, and have any of them changed how you work?',
-    framingNotes: 'Tools/systems they use AND especially how those tools have CHANGED the way they work (new tasks a tool created, steps automated away, a different process). Concrete; a couple of examples ok, not a checklist.',
-    criteria: [
-      "FLOOR — named at least one tool/system/equipment, OR indicated they don't really use notable tools. A 'no'/'not really'/'I don't focus on specific tools' is a COMPLETE valid answer — accept and move on, do NOT re-ask in another form. Only if tools weren't addressed at all may you ask ONCE; if they then decline, covered.",
-      "WORKFLOW CHANGE — ONLY if they named tools: surface HOW a tool changed what they do. If they don't use notable tools or already described an effect, covered — do NOT push.",
-      'USE SUBSTANCE — ONLY if they named tools as bare labels: follow up ONCE. If they declined or it is concrete, covered.',
-    ] },
-  { field: 'invisibleWork', autoSkip: true, staticText: true, maxFollowups: 2, minFollowups: 0,
-    text: 'Is there any behind-the-scenes work you do that tends to go unnoticed — that people would only notice if it stopped?',
-    framingNotes: 'Invisible/under-recognized work (maintenance, checking, coordinating, cleanup, preventing problems, glue work). Reflective, low-pressure; a simple "no" is a fine answer; do NOT pressure or supply a list.',
-    criteria: [
-      "FLOOR — a 'no'/'nothing comes to mind'/'not really' is a COMPLETE valid answer: accept and move on, do NOT push. Only if they gestured at something abstract may you follow up ONCE gently. Never pressure.",
-      'SUBSTANCE — if they named invisible work only as a vague label, follow up ONCE asking what they concretely do. If they declined or it is concrete, covered.',
-    ] },
 ];
 const FINAL_CATCHALL = "Last one: if someone shadowed you for two weeks, what tasks would they see that we haven't named yet?";
 

@@ -113,37 +113,6 @@ const QUESTIONS: {
     maxFollowups: 1,
     minFollowups: 0,
   },
-  {
-    field: "tools",
-    text: "What tools or systems do you use at work, and have any of them changed how you work?",
-    transition: "Switching gears for a moment —",
-    framingNotes:
-      "Elicit tasks via the TOOLS and SYSTEMS the participant uses — the software, platforms, or equipment that are part of their work — and especially how those tools have CHANGED THE WAY THEY WORK: new tasks a tool created (e.g. reviewing or correcting its output, keeping records up to date), steps a tool automated away, or a different process they now follow because of it. Keep it warm and concrete; you MAY offer a couple of examples that fit any job, but do NOT read a checklist. The point is to surface tool-shaped tasks and workflow changes they'd skip when narrating activities, then draw out what they actually do with each tool.",
-    placeholder: "The software, systems, or equipment you use",
-    criteria: [
-      "FLOOR — the participant has either named at least one tool/system/equipment they use, OR indicated they don't really use notable tools. A 'no', 'not really', 'I don't focus on specific tools', or 'just the basics' is a COMPLETE, valid answer — accept it and move on; do NOT re-ask the same thing in another form. Only if they haven't addressed tools AT ALL may you ask ONCE, warmly, what software, systems, or equipment they use; if they then decline, that's covered.",
-      "WORKFLOW CHANGE — ONLY relevant if they actually named tools. In that case, surface HOW a tool changed what they do: a new task it created, a step it automated away, or a different way they now work. If they listed tools but said nothing about their effect, you MAY follow up ONCE. If they said they don't use notable tools, or already described an effect, this is covered — do NOT push someone who said they don't use specific tools.",
-      "USE SUBSTANCE — ONLY relevant if they named tools, and only as bare labels: follow up ONCE, warmly picking the SINGLE most central one and asking what they use it for. Probe ONE tool per turn, never skeptically. If they declined, or the tools already carry a concrete sense of use, this is covered.",
-    ],
-    maxFollowups: 2,
-    minFollowups: 0,
-  },
-  {
-    field: "invisibleWork",
-    text: "Is there any work you do that tends to go unnoticed — that people would only notice if it stopped?",
-    transition:
-      "One last thing — I want you to think about the invisible tasks in your work.",
-    staticText: true,
-    framingNotes:
-      "Elicit the INVISIBLE or under-recognized work — the necessary background tasks that keep things running but go unnoticed until they STOP: maintenance, checking and monitoring, coordinating, cleanup, chasing loose ends, preventing problems before they happen, the 'glue' work, the quiet emotional labor. This is a reflective, optional-feeling question: keep it warm and low-pressure, and a simple 'no' is a perfectly fine answer. You MAY offer one gentle example, but do NOT supply a list and do NOT pressure them to produce something.",
-    placeholder: "Something behind-the-scenes that keeps things running",
-    criteria: [
-      "FLOOR — a 'no', 'nothing comes to mind', or 'not really' is a COMPLETE, valid answer here: accept it and move on, do NOT follow up to push for something. Only if they gave a partial or abstract gesture toward something ('I guess I keep things organized') without a concrete task may you follow up ONCE, gently, asking what that looks like. Never pressure them to name invisible work they don't feel they have.",
-      "SUBSTANCE — if they DID name some invisible work but only as a vague label ('I keep things organized', 'I smooth things over'), follow up ONCE: warmly ask what they concretely do — the actual task behind it. Probe ONE thread per turn, never skeptically. If they declined ('no') or what they named already carries concrete substance, this is covered.",
-    ],
-    maxFollowups: 2,
-    minFollowups: 0,
-  },
 ];
 
 // Closing thank-you shown after the last question, before task selection
@@ -163,8 +132,6 @@ const AUTO_SKIP_FIELDS = new Set<string>([
   "typicalWeek",
   "outputs",
   "stakeholders",
-  "tools",
-  "invisibleWork",
 ]);
 
 // Reveals text one word at a time, each word rising and fading in (staggered).
