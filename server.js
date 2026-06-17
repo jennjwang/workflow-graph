@@ -297,9 +297,10 @@ app.post('/api/extract-interview-tasks', async (req, res) => {
     : '';
   try {
     const response = await client.chat.completions.create({
-      model: MODEL,
-      // Deterministic-ish extraction — we want consistent grounding across runs.
-      temperature: 0.2,
+      model: 'gpt-4o',
+      // Deterministic extraction (temp 0) on the stronger model — extraction
+      // grounds gap-fill, so we want consistent, high-recall grounding across runs.
+      temperature: 0,
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: INTERVIEW_TASK_EXTRACTOR_PROMPT },
