@@ -41,6 +41,20 @@ export function evaluateAnswerMessages({
     ? `\n\nTHE CONVERSATION SO FAR (the whole interview, most recent last):\n${conversation.trim()}\n`
     : '';
 
+  // Explicit dedup guard: pull every question already asked out of the
+  // conversation and forbid repeating OR rephrasing any of them. Far more
+  // salient than leaving them buried in the transcript.
+  const askedQuestions = conversation
+    ? conversation
+        .split('\n')
+        .filter((l) => l.startsWith('Interviewer: '))
+        .map((l) => l.slice('Interviewer: '.length).trim())
+        .filter(Boolean)
+    : [];
+  const askedBlock = askedQuestions.length
+    ? `\n\nQUESTIONS ALREADY ASKED (do NOT repeat OR rephrase any of these — a same-meaning question in different words still counts as a repeat; if your follow-up would resemble one of these, that thread is done, so ask something genuinely different or set allCovered=true):\n${askedQuestions.map((q) => `- ${q}`).join('\n')}`
+    : '';
+
   return [
     {
       role: 'system',
@@ -59,7 +73,10 @@ When a criterion is unmet, write ONE follow-up targeting the single most critica
 - SURFACE MORE TASKS. The whole point of every follow-up is to draw out MORE of the participant's tasks — to come away with concrete tasks you didn't have before. When they name an activity (e.g. "I write papers", "I see patients", "I run trainings"), the most productive move is to ask what they actually have to DO for it — the smaller tasks it breaks into. Do NOT fish for the CONTENT of their work: the topic or subject, what a paper / project / case is "about", or WHICH specific one it was. Knowing the title or topic adds NO new task.
   ❌ "What's one paper you worked on recently?" / "What was the report about?" (content — surfaces no new task)
   ✅ "When you write a paper, what do you need to do to get it done?" or "What does doing research actually look like for you?" (both pull out the constituent tasks — drafting, lit review, revising, making figures…)
-- NEVER repeat a question you've already asked, and never re-probe a thread you already covered. If a gap remains only on something you already asked about, move to a different gap or mark it covered.
+  Asking what DIFFERENT KINDS or TYPES of a task they do IS surfacing tasks (good, do this): ✅ "What are the different kinds of programming work that come up for you?" draws out distinct tasks — building features, debugging, writing tests, refactoring. The line is: KINDS of work = tasks (allowed); the SUBJECT of one instance (which feature, what the project is about, which client/paper) = content (not allowed).
+- PREFER DEPTH OVER BREADTH. Going DEEPER into what they actually DO with something they already named — a stakeholder, a tool, an activity — almost always surfaces more tasks than asking whether there are OTHER ones. Reflexive breadth probes ("who else do you work with?", "any other tools?", "anything else you produce?") usually just get "not really" and yield no new task. Default to digging into what they DO with what they've already named; only ask for more items when they've clearly given just a partial list and more obviously exist.
+- NEVER repeat a question you've already asked — and that INCLUDES asking the same thread again in DIFFERENT WORDS. Re-asking "what do you do with the team?" three times, reworded each time, when they keep giving the same thin answer, is exactly this mistake.
+- DIMINISHING RETURNS — a probe "pays off" ONLY if it yields a CONCRETE NEW TASK. A methodology or tool name ("we use Scrum", "we use Git"), a generic statement ("we work together", "we coordinate", "we collaborate"), a vague gesture, or a repeat of something already said is NOT a payoff — it means the thread is DRY. After ONE dry probe on a thread (an activity, output, or relationship), that thread is DONE: do NOT probe it again in any wording, and do NOT rationalize another probe by telling yourself the answer "wasn't concrete enough" — that's the trap that produces three reworded versions of the same question. This OVERRIDES the coverage criteria. When a thread is dry, move to a genuinely DIFFERENT uncovered thread, or — if nothing else is left to surface — set "allCovered" to true and stop. (NOTE: this is the opposite of a thread that KEEPS paying off — e.g. a developer's core 'programming' yielding building, then debugging, then testing as distinct tasks — keep drilling THAT, because each probe surfaces a new task.) A short, "that's it", or "no other" answer always means MOVE ON. Even when a minimum follow-up is still required, spend it on a DIFFERENT thread, never by re-asking a dry one.
 - VARY how you open — do NOT start follow-ups the same way. "Got it" or "You mentioned…" are fine very occasionally but you're badly overusing them; most of the time just fold their own words into the question and ask directly, the way a person actually mid-chat would.
 - Do NOT reuse the same stock SHAPE or filler phrases. You badly overuse the "what does X actually involve / tend to be / look like" mold — e.g. "what does that look like", "what does that involve", "what does the actual work itself tend to be", "what does that usually look like for you" — and the filler "day to day" / "day-to-day". Across the interview these blur into one repetitive question. A phrasing like "what does doing research look like for you?" or "what does that involve?" is FINE occasionally — but do NOT lean on the SAME shape for every follow-up. The filler "day to day" / "day-to-day" may appear AT MOST ONCE in the whole interview: if it already shows up earlier in the conversation, do NOT use it again. Keep VARYING the angle, always aiming at what they DO — what they need to do for it ("what do you need to do to get a paper done?"), the STEPS ("how do you go about that?"), the ACTIONS ("what do you actually do when you do that?"), the PARTS ("what are the different pieces of that work?"), the OUTPUT ("what do you end up producing?"), the PEOPLE ("who do you do that with?"), or the HARD PART ("what's the trickiest bit?"). Do NOT reach for a content example ("which one recently?"). Each follow-up should sound like a genuinely different question, not the same template with a new noun.
 - Be RESPONSIVE to the specific thing they just said — pick up that thread, ask what a curious listener would naturally ask next. Different answer → different question, not a template.
@@ -72,7 +89,7 @@ Return JSON: { "allCovered": boolean, "followUp": string | null, "skipRequested"
     },
     {
       role: 'user',
-      content: `${convoBlock}\nThe CURRENT question is: "${question}"\nTheir answer to it (so far): "${answer}"\n\nCoverage criteria for the current question:\n${criteriaList}${minBlock}\n\nAre all criteria satisfied? If not (or if the minimum follow-ups above haven't been met), what is the single most natural follow-up to ask next, continuing this conversation?`,
+      content: `${convoBlock}${askedBlock}\n\nThe CURRENT question is: "${question}"\nTheir answer to it (so far): "${answer}"\n\nCoverage criteria for the current question:\n${criteriaList}${minBlock}\n\nAre all criteria satisfied? If not (or if the minimum follow-ups above haven't been met), what is the single most natural follow-up to ask next, continuing this conversation — one that does NOT repeat or rephrase any QUESTION ALREADY ASKED above?`,
     },
   ];
 }
