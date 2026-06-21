@@ -60,12 +60,17 @@ const MAX_TASKS = 15;
 // cap — finishing early now means "after the full list".
 const DONE_THRESHOLD = MAX_TASKS;
 
+// Master switch for attention checks. When false, none are fetched or spliced
+// into the picker (and the real-task budget reclaims their slots), so the
+// fail/screen-out path in advance() can never trigger.
+const ATTENTION_CHECKS_ENABLED = false;
+
 // Attention checks: O*NET-style tasks from clearly unrelated occupations,
 // spliced into the picker. Any honest participant marks them "I don't do this";
 // answering "yes" counts as a fail (see advance()). The count is part of the
 // MAX_TASKS budget — real tasks are capped at MAX_TASKS - ATTENTION_CHECK_COUNT
 // so the combined list never exceeds the burnout cap.
-const ATTENTION_CHECK_COUNT = 2;
+const ATTENTION_CHECK_COUNT = ATTENTION_CHECKS_ENABLED ? 2 : 0;
 
 // Used when the LLM call fails or returns too few items — guarantees the picker
 // still carries attention checks. Each is a real task from an occupation with no
@@ -402,18 +407,21 @@ export function TaskSelection() {
         // stream so it adds no latency to the processing screen. Fail-open:
         // buildAttentionCheckItems pads from the fallback list if this rejects
         // or returns too few. Request a couple extra for de-dupe headroom.
-        const attnPromise = generateAttentionChecks(
-          userProfile.jobTitle,
-          userProfile.responsibilities,
-          userProfile.typicalWeek,
-          ATTENTION_CHECK_COUNT + 2,
-        ).catch((e) => {
-          console.warn(
-            "[task-selection] attention-check fetch failed, using fallback:",
-            e,
-          );
-          return [] as string[];
-        });
+        // Skipped entirely when attention checks are disabled.
+        const attnPromise = ATTENTION_CHECKS_ENABLED
+          ? generateAttentionChecks(
+              userProfile.jobTitle,
+              userProfile.responsibilities,
+              userProfile.typicalWeek,
+              ATTENTION_CHECK_COUNT + 2,
+            ).catch((e) => {
+              console.warn(
+                "[task-selection] attention-check fetch failed, using fallback:",
+                e,
+              );
+              return [] as string[];
+            })
+          : Promise.resolve([] as string[]);
 
         // Generate the real task list while the processing screen stays up, so
         // the participant only reaches the intro/cards once every task is ready
@@ -428,6 +436,7 @@ export function TaskSelection() {
             source?: "interview" | "gap" | "bank";
             bankId?: string;
             isProbe?: boolean;
+            pi?: number | null;
           },
         ) => {
           realCount += 1;
@@ -441,6 +450,7 @@ export function TaskSelection() {
                 bankId: meta?.bankId,
                 source: meta?.source,
                 isProbe: meta?.isProbe,
+                pi: meta?.pi,
                 status: "unreviewed",
               },
             ];
@@ -548,6 +558,7 @@ export function TaskSelection() {
           isProbe: reviewedTask.isProbe ?? true,
           shownStatement: reviewedTask.originalName,
           relevance: meta?.relevance,
+          pi: reviewedTask.pi,                       // echo the issue-time propensity back for IPW
         });
       } else {
         const genSource =

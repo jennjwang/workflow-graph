@@ -366,7 +366,7 @@ export async function generateTasksFromInterview(
   aiUsage: string | undefined,
   responsibilities: string | undefined,
   interviewTasks: string[],
-  onTask: (name: string, meta?: { source?: 'interview' | 'gap' | 'bank'; bankId?: string; isProbe?: boolean }) => void,
+  onTask: (name: string, meta?: { source?: 'interview' | 'gap' | 'bank'; bankId?: string; isProbe?: boolean; pi?: number | null }) => void,
   count?: number,
   participant?: string,                              // records volunteered tasks as spontaneous mentions
 ): Promise<void> {
@@ -393,7 +393,7 @@ export async function generateTasksFromInterview(
       const event = eventLine.slice(7);
       const data = JSON.parse(dataLine.slice(6));
       if (event === 'task' && typeof data?.name === 'string')
-        onTask(data.name, { source: data.source, bankId: data.bankId, isProbe: data.isProbe });
+        onTask(data.name, { source: data.source, bankId: data.bankId, isProbe: data.isProbe, pi: data.pi });
       else if (event === 'error') throw new Error(data.error ?? 'stream error');
       else if (event === 'done') return;
     }
@@ -408,6 +408,7 @@ export async function postTaskResponse(args: {
   task: string;                                    // bank task id (TaskItem.bankId)
   response: 'confirm' | 'deny';
   isProbe: boolean;                                // representative PROBE (counts toward decision) vs gated
+  pi?: number | null;                              // PPI propensity fixed at issue; stored on the response for IPW
   shownStatement?: string;                         // exact label shown to this participant (identity audit)
   // Granular relevance rating when RELEVANCE_RATING_ENABLED is on. `response`
   // remains the binary (confirm = 'relevant', deny = everything else) so the

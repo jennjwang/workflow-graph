@@ -70,6 +70,9 @@ const PROBE_TAU = Number(process.env.TASK_BANK_PROBE_TAU ?? 0.1);
 // floor for the randomized probe design (IPW needs π>0; also the fallback π for any unlogged probe).
 const PPI       = (process.env.TASK_BANK_PPI ?? '0') === '1';
 const PROBE_EPS = Number(process.env.TASK_BANK_PROBE_EPS ?? 0.05);
+const F_MODEL   = process.env.TASK_BANK_F_MODEL ?? 'gpt-4o-mini';   // PPI control-variate scorer (cheap)
+const F_SYSTEM  = "You judge whether a specific worker does a specific work task, based ONLY on their "
+  + "interview (their own words on role, responsibilities, typical week). Answer with a single word: 'yes' or 'no'.";
 
 // ── seed (factory artifact → tasks) ──────────────────────────────────────────
 // Re-runnable: clears this occupation's rows, inserts fresh. Never touches responses.
@@ -157,6 +160,43 @@ async function loadBankActive(occupation) {
     r.piArr.push(row.pi == null ? PROBE_EPS : Number(row.pi));      // floor for any unlogged π
   }
   return rows;
+}
+
+// PPI control variate: f(interview, task) = P(this worker does this task) ∈ [0,1], from the 'yes'/'no'
+// token logprobs (mirror f_provider.predict mode='prob'). One cheap LLM call per (worker, task).
+async function scoreOne(interview, statement) {
+  const r = await openai.chat.completions.create({
+    model: F_MODEL, temperature: 0, max_tokens: 1, logprobs: true, top_logprobs: 5,
+    messages: [{ role: 'system', content: F_SYSTEM },
+               { role: 'user', content: `WORKER INTERVIEW:\n${interview}\n\nTASK: ${statement}\n\n`
+                 + 'Does this worker do this task as part of their job? Answer yes or no.' }],
+  });
+  const lp = {};
+  for (const t of r.choices[0].logprobs.content[0].top_logprobs) lp[t.token.trim().toLowerCase()[0]] = t.logprob;
+  const py = Math.exp(lp['y'] ?? -30), pn = Math.exp(lp['n'] ?? -30);
+  return (py + pn) > 0 ? py / (py + pn) : 0.5;
+}
+
+// Write the f-baseline for a participant: score them against the UNDECIDED, graduated, non-mentioned bank
+// tasks they don't yet have a prediction for, and upsert into `predictions`. Best-effort, meant to run in
+// the BACKGROUND after an interview (~K LLM calls). The f lets this worker contribute g=f to every such
+// task's q-stratum (and the IPW correction if they're later probed). PPI only. `scorer` is injectable for
+// tests/sims (defaults to the live LLM scoreOne). Returns the count scored.
+async function scoreParticipant(occupation, participant, interview, { mentionedIds = new Set(), scorer = scoreOne } = {}) {
+  const rows = await loadBankActive(occupation);
+  const have = new Set((await pool.query('SELECT task FROM predictions WHERE participant=$1', [participant]))
+    .rows.map(r => r.task));
+  const targets = acquire(rows, { priorIds: mentionedIds }).filter(p => !have.has(p.id));  // undecided, non-mentioned, unscored
+  for (const t of targets) {
+    try {
+      const f = await scorer(interview, t.statement);
+      await pool.query(
+        `INSERT INTO predictions (participant, task, occupation, f, model) VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (participant, task) DO UPDATE SET f = EXCLUDED.f, model = EXCLUDED.model, created_at = now()`,
+        [participant, t.id, occupation, f, F_MODEL]);
+    } catch (e) { console.warn(`[scoreParticipant] ${t.id}: ${e.message}`); }
+  }
+  return targets.length;
 }
 
 async function nParticipants(occupation) {
@@ -557,7 +597,19 @@ async function pickProbes(occupation, { coveredIds = new Set() } = {}) {
   const undecidedFrac = pool.length / Math.max(1, rows.length);
   const budget = Math.min(pool.length,
                           Math.max(PROBE_MIN, Math.round(PROBE_MAX * undecidedFrac)));
-  return pool.slice(0, budget);
+  if (!PPI) return pool.slice(0, budget);                           // count path: deterministic top-budget (Gumbel-ordered)
+  // PPI: a FLOORED RANDOMIZED Bernoulli design so each issued probe carries a KNOWN π (IPW divides by it).
+  // Weight = bootstrap-first (never-probed → pull once), then f-aware decidability (closer to a terminal
+  // call ⇒ higher π); π = clip(budget·w/Σw, ε, 1), E[#probes] ≈ budget ≤ PROBE_MAX. The independent
+  // per-participant randomization also de-herds concurrent sessions (subsumes the count path's Gumbel).
+  const w = pool.map(p => p.bootstrap ? 1e3 : 1 / (p.decidability + 1e-3));
+  const Z = w.reduce((a, b) => a + b, 0) || 1;
+  const out = [];
+  for (let i = 0; i < pool.length; i++) {
+    const pi = Math.min(1, Math.max(PROBE_EPS, budget * w[i] / Z));   // predictable, floored
+    if (Math.random() < pi) out.push({ ...pool[i], pi: Number(pi.toFixed(6)) });
+  }
+  return out;
 }
 
 // ── inventory decision helpers (mirror evidence.py: prob_ge / decide / decidability) ──
@@ -784,7 +836,7 @@ function acquire(bankRows, { priorTasks = [], priorIds = null } = {}) {
     .sort((a, b) => (a.tier - b.tier) || (a.k - b.k))
     .map(({ r }) => ({ id: r.id, statement: r.statement, level: r.level, ai: r.ai,
                        isProbe: true, decidability: Number(r._dec.toFixed(4)),
-                       kgScore: Number(r._score.toFixed(4)) }));
+                       kgScore: Number(r._score.toFixed(4)), bootstrap: !r._boot }));   // never-probed → pull first
 }
 
 export { pool, seedTasks, loadBank, loadBankActive, nParticipants, recordResponse,
@@ -792,4 +844,5 @@ export { pool, seedTasks, loadBank, loadBankActive, nParticipants, recordRespons
          applyPendingMerges, classifyRelation, persistEdge, bridgesToProposals,
          acquire, decide, decidability, kgValue, probGe,
          decideStratified, decidabilityStratified, phatStratified, eprocessCs,
-         decideStratifiedActive, decidabilityStratifiedActive, decideTaskActive };
+         decideStratifiedActive, decidabilityStratifiedActive, decideTaskActive,
+         scoreOne, scoreParticipant, PPI };

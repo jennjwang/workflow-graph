@@ -21,6 +21,10 @@ const SMALL_MODEL = process.env.SMALL_MODEL || 'gpt-4o-mini';
 // Model for rewording interview questions — gpt-4o-mini produced clunky/leading
 // phrasings, so this defaults to a stronger model.
 const QUESTION_MODEL = process.env.QUESTION_MODEL || 'gpt-4o';
+// Model for the validation occupation screener. The screener is a hard gate
+// (a wrong reject burns a real recruit), so it defaults to a stronger model and
+// has its own knob, independent of the interview app's models.
+const VERIFY_MODEL = process.env.VERIFY_MODEL || 'gpt-4o';
 
 // ── Active-learning task bank (OPTIONAL). Dormant unless TASK_BANK_OCC is set AND
 // `pg` is installed AND DATABASE_URL is configured. If any of those is missing the
@@ -45,6 +49,37 @@ const SESSIONS_DIR = process.env.SESSIONS_DIR || path.join(__dirname, 'sessions'
 const SCREEN_OUTS_DIR = path.join(SESSIONS_DIR, 'screen-outs');
 await fs.mkdir(SESSIONS_DIR, { recursive: true });
 await fs.mkdir(SCREEN_OUTS_DIR, { recursive: true });
+
+// ── Validation process (held-out coverage study) ──────────────────────────────
+// Kept physically apart from sessions/: inventories live in validation/inputs,
+// per-participant assignments and responses land under validation/out. The
+// interview app and the validation study never share storage.
+const VALIDATION_DIR = path.join(__dirname, 'validation');
+const VALIDATION_INPUTS_DIR = path.join(VALIDATION_DIR, 'inputs');
+const VALIDATION_OUT_DIR = path.join(VALIDATION_DIR, 'out');
+// Occupation verification is study-agnostic — a participant's occupation is the
+// same whether they're doing the coverage or win-rate study, so both gate on one
+// shared verification record keyed by externalId.
+const VALIDATION_VERIFY_DIR = path.join(VALIDATION_OUT_DIR, 'verifications');
+const COVERAGE_ASSIGN_DIR = path.join(VALIDATION_OUT_DIR, 'assignments', 'coverage');
+const COVERAGE_RESPONSE_DIR = path.join(VALIDATION_OUT_DIR, 'responses', 'coverage');
+const WINRATE_ASSIGN_DIR = path.join(VALIDATION_OUT_DIR, 'assignments', 'winrate');
+const WINRATE_RESPONSE_DIR = path.join(VALIDATION_OUT_DIR, 'responses', 'winrate');
+await fs.mkdir(VALIDATION_VERIFY_DIR, { recursive: true });
+await fs.mkdir(COVERAGE_ASSIGN_DIR, { recursive: true });
+await fs.mkdir(COVERAGE_RESPONSE_DIR, { recursive: true });
+await fs.mkdir(WINRATE_ASSIGN_DIR, { recursive: true });
+await fs.mkdir(WINRATE_RESPONSE_DIR, { recursive: true });
+
+// Shared verification gate: returns the verification record, or null if absent.
+async function readVerification(externalId) {
+  try {
+    return JSON.parse(await fs.readFile(path.join(VALIDATION_VERIFY_DIR, `${externalId}.json`), 'utf-8'));
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+}
 
 // Sanitize a PID for filesystem use — Prolific PIDs are alphanumeric, but we
 // reject anything else just in case to prevent path traversal.
@@ -466,6 +501,13 @@ No surrounding array. No markdown. No commentary. Just one JSON object per line.
         // only FULL matches are certain doers → dedup them out of the probe set; partial stays probe-eligible
         const coveredIds = new Set([...matches.values()].filter(m => m.credit === 'full').map(m => m.id));
         bankProbes = await taskBank.pickProbes(TASK_BANK_OCC, { coveredIds });
+        // PPI: write this worker's f-baseline for the undecided, non-mentioned tasks (background; ~K cheap
+        // LLM calls). Lets them contribute g=f to every such task's q-stratum without blocking the draw.
+        if (taskBank.PPI && participant) {
+          const interview = [jobTitle, responsibilities, typicalWeek, aiUsage].filter(Boolean).join('\n\n');
+          taskBank.scoreParticipant(TASK_BANK_OCC, participant, interview, { mentionedIds: coveredIds })
+            .catch(e => console.warn('[scoreParticipant]', e.message));
+        }
       } catch (e) { console.warn('[generate-tasks-from-interview] bank probes failed:', e.message); }
     }
 
@@ -494,7 +536,7 @@ No surrounding array. No markdown. No commentary. Just one JSON object per line.
     for (let i = 0; i < Math.max(outGap.length, bankProbes.length); i++) {
       if (i < bankProbes.length) {
         const b = bankProbes[i];
-        sendEvent('task', { name: b.statement, source: 'bank', bankId: b.id, isProbe: true });
+        sendEvent('task', { name: b.statement, source: 'bank', bankId: b.id, isProbe: true, pi: b.pi ?? null });
       }
       if (i < outGap.length) sendEvent('task', { name: outGap[i], source: 'gap' });
     }
@@ -516,8 +558,8 @@ No surrounding array. No markdown. No commentary. Just one JSON object per line.
 app.post('/api/task-response', async (req, res) => {
   if (!taskBank) return res.status(503).json({ error: 'task bank not enabled' });
   try {
-    const { participant, task, occupation, isProbe = true, shownStatement = null, response, aiExposure = null } = req.body ?? {};
-    await taskBank.recordResponse({ participant, task, occupation: occupation || TASK_BANK_OCC, isProbe, shownStatement, response, aiExposure });
+    const { participant, task, occupation, isProbe = true, shownStatement = null, response, aiExposure = null, pi = null } = req.body ?? {};
+    await taskBank.recordResponse({ participant, task, occupation: occupation || TASK_BANK_OCC, isProbe, shownStatement, response, aiExposure, pi });
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -1611,6 +1653,332 @@ app.post('/api/session', async (req, res) => {
     if (sessionWriteQueue.get(sessionId) === next) {
       sessionWriteQueue.delete(sessionId);
     }
+  }
+});
+
+// ── Coverage study endpoints ──────────────────────────────────────────────────
+// A held-out incumbent is assigned ONE method at random (between-subjects, method
+// blinded) and allocates their weekly hours across that inventory's statements.
+
+function safeExternalId(v) {
+  if (typeof v !== 'string') return '';
+  return v.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+}
+
+async function loadInventories() {
+  const raw = await fs.readFile(path.join(VALIDATION_INPUTS_DIR, 'inventories.json'), 'utf-8');
+  const data = JSON.parse(raw);
+  if (!data || typeof data.methods !== 'object') throw new Error('bad inventories.json');
+  return data;
+}
+
+// Balanced assignment: pick a method with the fewest existing assignments, break
+// ties randomly. Keeps the between-subjects cells roughly even as people arrive.
+async function pickBalancedMethod(methods) {
+  const counts = Object.fromEntries(methods.map((m) => [m, 0]));
+  let files = [];
+  try { files = await fs.readdir(COVERAGE_ASSIGN_DIR); } catch { /* none yet */ }
+  for (const f of files) {
+    if (!f.endsWith('.json')) continue;
+    try {
+      const a = JSON.parse(await fs.readFile(path.join(COVERAGE_ASSIGN_DIR, f), 'utf-8'));
+      if (a.method in counts) counts[a.method]++;
+    } catch { /* ignore unreadable */ }
+  }
+  const min = Math.min(...methods.map((m) => counts[m]));
+  const candidates = methods.filter((m) => counts[m] === min);
+  return candidates[Math.floor(Math.random() * candidates.length)];
+}
+
+// Occupation screener (shared across validation studies). The participant
+// describes their current role in free text; an LLM classifies it into one O*NET
+// occupation and we accept only when that is the target. The target occupation is
+// NOT revealed to the participant (asking "are you an X?" hands them the answer),
+// so the judgment happens entirely server-side. Verification gates every study.
+app.post('/api/validation/verify', async (req, res) => {
+  const externalId = safeExternalId(req.body && req.body.externalId);
+  if (!externalId) return res.status(400).json({ error: 'externalId required' });
+  const title = typeof (req.body && req.body.title) === 'string' ? req.body.title.trim() : '';
+  const description = typeof (req.body && req.body.description) === 'string' ? req.body.description.trim() : '';
+  if (!title) return res.status(400).json({ error: 'title required' });
+  if (description.length < 3) return res.status(400).json({ error: 'description required' });
+  try {
+    const inv = await loadInventories();
+    const occupation = inv.occupation;
+    const targetCode = (inv.onetCode || '').trim();
+    if (!targetCode) return res.status(500).json({ error: 'inventories.json missing onetCode' });
+
+    // Enforce O*NET boundaries by CLASSIFICATION, not similarity: the participant
+    // is assigned to exactly one O*NET occupation from a catalog that includes the
+    // target AND its adjacent confusers (Programmers, Web Developers, QA, Data
+    // Scientists, …). We accept only when the chosen code IS the target — so an
+    // adjacent occupation lands in its own bucket and is rejected.
+    const catalogRaw = await fs.readFile(path.join(VALIDATION_INPUTS_DIR, 'onet_occupations.json'), 'utf-8');
+    const catalog = JSON.parse(catalogRaw).occupations || [];
+    const allowed = Array.isArray(inv.screenerCandidates) && inv.screenerCandidates.length
+      ? catalog.filter((o) => inv.screenerCandidates.includes(o.code))
+      : catalog;
+    const target = allowed.find((o) => o.code === targetCode);
+    if (!target) return res.status(500).json({ error: 'target onetCode not in catalog' });
+    const optionsBlock = allowed
+      .map((o) => `- ${o.code} — ${o.title}: ${o.description}`)
+      .join('\n');
+
+    let parsed;
+    try {
+      const completion = await client.chat.completions.create({
+        model: VERIFY_MODEL,
+        temperature: 0,
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You classify a survey participant into exactly one O*NET occupation based on their CURRENT ' +
+              'job. You are given a list of candidate O*NET occupations with codes, titles, and descriptions. ' +
+              'Choose the SINGLE occupation that best matches what the participant actually does day-to-day, ' +
+              'using the descriptions to separate closely related occupations (e.g. Software Developers design ' +
+              'and build software, whereas Computer Programmers implement code from others’ specs, Web ' +
+              'Developers focus on websites, QA Testers focus on testing, Data Scientists focus on ' +
+              'analysis/modeling, and managers mainly manage). ' +
+              'IMPORTANT: weigh the DESCRIBED day-to-day activities as the primary basis for classification. ' +
+              'Treat the self-reported job TITLE only as a secondary hint — titles vary across companies and ' +
+              'can be generic, inflated, or misleading. When the title and the described work disagree, follow ' +
+              'the described work. Pick the occupation by its primary focus, not by incidental overlap. If none ' +
+              'of the candidates fit, or the person is a student not yet working, return code "none". Respond ' +
+              'ONLY with JSON: {"code": string, "title": string, "confidence": number between 0 and 1, "reason": string}.',
+          },
+          {
+            role: 'user',
+            content:
+              `Candidate O*NET occupations:\n${optionsBlock}\n\n` +
+              `Participant's self-reported job title: "${title}"\n\n` +
+              `Participant's description of what they do day-to-day:\n"""${description}"""\n\n` +
+              'Classify by the described work (title is only a hint). Return the single best-fitting code (or "none").',
+          },
+        ],
+      });
+      parsed = JSON.parse(completion.choices[0].message.content);
+    } catch (err) {
+      // LLM/transient failure: don't penalize a possibly-real participant with a
+      // permanent screen-out. Ask them to retry.
+      console.error('[coverage] verify LLM failed:', err);
+      return res.status(503).json({ error: 'verification temporarily unavailable' });
+    }
+    const chosenCode = typeof parsed.code === 'string' ? parsed.code.trim() : '';
+    const chosen = allowed.find((o) => o.code === chosenCode);
+    const match = chosenCode === targetCode;
+    const record = {
+      externalId,
+      occupation,
+      targetCode,
+      title,
+      description,
+      match,
+      chosenCode: chosenCode || null,
+      chosenTitle: chosen ? chosen.title : (typeof parsed.title === 'string' ? parsed.title : null),
+      confidence: typeof parsed.confidence === 'number' ? parsed.confidence : null,
+      reason: typeof parsed.reason === 'string' ? parsed.reason : null,
+      at: new Date().toISOString(),
+    };
+    await fs.writeFile(path.join(VALIDATION_VERIFY_DIR, `${externalId}.json`), JSON.stringify(record, null, 2));
+    res.json({ match, confidence: record.confidence, reason: record.reason, chosenTitle: record.chosenTitle });
+  } catch (err) {
+    console.error('[coverage] verify failed:', err);
+    res.status(500).json({ error: 'verify failed' });
+  }
+});
+
+app.post('/api/validation/coverage/assign', async (req, res) => {
+  const externalId = safeExternalId(req.body && req.body.externalId);
+  if (!externalId) return res.status(400).json({ error: 'externalId required' });
+  // Gate on a passing screener so assign can't be hit directly to skip it.
+  try {
+    const v = await readVerification(externalId);
+    if (!v || v.match !== true) return res.status(403).json({ error: 'not verified' });
+  } catch (err) {
+    console.error('[coverage] verify-gate read failed:', err);
+    return res.status(500).json({ error: 'verify check failed' });
+  }
+  const assignPath = path.join(COVERAGE_ASSIGN_DIR, `${externalId}.json`);
+  try {
+    let assignment;
+    try {
+      assignment = JSON.parse(await fs.readFile(assignPath, 'utf-8'));
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err;
+      const inv = await loadInventories();
+      const methods = Object.keys(inv.methods);
+      if (methods.length === 0) return res.status(500).json({ error: 'no methods configured' });
+      const method = await pickBalancedMethod(methods);
+      assignment = { externalId, method, occupation: inv.occupation, assignedAt: new Date().toISOString() };
+      await fs.writeFile(assignPath, JSON.stringify(assignment, null, 2));
+    }
+    const inv = await loadInventories();
+    const entry = inv.methods[assignment.method];
+    if (!entry) return res.status(500).json({ error: 'assigned method missing from inventories' });
+    // Method is intentionally NOT returned — the study is blind to which inventory.
+    res.json({ assignmentId: externalId, occupation: inv.occupation, statements: entry.statements });
+  } catch (err) {
+    console.error('[coverage] assign failed:', err);
+    res.status(500).json({ error: 'assign failed' });
+  }
+});
+
+app.post('/api/validation/coverage/response', async (req, res) => {
+  const externalId = safeExternalId(req.body && req.body.externalId);
+  if (!externalId) return res.status(400).json({ error: 'externalId required' });
+  const { totalHours, allocations, elapsedMs, startedAt } = req.body || {};
+  if (!Number.isFinite(totalHours) || !Array.isArray(allocations)) {
+    return res.status(400).json({ error: 'totalHours and allocations required' });
+  }
+  try {
+    let assignment;
+    try {
+      assignment = JSON.parse(await fs.readFile(path.join(COVERAGE_ASSIGN_DIR, `${externalId}.json`), 'utf-8'));
+    } catch (err) {
+      if (err.code === 'ENOENT') return res.status(400).json({ error: 'no assignment for participant' });
+      throw err;
+    }
+    const clean = allocations
+      .filter((a) => a && typeof a.name === 'string')
+      .map((a) => ({
+        name: a.name,
+        hours: Number(a.hours) || 0,
+        source: a.source === 'inventory' ? 'inventory' : 'other',
+      }));
+    const coveredHours = clean.filter((a) => a.source === 'inventory').reduce((s, a) => s + a.hours, 0);
+    const otherHours = clean.filter((a) => a.source === 'other').reduce((s, a) => s + a.hours, 0);
+    const uncoveredHours = Math.max(0, totalHours - coveredHours);
+    const record = {
+      externalId,
+      method: assignment.method,
+      occupation: assignment.occupation,
+      totalHours,
+      allocations: clean,
+      coveredHours,
+      otherHours,
+      uncoveredHours,
+      coveredShare: totalHours > 0 ? Math.min(1, coveredHours / totalHours) : null,
+      elapsedMs: Number.isFinite(elapsedMs) ? elapsedMs : null,
+      startedAt: startedAt || null,
+      submittedAt: new Date().toISOString(),
+    };
+    await fs.writeFile(
+      path.join(COVERAGE_RESPONSE_DIR, `${externalId}.json`),
+      JSON.stringify(record, null, 2),
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[coverage] response failed:', err);
+    res.status(500).json({ error: 'response failed' });
+  }
+});
+
+// ── Win-rate study endpoints ──────────────────────────────────────────────────
+// For each matched pair (an "ours" statement and an "onet" statement describing
+// the same work activity), the incumbent picks the one that more accurately and
+// clearly describes their work. Forced A-vs-B; every incumbent judges all pairs
+// in a randomized order with the ours/onet side randomized per pair (so position
+// can't bias the result). We never tell the client which side is "ours".
+
+async function loadPairs() {
+  const raw = await fs.readFile(path.join(VALIDATION_INPUTS_DIR, 'pairs.json'), 'utf-8');
+  const data = JSON.parse(raw);
+  if (!data || !Array.isArray(data.pairs)) throw new Error('bad pairs.json');
+  return data;
+}
+
+// Fisher-Yates shuffle (uses Math.random — fine on the server, unlike workflows).
+function shuffled(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+app.post('/api/validation/winrate/assign', async (req, res) => {
+  const externalId = safeExternalId(req.body && req.body.externalId);
+  if (!externalId) return res.status(400).json({ error: 'externalId required' });
+  try {
+    const v = await readVerification(externalId);
+    if (!v || v.match !== true) return res.status(403).json({ error: 'not verified' });
+  } catch (err) {
+    console.error('[winrate] verify-gate read failed:', err);
+    return res.status(500).json({ error: 'verify check failed' });
+  }
+  const assignPath = path.join(WINRATE_ASSIGN_DIR, `${externalId}.json`);
+  try {
+    let assignment;
+    try {
+      assignment = JSON.parse(await fs.readFile(assignPath, 'utf-8'));
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err;
+      const { pairs } = await loadPairs();
+      // Per-participant randomized order + ours/onet side. Persist so a refresh
+      // is stable and so scoring can map each A/B choice back to ours vs onet.
+      const items = shuffled(pairs).map((p) => {
+        const oursSide = Math.random() < 0.5 ? 'A' : 'B';
+        return {
+          pairId: p.id,
+          oursSide,
+          A: oursSide === 'A' ? p.ours : p.onet,
+          B: oursSide === 'A' ? p.onet : p.ours,
+        };
+      });
+      assignment = { externalId, items, assignedAt: new Date().toISOString() };
+      await fs.writeFile(assignPath, JSON.stringify(assignment, null, 2));
+    }
+    // Blind payload — strip oursSide before sending to the client.
+    const items = assignment.items.map((it) => ({ pairId: it.pairId, A: it.A, B: it.B }));
+    res.json({ items });
+  } catch (err) {
+    console.error('[winrate] assign failed:', err);
+    res.status(500).json({ error: 'assign failed' });
+  }
+});
+
+app.post('/api/validation/winrate/response', async (req, res) => {
+  const externalId = safeExternalId(req.body && req.body.externalId);
+  if (!externalId) return res.status(400).json({ error: 'externalId required' });
+  const choices = req.body && req.body.choices;
+  if (!Array.isArray(choices)) return res.status(400).json({ error: 'choices required' });
+  try {
+    const v = await readVerification(externalId);
+    if (!v || v.match !== true) return res.status(403).json({ error: 'not verified' });
+    let assignment;
+    try {
+      assignment = JSON.parse(await fs.readFile(path.join(WINRATE_ASSIGN_DIR, `${externalId}.json`), 'utf-8'));
+    } catch (err) {
+      if (err.code === 'ENOENT') return res.status(400).json({ error: 'no assignment for participant' });
+      throw err;
+    }
+    const bySide = new Map(assignment.items.map((it) => [it.pairId, it.oursSide]));
+    const judgments = [];
+    for (const c of choices) {
+      const pairId = c && c.pairId;
+      const choice = c && (c.choice === 'A' || c.choice === 'B') ? c.choice : null;
+      if (!bySide.has(pairId) || !choice) continue;
+      const oursSide = bySide.get(pairId);
+      judgments.push({ pairId, choice, oursSide, oursWon: choice === oursSide });
+    }
+    const record = {
+      externalId,
+      occupation: v.occupation || null,
+      judgments,
+      oursWins: judgments.filter((j) => j.oursWon).length,
+      n: judgments.length,
+      elapsedMs: Number.isFinite(req.body.elapsedMs) ? req.body.elapsedMs : null,
+      startedAt: req.body.startedAt || null,
+      submittedAt: new Date().toISOString(),
+    };
+    await fs.writeFile(path.join(WINRATE_RESPONSE_DIR, `${externalId}.json`), JSON.stringify(record, null, 2));
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[winrate] response failed:', err);
+    res.status(500).json({ error: 'response failed' });
   }
 });
 
