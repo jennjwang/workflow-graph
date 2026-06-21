@@ -64,6 +64,12 @@ const PROBE_MIN = Number(process.env.TASK_BANK_PROBE_MIN ?? 2);   // floor while
 // τ>0 spreads the picks. Sim-validated: τ≈0.1 ties deterministic when sequential and ~4× better under
 // heavy concurrency; KG discount keeps the score on decidability's scale so this τ transfers unchanged. 0 = deterministic.
 const PROBE_TAU = Number(process.env.TASK_BANK_PROBE_TAU ?? 0.1);
+// PPI (active inference): when on, the non-mention stratum q is estimated from the f control variate
+// (predictions table) via the betting CS, not raw x/n — decides with fewer probes. OFF by default; flip
+// TASK_BANK_PPI=1 once predictions are being written + the migration is applied. PROBE_EPS = propensity
+// floor for the randomized probe design (IPW needs π>0; also the fallback π for any unlogged probe).
+const PPI       = (process.env.TASK_BANK_PPI ?? '0') === '1';
+const PROBE_EPS = Number(process.env.TASK_BANK_PROBE_EPS ?? 0.05);
 
 // ── seed (factory artifact → tasks) ──────────────────────────────────────────
 // Re-runnable: clears this occupation's rows, inserts fresh. Never touches responses.
@@ -108,6 +114,48 @@ async function loadBank(occupation) {
     [occupation]);
   const N = await nParticipants(occupation);          // mention-floor denominator (distinct participants)
   for (const r of rows) { r.N = N; r.corroborators = Number(r.corroborators) || 0; }
+  return rows;
+}
+
+// PPI variant of loadBank: per task, the NON-mentioner influence-term arrays (f, y, ξ, π) for the active
+// estimator, on top of the base bank rows (m from task_stratified, N, corroborators). Mirrors
+// task_stratified's stratification (mentioner anti-join) but returns ROWS — one per non-mentioner, carrying
+// its prediction f — instead of (n,x) counts. Every non-mentioner with an f contributes (g=f baseline);
+// probed ones add the IPW correction. Heavier read than the count view; only used when PPI is on.
+async function loadBankActive(occupation) {
+  const rows = await loadBank(occupation);
+  const byId = new Map(rows.map(r => [r.id, r]));
+  for (const r of rows) { r.fArr = []; r.yArr = []; r.xiArr = []; r.piArr = []; }
+  const { rows: inf } = await pool.query(
+    `WITH mentioner_pairs AS (
+       SELECT DISTINCT participant, task FROM responses
+        WHERE NOT is_probe AND response = 'confirm'
+     ),
+     latest_probe AS (
+       SELECT DISTINCT ON (participant, task) participant, task, response, pi
+         FROM responses WHERE is_probe
+        ORDER BY participant, task, id DESC
+     )
+     SELECT pr.task,
+            pr.f,
+            (lp.participant IS NOT NULL)::int AS xi,
+            (lp.response = 'confirm')::int    AS y,
+            lp.pi
+       FROM predictions pr
+       JOIN tasks t ON t.id = pr.task
+       LEFT JOIN latest_probe lp ON lp.participant = pr.participant AND lp.task = pr.task
+      WHERE t.occupation = $1 AND t.status <> 'retired'
+        AND NOT EXISTS (SELECT 1 FROM mentioner_pairs mp
+                         WHERE mp.participant = pr.participant AND mp.task = pr.task)
+      ORDER BY pr.task, pr.created_at, pr.participant`,
+    [occupation]);
+  for (const row of inf) {
+    const r = byId.get(row.task); if (!r) continue;
+    r.fArr.push(Number(row.f));
+    r.xiArr.push(Number(row.xi));
+    r.yArr.push(Number(row.y) || 0);
+    r.piArr.push(row.pi == null ? PROBE_EPS : Number(row.pi));      // floor for any unlogged π
+  }
   return rows;
 }
 
@@ -420,13 +468,15 @@ async function mergeTasks(occupation, keepId, dropId,
 
 // ── write-back (the loop) ────────────────────────────────────────────────────
 async function recordResponse({ participant, task, occupation = null, isProbe = true,
-                                shownStatement = null, response, aiExposure = null }) {
+                                shownStatement = null, response, aiExposure = null, pi = null }) {
   if (response !== 'confirm' && response !== 'deny')
     throw new Error(`response must be confirm|deny, got ${response}`);
+  // `pi` is the probe propensity fixed at ISSUE time (pickProbes), threaded back here so the active
+  // estimator's IPW weight 1/π is honest. NULL for mentions and pre-PPI probes.
   await pool.query(
-    `INSERT INTO responses (participant, task, occupation, is_probe, shown_statement, response, ai_exposure)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-    [participant, task, occupation, isProbe, shownStatement, response, aiExposure]);
+    `INSERT INTO responses (participant, task, occupation, is_probe, shown_statement, response, ai_exposure, pi)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [participant, task, occupation, isProbe, shownStatement, response, aiExposure, pi]);
 }
 
 // ── staging (online harvest is OFF): park a confirmed/denied GENERATED (non-bank) task for
@@ -500,7 +550,7 @@ async function recordCorroboration({ participant, task, occupation = null, state
 }
 
 async function pickProbes(occupation, { coveredIds = new Set() } = {}) {
-  const rows = await loadBank(occupation);
+  const rows = PPI ? await loadBankActive(occupation) : await loadBank(occupation);  // PPI → influence-term arrays
   const pool = acquire(rows, { priorIds: coveredIds });             // undecided & NOT already volunteered
   if (coveredIds.size) console.log(`[pickProbes] ${occupation}: deduped ${coveredIds.size} volunteered task(s)`);
   if (!pool.length) return [];                                       // inventory resolved → no probes owed
@@ -703,9 +753,18 @@ function acquire(bankRows, { priorTasks = [], priorIds = null } = {}) {
     if (exclude.has(r.id)) continue;                              // worker already volunteered this task (mention-skip)
     if (prior.has(r.statement.trim().toLowerCase())) continue;
     if (r.corroborators !== undefined && Number(r.corroborators) < MIN_CORROBORATORS) continue;  // discovery pool: < k corroborators → no representative probes
-    // STRATIFIED when loadBank supplied (N,m,n,x); else single-stream (the simulator builds n_shown/n_confirmed only).
+    // PPI (loadBankActive supplied the influence-term arrays) > STRATIFIED counts (N,m,n,x) > single-stream.
+    const ppi = r.fArr !== undefined;
     const strat = r.N !== undefined && r.m !== undefined && r.x !== undefined;
-    if (strat) {
+    if (ppi) {
+      const N = Number(r.N) || 0, m = Number(r.m) || 0;
+      const cc = 1 - (1 - C) / 2;                                          // K=1: per-task c, matching the count path
+      const probed = r.xiArr.some(v => v > 0);                            // decide from f alone is invalid → need a probe
+      const [Lq, Uq] = probed ? activeCs(r.fArr, r.yArr, r.xiArr, r.piArr, 1 - cc) : [0, 1];
+      if (decideStratifiedActive(N, m, Lq, Uq) !== 'UNDECIDED') continue;  // IN/OUT/BOUNDARY → resolved
+      const dec = decidabilityStratifiedActive(N, m, Lq, Uq);             // f-aware gate, shares the same CS
+      undecided.push({ ...r, _dec: dec, _score: dec, _boot: probed });    // never-probed → breadth bootstrap
+    } else if (strat) {
       const N = Number(r.N) || 0, m = Number(r.m) || 0, n = Number(r.n_nonment) || 0, x = Number(r.x) || 0;
       if (decideStratified(N, m, n, x) !== 'UNDECIDED') continue;          // IN/OUT/BOUNDARY → resolved
       const dec = decidabilityStratified(N, m, n, x);
@@ -728,7 +787,7 @@ function acquire(bankRows, { priorTasks = [], priorIds = null } = {}) {
                        kgScore: Number(r._score.toFixed(4)) }));
 }
 
-export { pool, seedTasks, loadBank, nParticipants, recordResponse,
+export { pool, seedTasks, loadBank, loadBankActive, nParticipants, recordResponse,
          stageGeneratedResponse, pickProbes, matchToBankIds, recordCorroboration, drainSession, mergeTasks, mergeAgreement,
          applyPendingMerges, classifyRelation, persistEdge, bridgesToProposals,
          acquire, decide, decidability, kgValue, probGe,
