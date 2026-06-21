@@ -527,10 +527,17 @@ const logChoose = (n, k) => gammaln(n + 1) - gammaln(k + 1) - gammaln(n - k + 1)
 function probGe(conf, deny, theta = THETA) {
   conf = Number(conf); deny = Number(deny);            // pg returns bigint counts as strings — coerce
   const a = 1 + conf, n = a + (1 + deny) - 1;
-  let cdfLe = 0;
-  for (let j = a; j <= n; j++)
-    cdfLe += Math.exp(logChoose(n, j) + j * Math.log(theta) + (n - j) * Math.log(1 - theta));
-  return 1 - cdfLe;
+  if (theta <= 0) return 1;
+  if (theta >= 1) return 0;
+  // DIRECT upper tail  P(Beta(a,b) ≥ θ) = Σ_{k=0}^{a−1} C(n,k) θ^k (1−θ)^{n−k}  (= P(Bin(n,θ) < a)): a
+  // sum of positive masses, so NO catastrophic cancellation. The old `1 − Σ_{j≥a}` lost all precision
+  // when θ > mean (Σ≈1), leaving a ±1e-13 residual that logEprocess amplified into a spurious e-value —
+  // inverting eprocessCs's lower bound and mis-deciding low-mention-rate / high-N tasks as IN.
+  const lt = Math.log(theta), l1 = Math.log(1 - theta);
+  let M = -Infinity; const terms = new Array(a);
+  for (let k = 0; k < a; k++) { const t = logChoose(n, k) + k * lt + (n - k) * l1; terms[k] = t; if (t > M) M = t; }
+  let s = 0; for (let k = 0; k < a; k++) s += Math.exp(terms[k] - M);
+  return Math.exp(M) * s;                              // = Σ exp(terms), max-shifted for stability
 }
 
 // Four-state inventory decision — ANYTIME-VALID e-process (mirror evidence.py `decide`; valid under the
