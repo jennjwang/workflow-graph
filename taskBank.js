@@ -13,6 +13,7 @@
 import pg from 'pg';
 import fs from 'fs';
 import OpenAI from 'openai';
+import { activeCs } from './activeInference.js';     // PPI estimator (betting CS over influence terms)
 const { Pool } = pg;
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -645,6 +646,46 @@ function decidabilityStratified(N, m, n, x, { theta = THETA, c = C } = {}) {
   return Math.min(Math.abs(Up - theta), Math.abs(Lp - theta));
 }
 
+// ── PPI (active-inference) stratified decision — PORT of evidence.py decide_stratified_active et al. ──
+// The non-mention stratum q is estimated from the influence terms (activeInference.activeCs) instead of raw
+// x/n: every non-mentioner contributes its prediction f (g=f baseline), probes add the IPW correction, so a
+// task decides with fewer human probes. Only the q stratum changes machine; the mention stratum (eprocessCs
+// on m of N) and the monotone combine p=π₁+(1−π₁)q are identical. Keep in sync with evidence.py.
+
+// [Lq,Uq] is the q betting CS, SUPPLIED (computed at the per-stratum level cc=1−(1−c)/2, i.e. activeCs(…,1−cc)).
+function decideStratifiedActive(N, m, Lq, Uq, { theta = THETA, c = C, delta = DELTA } = {}) {
+  N = Number(N) || 0; m = Math.min(Number(m) || 0, N);
+  const cc = 1 - (1 - c) / 2;                                 // union bound: α/2 to the mention stratum
+  const [Lpi, Upi] = N > 0 ? eprocessCs(m, N - m, cc) : [0, 1];
+  Lq = Math.max(0, Math.min(1, Lq)); Uq = Math.max(0, Math.min(1, Uq));
+  const Lp = Lpi + (1 - Lpi) * Lq, Up = Upi + (1 - Upi) * Uq;
+  if (Lp >= theta) return 'IN';
+  if (Up <= theta) return 'OUT';
+  if (Lp >= theta - delta && Up <= theta + delta) return 'BOUNDARY';
+  return 'UNDECIDED';
+}
+
+// PPI distance-to-call for the bandit gate (f-aware decidability).
+function decidabilityStratifiedActive(N, m, Lq, Uq, { theta = THETA, c = C } = {}) {
+  N = Number(N) || 0; m = Math.min(Number(m) || 0, N);
+  const cc = 1 - (1 - c) / 2;
+  const [Lpi, Upi] = N > 0 ? eprocessCs(m, N - m, cc) : [0, 1];
+  Lq = Math.max(0, Math.min(1, Lq)); Uq = Math.max(0, Math.min(1, Uq));
+  const Lp = Lpi + (1 - Lpi) * Lq, Up = Upi + (1 - Upi) * Uq;
+  return Math.min(Math.abs(Up - theta), Math.abs(Lp - theta));
+}
+
+// One task's stratified verdict from the PPI arrays (f,y,xi,pi over its non-mentioners): run the q betting CS
+// at the right level (δ/K across arms, /2 across strata) then decide. NO probes (no ξ=1) ⇒ q-CS=[0,1] —
+// the f-baseline is uncorrected without an IPW term, so the verdict rides on the mention floor until a probe.
+function decideTaskActive(N, m, f, y, xi, pi, { theta = THETA, c = C, delta = DELTA, K = 1 } = {}) {
+  const cArm = 1 - (1 - c) / Math.max(K, 1);                  // δ/K across arms (tasks)
+  const cc = 1 - (1 - cArm) / 2;                              // union bound across the 2 strata
+  const probed = xi.some(v => v > 0);
+  const [Lq, Uq] = probed ? activeCs(f, y, xi, pi, 1 - cc) : [0, 1];
+  return decideStratifiedActive(N, m, Lq, Uq, { theta, c: cArm, delta });
+}
+
 // ── acquisition: representative PROBE selection over the bank ──
 // Keep only UNDECIDED tasks (IN/OUT/BOUNDARY are resolved → p≈0, never re-shown); order them by the
 // KNOWLEDGE-GRADIENT-discounted decidability score dist·(1−kg) (smallest ⇒ probe me next — exact one-step
@@ -691,4 +732,5 @@ export { pool, seedTasks, loadBank, nParticipants, recordResponse,
          stageGeneratedResponse, pickProbes, matchToBankIds, recordCorroboration, drainSession, mergeTasks, mergeAgreement,
          applyPendingMerges, classifyRelation, persistEdge, bridgesToProposals,
          acquire, decide, decidability, kgValue, probGe,
-         decideStratified, decidabilityStratified, phatStratified, eprocessCs };
+         decideStratified, decidabilityStratified, phatStratified, eprocessCs,
+         decideStratifiedActive, decidabilityStratifiedActive, decideTaskActive };
