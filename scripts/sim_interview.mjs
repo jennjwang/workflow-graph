@@ -54,7 +54,7 @@ const QUESTIONS = [
   },
   {
     field: "outputs",
-    text: "What do you produce or deliver in your work — like reports, documents, code, or designs?",
+    text: "What do you produce or deliver in your work?",
     evaluationStyle: "lenient",
     maxFollowups: 2,
     minFollowups: 0,

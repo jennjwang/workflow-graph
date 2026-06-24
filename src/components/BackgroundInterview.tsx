@@ -85,11 +85,11 @@ const QUESTIONS: {
   },
   {
     field: "outputs",
-    text: "What do you produce or deliver in your work — like reports, documents, code, or designs?",
+    text: "What do you produce or deliver in your work?",
     transition: "Let's shift from what you do to what you end up with.",
     contextual: true,
     framingNotes:
-      "Elicit tasks via the participant's OUTPUTS — the tangible things they produce, update, approve, send, maintain, or deliver. Phrase it SPECIFICALLY and NATURALLY for THIS participant's role and the work they've described, with a couple of example artifacts that actually fit them — e.g. for a developer 'what do you usually ship or hand off?', for a lawyer 'what do you draft or file?', for an analyst 'what reports or analyses do you put out?' — WITHOUT naming specific things they haven't mentioned. Do NOT use the word 'actually', do NOT read a generic list of nouns, and do NOT include odd-fitting examples like 'a decision' for roles where that isn't a produced artifact. The point is to surface tangible things they'd skip when narrating activities, then decompose each into the work behind it.",
+      "Elicit tasks via the participant's OUTPUTS — the tangible things they produce, update, approve, send, maintain, or deliver. Phrase it SPECIFICALLY and NATURALLY for THIS participant's role and the work they've described, but ASK OPENLY — do NOT list, suggest, or hint at example artifacts (naming possible answers leads them); let them name their own. Do NOT use the word 'actually' and do NOT read a list of nouns. The point is to surface tangible things they'd skip when narrating activities, then decompose each into the work behind it.",
     placeholder: "What you produce, approve, send, or keep up to date",
     criteria: [
       "FLOOR — the participant has named at least one concrete output or artifact they own (e.g. 'the weekly sales report', 'patient charts', 'the onboarding deck'). If they named NONE ('not really anything', 'hard to say'), follow up warmly asking what they produce, maintain, or deliver.",
