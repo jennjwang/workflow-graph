@@ -10,7 +10,7 @@ import {
   INTERVIEW_TASK_EXTRACTOR_PROMPT,
   mentionedTasksBlock,
   buildAnchoredTaskSystemPrompt,
-  buildGapFillMessages,
+  buildGapProbeMessages,
 } from '../prompts/task-generator.js';
 
 test('non-anchored prompt is the base prompt verbatim', () => {
@@ -56,24 +56,25 @@ test('anchored system prompt threads the count through and names the mode', () =
   assert.match(prompt, /must not exceed 15/);
 });
 
-test('gap-fill messages embed covered tasks, the cap, and the role context', () => {
-  const msgs = buildGapFillMessages({
-    jobTitle: 'Data Scientist',
-    responsibilities: 'Build models',
-    typicalWeek: 'Cleaning data, training models',
-    coveredTasks: ['Train models', 'Clean data'],
-    maxGap: 30,
+test('gap-probe messages enforce filler ban, verbatim anchors, and the area cap', () => {
+  const msgs = buildGapProbeMessages({
+    jobTitle: 'Auditor',
+    responsibilities: 'Assist foreign audit teams',
+    typicalWeek: 'Review financial statements',
+    transcript: 'Q: Walk me through a week.\nA: I review balance sheets.',
+    maxAreas: 3,
   });
   assert.equal(msgs.length, 2);
   const [system, user] = msgs;
-  assert.match(system.content, /up to 30 tasks/);
-  assert.match(system.content, /DISJOINT/); // gap-fill must seek non-overlapping tasks
-  assert.match(user.content, /Data Scientist/);
-  assert.match(user.content, /- Train models/);
-  assert.match(user.content, /- Clean data/);
+  assert.match(system.content, /BAN GENERIC FILLER/);
+  assert.match(system.content, /VERBATIM ONLY/);
+  assert.match(system.content, /MUST NOT LEAD/);
+  assert.match(system.content, /AT MOST 3 areas/);
+  assert.match(user.content, /Auditor/);
+  assert.match(user.content, /I review balance sheets/); // transcript embedded for anchoring
 });
 
-test('gap-fill renders "(none)" when no tasks are covered yet', () => {
-  const [, user] = buildGapFillMessages({ jobTitle: 'Nurse', maxGap: 10 });
+test('gap-probe renders "(none)" placeholders when tasks/transcript are empty', () => {
+  const [, user] = buildGapProbeMessages({ jobTitle: 'Nurse', maxAreas: 2 });
   assert.match(user.content, /\(none\)/);
 });

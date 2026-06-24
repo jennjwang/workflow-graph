@@ -366,7 +366,7 @@ export async function generateTasksFromInterview(
   aiUsage: string | undefined,
   responsibilities: string | undefined,
   interviewTasks: string[],
-  onTask: (name: string, meta?: { source?: 'interview' | 'gap' | 'bank'; bankId?: string; isProbe?: boolean; pi?: number | null }) => void,
+  onTask: (name: string, meta?: { source?: 'interview' | 'gap' }) => void,
   count?: number,
   participant?: string,                              // records volunteered tasks as spontaneous mentions
 ): Promise<void> {
@@ -393,76 +393,10 @@ export async function generateTasksFromInterview(
       const event = eventLine.slice(7);
       const data = JSON.parse(dataLine.slice(6));
       if (event === 'task' && typeof data?.name === 'string')
-        onTask(data.name, { source: data.source, bankId: data.bankId, isProbe: data.isProbe, pi: data.pi });
+        onTask(data.name, { source: data.source });
       else if (event === 'error') throw new Error(data.error ?? 'stream error');
       else if (event === 'done') return;
     }
-  }
-}
-
-// Active-learning write-back: record a participant's confirm/deny for a BANK task, closing
-// the loop (server.js /api/task-response → Postgres `responses` → posterior). Best-effort
-// and fire-and-forget — the picker must never block or fail on it.
-export async function postTaskResponse(args: {
-  participant: string;
-  task: string;                                    // bank task id (TaskItem.bankId)
-  response: 'confirm' | 'deny';
-  isProbe: boolean;                                // representative PROBE (counts toward decision) vs gated
-  pi?: number | null;                              // PPI propensity fixed at issue; stored on the response for IPW
-  shownStatement?: string;                         // exact label shown to this participant (identity audit)
-  // Granular relevance rating when RELEVANCE_RATING_ENABLED is on. `response`
-  // remains the binary (confirm = 'relevant', deny = everything else) so the
-  // active-learning posterior is unaffected; this just preserves the richer label.
-  relevance?: 'relevant' | 'future' | 'other-occupation' | 'not-valid' | 'unsure';
-  aiExposure?: 'none' | 'low' | 'medium' | 'high' | null;
-  occupation?: string;
-}): Promise<void> {
-  try {
-    await fetch('/api/task-response', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(args),
-    });
-  } catch {
-    /* best-effort; never block the participant flow on the write-back */
-  }
-}
-
-// End-of-interview MERGE trigger: ask the server to fold this participant's confirmed GENERATED
-// tasks into the bank (async + serialized, see taskBank.drainSession). Call once when the participant
-// finishes the picker. Best-effort and fire-and-forget — the server acks immediately and merges after.
-export async function drainSession(args: { participant: string; occupation?: string }): Promise<void> {
-  try {
-    await fetch('/api/drain-session', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(args),
-    });
-  } catch {
-    /* best-effort; never block the participant */
-  }
-}
-
-// Staging write-back for GENERATED (non-bank) tasks. A confirmed/denied generated task is parked
-// server-side (generated_responses); drainSession() later merges the confirms into the bank.
-// Best-effort and fire-and-forget — never blocks the participant.
-export async function postGeneratedResponse(args: {
-  participant: string;
-  statement: string;                               // the generated task exactly as shown
-  response: 'confirm' | 'deny';
-  source?: 'interview' | 'gap';
-  relevance?: 'relevant' | 'future' | 'other-occupation' | 'not-valid' | 'unsure';
-  aiExposure?: 'none' | 'low' | 'medium' | 'high' | null;
-  occupation?: string;
-}): Promise<void> {
-  try {
-    await fetch('/api/generated-response', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(args),
-    });
-  } catch {
-    /* best-effort; never block the participant flow on the write-back */
   }
 }
 
@@ -481,6 +415,35 @@ export async function extractInterviewTasks(
   if (!res.ok) throw new Error(await res.text());
   const data = await res.json();
   return Array.isArray(data.tasks) ? data.tasks : [];
+}
+
+export interface GapArea {
+  area: string | null;
+  question: string;                 // open, non-leading; safe to show as-is
+  anchor: string | null;            // verbatim transcript quote, or null
+  hiddenGapTasks: string[];         // candidate gaps (for logging/analysis, not shown)
+}
+
+// Live, mid-interview gap probe: assess what's been said so far and return open,
+// non-leading follow-up questions for the substantive coverage gaps (capped).
+// Fails open — returns [] on any error so the interview can always finish.
+export async function gapProbe(
+  backgroundTranscript: { field: string; question: string; answer: string; isFollowUp: boolean; timestamp: number }[],
+  userProfile?: { jobTitle?: string; responsibilities?: string; typicalWeek?: string },
+  maxAreas = 3,
+): Promise<GapArea[]> {
+  try {
+    const res = await fetch('/api/gap-probe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ backgroundTranscript, userProfile, maxAreas }),
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data.areas) ? data.areas : [];
+  } catch {
+    return [];
+  }
 }
 
 // Generate O*NET-style attention-check tasks tailored to the participant's role —

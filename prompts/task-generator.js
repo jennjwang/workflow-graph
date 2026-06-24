@@ -252,9 +252,8 @@ export function mentionedTasksBlock(interviewTasks = []) {
     : '';
 }
 
-// PASS 1 of the two-pass generator: normalize the participant's mentioned tasks
-// into a MECE upper-level list (no recognition gap-fill — that's pass 2).
-// `count` is the burnout cap.
+// Normalize the participant's mentioned tasks into a MECE upper-level list —
+// their OWN tasks only, no invented role coverage. `count` is the burnout cap.
 export function buildAnchoredTaskSystemPrompt(count) {
   return `${buildUpperLevelTasksPrompt({ anchored: true, count })}
 
@@ -271,35 +270,59 @@ MECE IS THE MASTER CONSTRAINT. The mentioned tasks are evidence to be covered, N
 7. Total must not exceed ${count}. Output as few as faithfully covers their tasks.`;
 }
 
-// PASS 2 of the two-pass generator: given the participant's already-covered
-// (normalized) tasks, list GAP-FILL — plausible role tasks they likely do but
-// did NOT mention. EXHAUSTIVE (the complete real task set, not padded) and
-// RANKED by importance; the caller importance-weighted-samples it down to fit
-// the burnout budget, so ranking matters. `maxGap` bounds the pool for cost.
-export function buildGapFillMessages({ jobTitle, responsibilities, typicalWeek, coveredTasks = [], maxGap }) {
-  const covered = coveredTasks.map((t) => `- ${t}`).join('\n');
+// ── Gap-probe: turn coverage gaps into OPEN interview questions ────────────────
+//
+// Live, mid-interview. Reads the raw transcript directly (no separate extraction
+// pass — the only extraction happens later, at generation, on the full transcript
+// INCLUDING these answers). Finds the COVERAGE GAPS — substantive, role-distinctive
+// tasks they almost certainly do but didn't bring up — clusters them into a few
+// areas, and drafts ONE open, NON-LEADING follow-up question per area (the hidden
+// task is never named). Anchors must be verbatim quotes from the transcript or null.
+export function buildGapProbeMessages({ jobTitle, responsibilities, typicalWeek, transcript = '', maxAreas = 3 }) {
   return [
     {
       role: 'system',
-      content: `You list GAP-FILL tasks for a work-task checklist. The participant already described some of their work (the COVERED tasks below). List the tasks someone in THIS specific role plausibly does but that the participant did NOT mention — recognition prompts they will confirm or deny on the next screen.
+      content: `You are improving a work-task interview. Below is the interview transcript so far. Find the COVERAGE GAPS — recurring tasks someone in THIS specific role almost certainly does but did NOT bring up anywhere in the transcript — and group them into a few AREAS we can probe with ONE open follow-up question each.
 
-BE EXHAUSTIVE, BUT DO NOT PAD. List the COMPLETE set of real recurring tasks for THIS role that aren't already covered — the core work plus the surrounding admin, communication, coordination, scheduling, upkeep/maintenance, reporting, learning, and compliance tasks. "Exhaustive" means don't MISS a genuine task — it does NOT mean inflate the list: every item must be a real, recurring task a typical person in this role actually does. No padding, no marginal one-offs, no near-duplicates to lengthen it.
+Return ONLY JSON:
+{
+  "areas": [
+    {
+      "area": "<short label for this slice of the job>",
+      "hiddenGapTasks": ["<specific recurring task absent from the transcript>", "..."],
+      "anchor": "<a VERBATIM quote (exact words) from the participant's answers in the transcript that this area connects to, or null>",
+      "question": "<one OPEN, NON-LEADING question inviting them to describe work in this area WITHOUT naming any hidden gap task>"
+    }
+  ]
+}
 
-DISJOINT — MAXIMIZE COVERAGE SPREAD. Every task you list must be DISJOINT: non-overlapping with each other AND with the COVERED tasks, each occupying a clearly SEPARATE part of the job. Carve the role into distinct, non-redundant pieces and spread across its different areas — core work, admin, communication, coordination, scheduling, upkeep/maintenance, reporting, learning, compliance — rather than offering several angles on the same activity. If two candidate tasks could describe the SAME slice of someone's day, they are NOT disjoint: keep only the single most central one and spend the freed slot on an area you haven't covered yet.
+GAPS — SUBSTANTIVE AND ROLE-DISTINCTIVE ONLY (NO FILLER):
+- Each gap must be a CONCRETE, recurring task specific to THIS role — name the actual artifact, system, document, or action a person in this exact job does. Grounded in their job title, responsibilities, and week.
+- BAN GENERIC FILLER. Reject any candidate that would apply to almost any office/professional job, e.g. "stay updated with industry trends", "attend training", "keep skills up to date", "prepare administrative reports", "maintain records", "communicate with internal teams", "coordinate with colleagues", "manage your time", "respond to emails". If a whole area reduces to filler, DROP the area.
+- A gap is NOT already covered by something they described in the transcript (compare meaning, not wording). If it's a kind/case of something they already said, it is NOT a gap.
+- NEVER import tasks from another job; never invent something implausible.
+- Return AT MOST ${maxAreas} areas, most central/likely FIRST. QUALITY OVER QUANTITY — if the interview already covers the role well, return FEWER (even zero) rather than padding. A short list of real, specific gaps beats a long list with filler.
 
-RANK by IMPORTANCE / RELEVANCE to THIS person — most central and most likely tasks FIRST, peripheral/occasional/generic ones LAST. A later step trims from the BOTTOM, so ordering is critical: never bury an obviously-core task below filler.
+ANCHORS — VERBATIM ONLY:
+- "anchor" must be an EXACT substring of the participant's answers in the transcript (copy their words letter-for-letter). Do NOT paraphrase, summarize, or invent. If you cannot quote them exactly for this area, set "anchor" to null.
+- When anchor is null, the question must NOT begin with "You mentioned" or claim they said anything.
 
-Rules:
-- Each must be a realistic, recurring task for THIS role, grounded in their job title, responsibilities, and week. NEVER import tasks from a different job, and never invent something implausible.
-- Do NOT overlap or duplicate any COVERED task (compare meaning, not wording), and no near-duplicates among your own (e.g. monitoring vs. investigating vs. tracking metrics are ONE task) — see DISJOINT above.
-- O*NET task-statement style: verb-led, 8–18 words, plain language, specific, sentence case, terminal period. Use the role's real vocabulary.
-- Output up to ${maxGap} tasks, ordered MOST IMPORTANT FIRST.
-
-Return ONLY JSON: {"tasks": ["...", ...]}  — ordered by importance, most important first.`,
+QUESTIONS — CRITICAL, MUST NOT LEAD:
+- NEVER name or hint at a hidden gap task. If a hidden task is "reconcile intercompany balances", do NOT say "reconcile", "intercompany", or "balances" — ask about the AREA openly.
+- Anchor to the participant's OWN verbatim words when anchor is non-null ("You mentioned <their exact phrase> — ...").
+- Phrase as an open invitation answerable with NEW tasks in their words, or with "no": "is there anything else you regularly do around ___?", "what does ___ usually involve for you?".
+- One sentence, plain and conversational. One question per area. "No" must be a fine answer.`,
     },
     {
       role: 'user',
-      content: `Role: ${jobTitle}${responsibilities ? `\nResponsibilities: ${responsibilities}` : ''}${typicalWeek ? `\nTypical week: ${typicalWeek}` : ''}\n\nCOVERED tasks (do NOT repeat or overlap these):\n${covered || '(none)'}\n\nList the exhaustive, importance-ranked set of role tasks they did not mention.`,
+      content: `Job title: ${jobTitle}
+Responsibilities: ${responsibilities || '(none given)'}
+Typical week: ${typicalWeek || '(none given)'}
+
+FULL INTERVIEW TRANSCRIPT (find what's MISSING from this; anchors must be exact quotes from the A: lines):
+${transcript || '(none)'}
+
+Identify the coverage gaps, grouped into areas, each with one open non-leading question.`,
     },
   ];
 }

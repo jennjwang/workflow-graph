@@ -6,9 +6,6 @@ import {
   extractInterviewTasks,
   recordScreenOut,
   transcribeAudio,
-  postTaskResponse,
-  postGeneratedResponse,
-  drainSession,
 } from "../lib/api";
 import { useWorkflowStore } from "../store";
 import { BONUS_ENABLED } from "../lib/bonus";
@@ -433,10 +430,7 @@ export function TaskSelection() {
         const onTask = (
           name: string,
           meta?: {
-            source?: "interview" | "gap" | "bank";
-            bankId?: string;
-            isProbe?: boolean;
-            pi?: number | null;
+            source?: "interview" | "gap";
           },
         ) => {
           realCount += 1;
@@ -447,10 +441,7 @@ export function TaskSelection() {
               {
                 name,
                 originalName: name,
-                bankId: meta?.bankId,
                 source: meta?.source,
-                isProbe: meta?.isProbe,
-                pi: meta?.pi,
                 status: "unreviewed",
               },
             ];
@@ -537,45 +528,6 @@ export function TaskSelection() {
     meta?: { hoursPerWeek?: number; relevance?: TaskRelevance },
   ) => {
     const reviewedTask = tasks[currentIdx];
-
-    // Active-learning write-back (the loop). Best-effort/fire-and-forget. Two streams:
-    //   BANK task (bankId)  → /api/task-response, is_probe → moves the in/out decision.
-    //   GENERATED task      → /api/generated-response staging pile → offline clustering.
-    // Skip attention checks and tasks the participant typed in themselves.
-    if (
-      reviewedTask &&
-      !reviewedTask.isAttentionCheck &&
-      !reviewedTask.addedByParticipant
-    ) {
-      const sid = useWorkflowStore.getState().sessionId;
-      const participant = prolific.pid || sid;
-      const response = answer === "yes" ? "confirm" : "deny";
-      if (reviewedTask.bankId) {
-        postTaskResponse({
-          participant,
-          task: reviewedTask.bankId,
-          response,
-          isProbe: reviewedTask.isProbe ?? true,
-          shownStatement: reviewedTask.originalName,
-          relevance: meta?.relevance,
-          pi: reviewedTask.pi,                       // echo the issue-time propensity back for IPW
-        });
-      } else {
-        const genSource =
-          reviewedTask.source === "gap"
-            ? "gap"
-            : reviewedTask.source === "interview"
-              ? "interview"
-              : undefined;
-        postGeneratedResponse({
-          participant,
-          statement: reviewedTask.originalName,
-          response,
-          source: genSource,
-          relevance: meta?.relevance,
-        });
-      }
-    }
 
     // Per-task dwell time: shownAt was stamped when this card became active.
     const answeredAt = Date.now();
@@ -790,12 +742,6 @@ export function TaskSelection() {
         aiHowSoMaxUsd: AI_HOWSO_BONUS_MAX_USD,
       },
       computedAt: new Date().toISOString(),
-    });
-
-    // End-of-interview MERGE: fold this participant's confirmed GENERATED tasks into the bank
-    // (server-side, async + serialized). Fire-and-forget; no-ops when the bank is disabled.
-    drainSession({
-      participant: prolific.pid || useWorkflowStore.getState().sessionId,
     });
 
     // This study has no Part-3 priority/workflow phases, so every condition goes

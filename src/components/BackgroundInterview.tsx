@@ -6,6 +6,8 @@ import {
   checkQuestionCoverage,
   fetchInterviewQuestion,
   transcribeAudio,
+  gapProbe,
+  GapArea,
 } from "../lib/api";
 import { UserProfile } from "../types";
 
@@ -124,6 +126,15 @@ const OUTRO_TEXT =
 // question(s) were auto- or manually skipped.
 const FINAL_CATCHALL =
   "Final question: if someone shadowed you for two weeks, what tasks would they see that we haven't named yet?";
+
+// GAP PROBE: after the static passes + catch-all, the server assesses what the
+// participant has mentioned, finds substantive role-specific coverage gaps, and
+// returns up to GAP_MAX_AREAS open, non-leading questions to ask before the outro.
+const GAP_MAX_AREAS = 3;
+
+// The static passes + final catch-all fill the progress bar up to this fraction;
+// the rest is reserved for the gap-probe pass (whose length isn't known upfront).
+const CORE_PROGRESS_MAX = 0.9;
 
 // AUTO skip (#3): questions eligible to be skipped automatically when earlier
 // answers already cover their criteria. The opening role question and the
@@ -330,6 +341,12 @@ export function BackgroundInterview() {
   // Final catch-all state (asked once at the very end, before the outro)
   const [isClosingActive, setIsClosingActive] = useState(false);
 
+  // Gap-probe state: dynamic, role-specific follow-up questions asked AFTER the
+  // catch-all (computed live from what they've said). Reuses followUpQ for display.
+  const [gapAreas, setGapAreas] = useState<GapArea[]>([]);
+  const [gapIdx, setGapIdx] = useState(0);
+  const [isGapActive, setIsGapActive] = useState(false);
+
   // Live (LLM-generated) phrasing for the current question; falls back to the
   // question's canonical static text on null.
   const [dynamicQuestion, setDynamicQuestion] = useState<string | null>(null);
@@ -389,14 +406,21 @@ export function BackgroundInterview() {
   // Continuous progress (0–1) for the header bar. Robust to auto-skips, which
   // would make a fixed "Topic X of N" misleading: the bar just advances. The
   // active question gets half credit; a follow-up or the final catch-all pushes
-  // it the rest of the way toward the next step.
+  // it the rest of the way toward the next step. The static passes + catch-all
+  // fill up to CORE_PROGRESS_MAX; the remainder is reserved for the (dynamic)
+  // gap-probe pass so the bar isn't pinned at 100% while gap questions remain.
   const progress = showOutro
     ? 1
-    : Math.min(
-        1,
-        (step + (isFollowUpActive || isClosingActive ? 1 : 0.5)) /
-          QUESTIONS.length,
-      );
+    : isGapActive
+      ? CORE_PROGRESS_MAX +
+        (1 - CORE_PROGRESS_MAX) *
+          Math.min(1, (gapIdx + 0.5) / Math.max(1, gapAreas.length))
+      : CORE_PROGRESS_MAX *
+        Math.min(
+          1,
+          (step + (isFollowUpActive || isClosingActive ? 1 : 0.5)) /
+            QUESTIONS.length,
+        );
 
   // Re-size the input whenever its content, its placeholder (question/follow-up
   // change), or its visibility (voice↔text toggle, mount) changes.
@@ -508,6 +532,54 @@ export function BackgroundInterview() {
     }
   };
 
+  // After the catch-all, probe for substantive coverage gaps and ask them as
+  // open follow-ups before the outro. Computed live from the transcript so far
+  // (which already includes the catch-all answer). Fails open: no gaps → finish.
+  const startGapProbe = async () => {
+    setInput("");
+    setShowTextInput(false);
+    setQuestionVisible(false);
+    setIsEvaluating(true);
+    setIsClosingActive(false);
+
+    const { backgroundTranscript, userProfile } = useWorkflowStore.getState();
+    const areas = await gapProbe(backgroundTranscript, userProfile, GAP_MAX_AREAS);
+
+    if (!areas.length) {
+      await finishInterview();
+      return;
+    }
+    setGapAreas(areas);
+    setGapIdx(0);
+    setIsGapActive(true);
+    setFollowUpCount(0);
+    setAccumulatedAnswer("");
+    await new Promise((r) => setTimeout(r, 260));
+    setFollowUpQ(areas[0].question);
+    setIsEvaluating(false);
+    setQuestionVisible(true);
+  };
+
+  // Advance to the next gap question, or finish once they're exhausted.
+  const advanceGap = async () => {
+    setInput("");
+    setShowTextInput(false);
+    const nextIdx = gapIdx + 1;
+    setQuestionVisible(false);
+    setIsEvaluating(true);
+    if (nextIdx < gapAreas.length) {
+      await new Promise((r) => setTimeout(r, 260));
+      setGapIdx(nextIdx);
+      setFollowUpQ(gapAreas[nextIdx].question);
+      setIsEvaluating(false);
+      setQuestionVisible(true);
+    } else {
+      setIsGapActive(false);
+      setIsEvaluating(false);
+      await finishInterview();
+    }
+  };
+
   // The catch-all is the final step: any answer (or a skip) ends the interview.
   const finishInterview = async () => {
     setInput("");
@@ -518,6 +590,7 @@ export function BackgroundInterview() {
     setFollowUpCount(0);
     setAccumulatedAnswer("");
     setIsClosingActive(false);
+    setIsGapActive(false);
     setShowOutro(true);
     setQuestionVisible(true);
   };
@@ -529,25 +602,33 @@ export function BackgroundInterview() {
     setInput("");
     setShowTextInput(false);
 
-    // Record this turn (initial Q or follow-up Q paired with the participant's answer)
+    // Record this turn. Gap-probe answers are tagged with a distinct field so
+    // analysts (and the final extraction) can tell them apart from pass answers.
     addBackgroundTurn({
-      field: q.field,
+      field: isGapActive ? "gapProbe" : q.field,
       question: displayQuestion,
       answer: trimmed,
-      isFollowUp: isFollowUpActive,
+      isFollowUp: isGapActive ? false : isFollowUpActive,
       timestamp: Date.now(),
     });
     // Append to the running conversation transcript (what was actually asked + said)
     convoRef.current.push({ q: displayQuestion, a: trimmed });
+
+    // They just answered a gap-probe question — move to the next gap, or finish.
+    if (isGapActive) {
+      await advanceGap();
+      return;
+    }
 
     // Build up the full answer context for coverage evaluation
     const combined = isFollowUpActive
       ? `${accumulatedAnswer}\n${trimmed}`
       : trimmed;
 
-    // They just answered the final catch-all — finish up (any answer, or skip).
+    // They just answered the final catch-all — now probe for coverage gaps
+    // (which, if any, run before the outro), else finish.
     if (isClosingActive) {
-      await finishInterview();
+      await startGapProbe();
       return;
     }
 

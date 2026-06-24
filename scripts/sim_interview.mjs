@@ -24,7 +24,7 @@ const QUESTIONS = [
     criteria: [
       "Named their job title or role. Any brief mention is sufficient.",
       "It is clear what field or industry they work in.",
-      "Indicated roughly how long they've been in this role — a rough range is enough, and a tenure cue embedded in the role ('first-year PhD', 'new grad') also satisfies this. Do NOT re-ask duration once present.",
+      "Indicated roughly how long they've been in this role — a rough range is enough, and a tenure cue ('first-year PhD', 'new grad') also satisfies this. Do NOT re-ask duration once present.",
     ],
   },
   {
@@ -32,25 +32,50 @@ const QUESTIONS = [
     text: "What are your primary responsibilities at work?",
     evaluationStyle: "lenient",
     maxFollowups: 2,
+    minFollowups: 0,
     criteria: [
-      "FLOOR — named at least one primary responsibility or area they own. If they named NONE ('a bit of everything', 'various things'), follow up asking what they're mainly responsible for.",
-      "TASKS UNDER RESPONSIBILITIES — when they've named responsibilities/areas at a high level but NOT the concrete tasks those involve, it's NOT fully covered: pick ONE responsibility they named and ask what specific tasks or activities fall under it (e.g. 'I'm responsible for the backend' → 'When it comes to the backend, what are the main things you actually do?'). On a later turn, if OTHER responsibilities are still high-level areas, drill into ONE more. Stop once the tasks under their main responsibilities are reasonably clear. If they already described the concrete tasks, covered. Probe ONE responsibility per turn, warmly, never skeptically.",
+      "FLOOR — named at least one primary responsibility or area they own. If NONE ('a bit of everything'), follow up asking what they're mainly responsible for.",
+      "STAY AT OWNERSHIP ALTITUDE — map WHAT they own, not how they spend their time. Do NOT drill into the tasks under a responsibility (a later question covers that). Do NOT ask whether there are OTHER areas they're responsible for.",
     ],
   },
   {
     field: "typicalWeek",
-    text: "Think back over this past week — what did you actually work on?",
+    text: "Walk me through a typical week. What are the recurring tasks you do?",
     evaluationStyle: "lenient",
-    maxFollowups: 3,
-    minFollowups: 1,
-    closingQuestion:
-      "Final question — are there any other tasks you do that you haven't mentioned yet?",
+    maxFollowups: 4,
+    minFollowups: 2,
     criteria: [
-      "FLOOR — named at least one real activity; if none ('the usual'), follow up asking what they worked on.",
-      "BREADTH — if only ONE activity named, acknowledge then ask what else; several distinct = covered.",
-      "SUBSTANCE — the answer must give a concrete sense of WHAT the work is, not just generic labels. When a central activity is named only as a bare label (no topic/project/client/deliverable/tool), NOT covered — warmly pick the SINGLE most central still-vague activity and ask what it's about. Probe ONE thread per turn, never skeptical. On later turns, if other central activities are STILL bare labels, you may probe ONE more; stop once the main parts of the week are reasonably concrete. If central activities already carry substance, covered.",
-      "RESPONSIBILITY COVERAGE — the EARLIER context lists the responsibilities they named. If any responsibility there does NOT clearly map to a task they mentioned this week, NOT covered: warmly ask whether they did anything on that responsibility this week. Probe ONE uncovered responsibility per turn. If no earlier context or every responsibility maps to something mentioned, covered.",
-      "Representativeness — only if they signal the week was atypical, ask what a normal week looks like.",
+      "FLOOR — named at least one real recurring activity/task. If none, follow up asking what they regularly do.",
+      "BREADTH — if only ONE activity, acknowledge then ask whether there are others. If several distinct, covered.",
+      "SUBSTANCE — give the TASKS the work involves, not generic labels. If a central activity is a bare label, ask what they have to DO for it (the smaller tasks it breaks into) — NOT its topic. Probe ONE thread per turn.",
+      "DEEPEN THE CENTER — if ONE activity DOMINATES (e.g. a developer who mostly programs), drill into the DISTINCT KINDS of work within that core activity before broadening (e.g. 'what are the different kinds of programming work that come up?'). KINDS of work = tasks, not content. Only once the core is rich, rotate to smaller activities. If no activity dominates or the core is detailed, covered.",
+      "RESPONSIBILITY COVERAGE — if a responsibility named earlier does NOT map to a task they mentioned, follow up ONCE asking whether they regularly do anything on it. Probe ONE per turn.",
+    ],
+  },
+  {
+    field: "outputs",
+    text: "What do you produce or deliver in your work — like reports, documents, code, or designs?",
+    evaluationStyle: "lenient",
+    maxFollowups: 2,
+    minFollowups: 0,
+    criteria: [
+      "FLOOR — named at least one concrete output/artifact. If NONE, follow up asking what they produce/maintain/deliver.",
+      "DELIVERY & UPKEEP (not building) — focus on FINISHING/DELIVERY: what they do to get it READY and OUT or keep it up to date (checking, formatting, approval, sending, maintenance). Do NOT re-ask how they build it. If clear or would just repeat building, covered.",
+      "BREADTH — if only ONE output, ask whether there are others. If several, covered.",
+    ],
+  },
+  {
+    field: "stakeholders",
+    text: "Who do you do your work for or with — the people, teams, or clients you deal with?",
+    evaluationStyle: "lenient",
+    maxFollowups: 1,
+    minFollowups: 0,
+    closingQuestion:
+      "Last one: if someone shadowed you for two weeks, what tasks would they see that we haven't named yet?",
+    criteria: [
+      "FLOOR — named at least one person/team/role/outside party they work for or with. If NONE, follow up asking who they work for or with.",
+      "RELATIONAL TASKS (PRIORITIZE) — surface the COMMUNICATION/INTERPERSONAL tasks each relationship carries. If a stakeholder is a bare label, follow up with a CLEAR plain question ('How do you usually interact with them?', 'What do you usually go to them for, or do for them?') — aim to NAME relational tasks, do NOT lead. Probe ONE relationship per turn.",
+      "BREADTH (secondary) — only if ONE party and others clearly exist; do NOT reflexively ask 'who else'.",
     ],
   },
 ];

@@ -3,10 +3,9 @@ import express from 'express';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { SUBTASK_WORKER_SYSTEM_PROMPT, INTERVIEW_TASK_EXTRACTOR_PROMPT, mentionedTasksBlock, buildAnchoredTaskSystemPrompt, buildGapFillMessages } from './prompts/task-generator.js';
+import { SUBTASK_WORKER_SYSTEM_PROMPT, INTERVIEW_TASK_EXTRACTOR_PROMPT, mentionedTasksBlock, buildAnchoredTaskSystemPrompt, buildGapProbeMessages } from './prompts/task-generator.js';
 import { evaluateAnswerMessages, rewordQuestionMessages, checkCoverageMessages } from './prompts/interview.js';
 import { retrieveExemplarBlock } from './lib/retrieval.js';
-import { streamGapTasks } from './gapTasks.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -25,24 +24,6 @@ const QUESTION_MODEL = process.env.QUESTION_MODEL || 'gpt-4o';
 // (a wrong reject burns a real recruit), so it defaults to a stronger model and
 // has its own knob, independent of the interview app's models.
 const VERIFY_MODEL = process.env.VERIFY_MODEL || 'gpt-4o';
-
-// ── Active-learning task bank (OPTIONAL). Dormant unless TASK_BANK_OCC is set AND
-// `pg` is installed AND DATABASE_URL is configured. If any of those is missing the
-// import fails softly and the app behaves exactly as before. ──
-let taskBank = null;
-const TASK_BANK_OCC = process.env.TASK_BANK_OCC || null;
-// Probe count per session is ADAPTIVE (taskBank.pickProbes): it tracks how much of the bank is
-// still undecided, bounded by a fatigue ceiling — not a fixed reservation. The rest of the burnout
-// budget is the relevance-tailored generated layer (stashed offline on confirm).
-if (TASK_BANK_OCC) {
-  try {
-    taskBank = await import('./taskBank.js');
-    console.log(`[taskBank] enabled for occupation ${TASK_BANK_OCC}`);
-  } catch (e) {
-    console.warn('[taskBank] disabled:', e.message);
-    taskBank = null;
-  }
-}
 
 // In production we mount a Cloud Storage bucket at /app/data, so write sessions there.
 const SESSIONS_DIR = process.env.SESSIONS_DIR || path.join(__dirname, 'sessions');
@@ -310,45 +291,50 @@ app.post('/api/interview-question', async (req, res) => {
 // for the role. Output is plain task names; the generator turns them into
 // MECE upper-level buckets in the next step.
 
-app.post('/api/extract-interview-tasks', async (req, res) => {
-  const { backgroundTranscript = [], userProfile } = req.body;
-  if (!Array.isArray(backgroundTranscript)) {
-    return res.status(400).json({ error: 'backgroundTranscript must be an array' });
-  }
-  // Build a clean Q→A transcript. Skip empty answers (the dev seed had a few).
-  const turns = backgroundTranscript
+// Build a clean Q→A transcript from interview turns. Skips empty answers.
+function transcriptFromTurns(backgroundTranscript = []) {
+  return backgroundTranscript
     .filter(t => t && typeof t.answer === 'string' && t.answer.trim().length > 0)
     .map(t => `Q: ${t.question}\nA: ${t.answer}`)
     .join('\n\n');
-  if (!turns) {
-    // No interview to extract from — fail open so the generator can still run.
-    return res.json({ tasks: [] });
-  }
+}
+
+// Extract the distinct recurring paid-work tasks the participant MENTIONED.
+// Shared by /api/extract-interview-tasks and the live gap-probe. Returns string[].
+async function extractMentionedTasks(backgroundTranscript, userProfile) {
+  const turns = transcriptFromTurns(backgroundTranscript);
+  if (!turns) return [];
   const profileBlock = userProfile && (userProfile.jobTitle || userProfile.responsibilities)
     ? `Participant role context (for resolving pronouns and references — do NOT invent activities from it):\n` +
       (userProfile.jobTitle ? `- Job title: ${userProfile.jobTitle}\n` : '') +
       (userProfile.responsibilities ? `- Responsibilities (their words): ${userProfile.responsibilities}\n` : '') +
       '\n'
     : '';
+  const response = await client.chat.completions.create({
+    model: 'gpt-4o',
+    // Deterministic extraction (temp 0) on the stronger model — extraction
+    // grounds downstream steps, so we want consistent, high-recall grounding.
+    temperature: 0,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: INTERVIEW_TASK_EXTRACTOR_PROMPT },
+      { role: 'user', content: `${profileBlock}Background:\n\n${turns}\n\nExtract the distinct recurring paid-work tasks per the rules.` },
+    ],
+  });
+  const parsed = JSON.parse(response.choices[0].message.content);
+  return Array.isArray(parsed.tasks)
+    ? parsed.tasks.filter(t => typeof t === 'string' && t.trim()).map(t => t.trim()).slice(0, 30)
+    : [];
+}
+
+app.post('/api/extract-interview-tasks', async (req, res) => {
+  const { backgroundTranscript = [], userProfile } = req.body;
+  if (!Array.isArray(backgroundTranscript)) {
+    return res.status(400).json({ error: 'backgroundTranscript must be an array' });
+  }
   try {
-    const response = await client.chat.completions.create({
-      model: 'gpt-4o',
-      // Deterministic extraction (temp 0) on the stronger model — extraction
-      // grounds gap-fill, so we want consistent, high-recall grounding across runs.
-      temperature: 0,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: INTERVIEW_TASK_EXTRACTOR_PROMPT },
-        { role: 'user', content: `${profileBlock}Background:\n\n${turns}\n\nExtract the distinct recurring paid-work tasks per the rules.` },
-      ],
-    });
-    const parsed = JSON.parse(response.choices[0].message.content);
-    const tasks = Array.isArray(parsed.tasks)
-      ? parsed.tasks.filter(t => typeof t === 'string' && t.trim()).map(t => t.trim()).slice(0, 30)
-      : [];
-    // Log what the extractor pulled from the interview so we can verify in
-    // Cloud Run logs whether grounding is being seeded correctly. Each task on
-    // its own line for easy grep.
+    const tasks = await extractMentionedTasks(backgroundTranscript, userProfile);
+    // Log what the extractor pulled so we can verify grounding in Cloud Run logs.
     console.log(`[extract-interview-tasks] role=${userProfile?.jobTitle ?? '(none)'} count=${tasks.length}`);
     for (const t of tasks) console.log(`  • ${t}`);
     res.json({ tasks });
@@ -358,15 +344,69 @@ app.post('/api/extract-interview-tasks', async (req, res) => {
   }
 });
 
-// Integrated MECE generator: takes raw interview-extracted tasks and produces
-// a single unified task list. Unlike /api/generate-tasks-stream (which treats
-// interview tasks as grounding and only gap-fills), this endpoint:
-//   1. Normalizes the interview tasks to O*NET standard (rewords vague/short ones)
-//   2. Deduplicates any that describe the same activity
-//   3. Adds gap-fill tasks for categories the interview didn't cover
-//   4. Returns one flat MECE list — interview-derived + new tasks together
-// This gives participants a single coherent list to react to rather than a
-// split view where their own tasks appear in a separate bucket.
+// Live, mid-interview GAP PROBE: assess what the participant has mentioned so far,
+// identify substantive role-specific coverage gaps, and return OPEN, non-leading
+// follow-up questions (one per gap area, capped) to ask before the interview ends.
+// Their answers re-enter the transcript and feed the final extraction. Fails open
+// (returns no areas) so a slow/failed call never blocks finishing the interview.
+app.post('/api/gap-probe', async (req, res) => {
+  const { backgroundTranscript = [], userProfile = {}, maxAreas = 3 } = req.body;
+  if (!Array.isArray(backgroundTranscript)) {
+    return res.status(400).json({ error: 'backgroundTranscript must be an array' });
+  }
+  try {
+    // Read the transcript directly — NO separate extraction here. The only task
+    // extraction happens later at generation, on the full transcript (which by
+    // then includes the answers to these gap questions). Avoids double extraction.
+    const transcript = transcriptFromTurns(backgroundTranscript);
+    if (!transcript) return res.json({ areas: [] });
+    const cap = Math.max(0, Math.min(5, Number(maxAreas) || 3));
+    const response = await client.chat.completions.create({
+      model: VERIFY_MODEL,
+      temperature: 0.4,
+      response_format: { type: 'json_object' },
+      messages: buildGapProbeMessages({
+        jobTitle: userProfile.jobTitle,
+        responsibilities: userProfile.responsibilities,
+        typicalWeek: userProfile.typicalWeek,
+        transcript,
+        maxAreas: cap,
+      }),
+    });
+    const parsed = JSON.parse(response.choices[0].message.content);
+    // Verify each anchor is a verbatim substring of the participant's answers;
+    // drop a non-verbatim anchor (and any "You mentioned…" lead-in) rather than
+    // risk a fabricated quote. Keep only areas that carry a usable question.
+    const answersBlob = backgroundTranscript.map(t => String(t?.answer || '')).join('\n');
+    const areas = (Array.isArray(parsed.areas) ? parsed.areas : [])
+      .filter(a => a && typeof a.question === 'string' && a.question.trim())
+      .slice(0, cap)
+      .map(a => {
+        const verbatim = a.anchor && answersBlob.includes(a.anchor);
+        return {
+          area: a.area ?? null,
+          question: a.question.trim(),
+          anchor: verbatim ? a.anchor : null,
+          hiddenGapTasks: Array.isArray(a.hiddenGapTasks) ? a.hiddenGapTasks : [],
+        };
+      });
+    console.log(`[gap-probe] role=${userProfile?.jobTitle ?? '(none)'} areas=${areas.length}`);
+    for (const a of areas) console.log(`  ? ${a.question}  [${(a.hiddenGapTasks || []).join('; ')}]`);
+    res.json({ areas });
+  } catch (err) {
+    console.error('[gap-probe]', err);
+    res.json({ areas: [] });   // fail open — never block the interview
+  }
+});
+
+// MECE generator: takes the raw interview-extracted tasks and produces the
+// participant's OWN normalized task list — nothing invented. This endpoint:
+//   1. Normalizes the interview tasks to O*NET task-statement style (rewords
+//      vague/short ones; verb-led, sentence case, ~8-18 words)
+//   2. Deduplicates / rolls up any that describe the same activity (MECE)
+//   3. Scores each with a confidence and streams them ranked most-confident first
+// Recognition gap-fill (tasks they did NOT mention) is intentionally NOT added —
+// the picker is pure validation of what they actually described.
 app.post('/api/generate-tasks-from-interview', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -379,20 +419,20 @@ app.post('/api/generate-tasks-from-interview', async (req, res) => {
   };
 
   const { jobTitle, typicalWeek, aiUsage, responsibilities, interviewTasks = [], count, participant = null } = req.body;
-  // Burnout cap (tracks the picker). Both groups are generated freely; if the
-  // combined list exceeds the cap, we down-sample BOTH preserving their proportion.
+  // Burnout cap (tracks the picker). We show the participant's OWN tasks only —
+  // the normalized MECE list of what they described — ranked by confidence and
+  // capped at this ceiling.
   const targetCount = Number.isFinite(+count) && +count > 0 ? Math.round(+count) : 22;
-  // Uncertainty anchor: surface the participant's OWN (normalized) tasks that we
-  // are NOT confident about — anything we had to merge, rephrase, or infer
-  // (confidence < threshold) — for them to confirm or reword. Confidently-stated
-  // tasks (>= threshold) are already captured verbatim and don't need validating,
-  // so we don't re-show them; the rest of the budget goes to gap-fill (recognition
-  // of UNmentioned work) + bank probes. The normalize pass still runs in full (it
-  // feeds gap-fill's exclusion list); we just stop emitting the confident ones.
-  const ANCHOR_CONF_THRESHOLD = 0.8;
 
   const interviewBlock = mentionedTasksBlock(interviewTasks);
   const streamingSystem = `${buildAnchoredTaskSystemPrompt(targetCount)}
+
+WRITE EACH TASK IN O*NET TASK-STATEMENT STYLE. Mirror the shape of real O*NET task statements:
+ - Begin with a present-tense action verb, no subject and no first person ("Review code changes...", NOT "I review..." or "Reviewing...").
+ - Verb + concrete object + (when natural) a short purpose/context clause: "Conduct trial runs of programs to ensure they produce the desired results."
+ - Plain, occupation-general language a coworker would use; keep the participant's real nouns, tools, and context, but drop employer-specific or one-off detail.
+ - Sentence case, 8–18 words, ending in a period. Not a one-word verb, not a multi-sentence story.
+ - You may fold closely related variants into one statement with "such as" or a short list ("...such as tracking inventory or retrieving data."), but only when each item is a KIND or CASE of the same activity.
 
 OUTPUT FORMAT: emit one task per line as JSONL. Each line must be a complete JSON object:
 {"name": "...", "confidence": 0.0-1.0}
@@ -400,26 +440,8 @@ OUTPUT FORMAT: emit one task per line as JSONL. Each line must be a complete JSO
  - HIGH (0.8-1.0): they stated it clearly and explicitly.
  - MEDIUM (0.4-0.7): you had to merge it from several mentions, or normalize/rephrase a loose statement.
  - LOW (0.0-0.3): you INFERRED it — plausible for their role and implied by their answers, but never explicitly said.
-Calibrate honestly and use the full range — do NOT mark everything high; the lowest-confidence ones get shown back for the participant to verify.
+Calibrate honestly and use the full range — do NOT mark everything high.
 No surrounding array. No markdown. No commentary. Just one JSON object per line.`;
-
-  // Sample k items from an importance-RANKED list (index 0 = most important),
-  // weighted by rank so the top is much likelier to survive but lower items can
-  // still appear (variety across participants). Returns them back in rank order.
-  const weightedSampleByRank = (ranked, k) => {
-    if (k <= 0) return [];
-    if (k >= ranked.length) return ranked.slice();
-    const pool = ranked.map((it, i) => ({ it, i, w: ranked.length - i }));
-    const chosen = [];
-    for (let n = 0; n < k && pool.length; n++) {
-      let r = Math.random() * pool.reduce((s, p) => s + p.w, 0);
-      let idx = 0;
-      while (idx < pool.length - 1 && (r -= pool[idx].w) > 0) idx++;
-      chosen.push(pool[idx]);
-      pool.splice(idx, 1);
-    }
-    return chosen.sort((a, b) => a.i - b.i).map((c) => c.it);
-  };
 
   try {
     const { block: exemplarBlock } = await retrieveExemplarBlock({ jobTitle, responsibilities, typicalWeek });
@@ -455,94 +477,19 @@ No surrounding array. No markdown. No commentary. Just one JSON object per line.
       }
     }
     if (buffer.trim()) { try { const obj = JSON.parse(buffer.trim()); if (obj.name) pushNorm(obj.name, obj.confidence); } catch { /* ignore */ } }
-    // Names-only view for the consumers that just need the task text (gap-fill
-    // exclusion list, bank matching). Confidence is used only to pick the anchor.
-    const normalizedNames = normalized.map((t) => t.name);
 
-    // ── PASS 2: gap-fill — exhaustive, importance-RANKED pool (most important
-    //    first). GAP_POOL_CAP just bounds cost; it's well above any real role. ──
-    const GAP_POOL_CAP = 40;
-    let gapPool = [];
-    try {
-      const r = await client.chat.completions.create({
-        model: MODEL,
-        temperature: 0.7,
-        response_format: { type: 'json_object' },
-        messages: buildGapFillMessages({ jobTitle, responsibilities, typicalWeek, coveredTasks: normalizedNames, maxGap: GAP_POOL_CAP }),
-      });
-      const parsed = JSON.parse(r.choices[0].message.content);
-      gapPool = (Array.isArray(parsed.tasks) ? parsed.tasks : [])
-        .filter((t) => typeof t === 'string' && t.trim())
-        .map((t) => t.trim());
-    } catch (e) { console.warn('[generate-tasks-from-interview] gap-fill failed:', e.message); }
-
-    // ── BANK PROBES (representative DECISION stream): if the bank is on, reserve some slots
-    //    for UNFILTERED bank tasks chosen by decidability. These carry a bankId + isProbe:true
-    //    and are recorded against bank ids; the generated tasks are the engagement layer. As the
-    //    inventory resolves, pickProbes returns fewer (only UNDECIDED) → probe volume is a hump. ──
-    let bankProbes = [];
-    if (taskBank && TASK_BANK_OCC) {
-      try {
-        // Match the worker's volunteered (normalized) tasks to bank ids ONCE (5-way relationship classifier,
-        // cover policy with direction). Each match carries a `credit`:
-        //  - full    → record a SPONTANEOUS MENTION (is_probe=false): prevalence + existence, and the worker
-        //              is a certain doer → suppress probing that task. (equivalence / is-a-up / part-of-whole)
-        //  - partial → EXISTENCE only (worker did a PART of the task): corroboration, NOT prevalence, and the
-        //              worker stays probe-eligible for the whole. (part-of where the bank task is the whole)
-        const matches = normalizedNames.length ? await taskBank.matchToBankIds(TASK_BANK_OCC, normalizedNames) : new Map();
-        if (participant && matches.size) {
-          await Promise.all([...matches].map(([statement, m]) =>          // best-effort; never block the draw
-            (m.credit === 'full'
-              ? taskBank.recordResponse({ participant, task: m.id, occupation: TASK_BANK_OCC,
-                  isProbe: false, shownStatement: statement, response: 'confirm' })
-              : taskBank.recordCorroboration({ participant, task: m.id, occupation: TASK_BANK_OCC, statement })
-            ).catch(() => {})));
-        }
-        // only FULL matches are certain doers → dedup them out of the probe set; partial stays probe-eligible
-        const coveredIds = new Set([...matches.values()].filter(m => m.credit === 'full').map(m => m.id));
-        bankProbes = await taskBank.pickProbes(TASK_BANK_OCC, { coveredIds });
-        // PPI: write this worker's f-baseline for the undecided, non-mentioned tasks (background; ~K cheap
-        // LLM calls). Lets them contribute g=f to every such task's q-stratum without blocking the draw.
-        if (taskBank.PPI && participant) {
-          const interview = [jobTitle, responsibilities, typicalWeek, aiUsage].filter(Boolean).join('\n\n');
-          taskBank.scoreParticipant(TASK_BANK_OCC, participant, interview, { mentionedIds: coveredIds })
-            .catch(e => console.warn('[scoreParticipant]', e.message));
-        }
-      } catch (e) { console.warn('[generate-tasks-from-interview] bank probes failed:', e.message); }
-    }
-
-    // ── COMPOSE: open with a small ANCHOR of the MOST UNCERTAIN extractions —
-    //    the normalized tasks PASS 1 was least confident it captured correctly —
-    //    surfaced for the participant to confirm or reword (targeted validation,
-    //    uncertainty sampling). Then spend the rest of the burnout budget on
-    //    gap-fill (UNmentioned work) interleaved with bank probes. The full
-    //    normalized list still fed gap-fill's exclusion set above. ──
-    const genTarget = Math.max(1, targetCount - bankProbes.length);
-    const N = normalized.length, G = gapPool.length;
-    // Anchor = EVERY uncertain extraction (confidence below threshold), least
-    // confident first, capped only by the overall burnout budget.
+    // ── COMPOSE: show the participant's OWN normalized tasks, ranked by
+    //    confidence — LEAST confident first, so the extractions most worth
+    //    validating lead — capped at the burnout budget. ──
     const outNorm = [...normalized]
-      .filter((t) => t.confidence < ANCHOR_CONF_THRESHOLD)
-      .sort((a, b) => a.confidence - b.confidence)   // least-confident first
-      .slice(0, genTarget)
+      .sort((a, b) => a.confidence - b.confidence)    // least-confident first
+      .slice(0, Math.max(1, targetCount))
       .map((t) => t.name);
-    const gapBudget = Math.max(0, genTarget - outNorm.length);
-    const outGap = weightedSampleByRank(gapPool, gapBudget);
 
-    // Anchor (their own tasks) first, so the picker opens on something they
-    // recognize. Then interleave gap-fill with bank probes so the unfiltered
-    // probes (some obviously-irrelevant) aren't a skippable block at the end.
     for (const name of outNorm) sendEvent('task', { name, source: 'interview' });
-    for (let i = 0; i < Math.max(outGap.length, bankProbes.length); i++) {
-      if (i < bankProbes.length) {
-        const b = bankProbes[i];
-        sendEvent('task', { name: b.statement, source: 'bank', bankId: b.id, isProbe: true, pi: b.pi ?? null });
-      }
-      if (i < outGap.length) sendEvent('task', { name: outGap[i], source: 'gap' });
-    }
 
     const confDebug = [...normalized].sort((a, b) => a.confidence - b.confidence).map((t) => t.confidence.toFixed(2)).join(',');
-    console.log(`[generate-tasks-from-interview] role=${jobTitle} mentioned=${interviewTasks.length} normalized=${N}->anchor=${outNorm.length} gapPool=${G}->kept=${outGap.length} bankProbes=${bankProbes.length} conf=[${confDebug}]`);
+    console.log(`[generate-tasks-from-interview] role=${jobTitle} mentioned=${interviewTasks.length} normalized=${normalized.length}->shown=${outNorm.length} conf=[${confDebug}]`);
     sendEvent('done', {});
     res.end();
   } catch (err) {
@@ -550,47 +497,6 @@ No surrounding array. No markdown. No commentary. Just one JSON object per line.
     sendEvent('error', { message: err.message });
     res.end();
   }
-});
-
-// Active-learning write-back: record a participant's confirm/deny (+ AI exposure) for a
-// bank task. 503 when the bank isn't enabled. isProbe = was this a representative probe
-// (unfiltered show) → counts toward the in/out decision; false = relevance-gated (UX only).
-app.post('/api/task-response', async (req, res) => {
-  if (!taskBank) return res.status(503).json({ error: 'task bank not enabled' });
-  try {
-    const { participant, task, occupation, isProbe = true, shownStatement = null, response, aiExposure = null, pi = null } = req.body ?? {};
-    await taskBank.recordResponse({ participant, task, occupation: occupation || TASK_BANK_OCC, isProbe, shownStatement, response, aiExposure, pi });
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-// Staging write-back for GENERATED (non-bank) tasks: online harvest is off, so a confirmed/denied
-// generated task is parked in generated_responses for periodic OFFLINE clustering into the bank.
-// 503 when the bank isn't enabled. Best-effort (the frontend never blocks on it).
-app.post('/api/generated-response', async (req, res) => {
-  if (!taskBank) return res.status(503).json({ error: 'task bank not enabled' });
-  try {
-    const { participant, occupation, statement, source = null, response, relevance = null, aiExposure = null } = req.body ?? {};
-    await taskBank.stageGeneratedResponse({ participant, occupation: occupation || TASK_BANK_OCC, statement, source, response, relevance, aiExposure });
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-// End-of-interview MERGE: fold this participant's confirmed GENERATED tasks into the bank
-// (async + serialized — taskBank.drainSession). Acks immediately and runs in the background, so the
-// participant never waits on the embed/NN/LLM work. 503 when the bank isn't enabled.
-app.post('/api/drain-session', async (req, res) => {
-  if (!taskBank) return res.status(503).json({ error: 'task bank not enabled' });
-  const { participant, occupation } = req.body ?? {};
-  if (!participant) return res.status(400).json({ error: 'participant required' });
-  res.json({ ok: true });                               // ack now; merge happens after
-  taskBank.drainSession({ participant, occupation: occupation || TASK_BANK_OCC })
-    .then(r => console.log(`[drain] ${participant}: merged ${r.merged} (insert ${r.inserted} / pool ${r.pooled})`))
-    .catch(e => console.warn('[drain] failed:', e.message));
 });
 
 // Generate attention-check tasks. These are O*NET-style task statements from

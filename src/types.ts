@@ -22,10 +22,7 @@ export interface TaskEdit {
 export interface TaskItem {
   name: string;
   originalName: string;
-  bankId?: string;             // task-bank id (when this task came from the active-learning bank)
-  source?: 'interview' | 'gap' | 'bank';  // provenance: generated (interview/gap) vs bank PROBE
-  isProbe?: boolean;           // bank task shown as a representative PROBE (counts toward the decision)
-  pi?: number | null;          // PPI probe propensity fixed at issue (echoed back so IPW weight 1/π is honest)
+  source?: 'interview' | 'gap';  // provenance: generated from interview extraction vs gap-fill
   status: TaskStatus;
   category?: string;
   recency?: TaskRecency;
