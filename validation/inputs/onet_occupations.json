@@ -1,0 +1,80 @@
+{
+  "_comment": "O*NET occupation catalog used by the screener to enforce occupation boundaries. The participant is classified into exactly one of these codes; the study accepts only when the chosen code equals the inventory's onetCode. Descriptions are condensed from O*NET-SOC Occupation Data. Add/edit entries to change the discriminating set.",
+  "occupations": [
+    {
+      "code": "15-1252.00",
+      "title": "Software Developers",
+      "description": "Research, design, and develop computer and network software or specialized utility programs — including application software, systems software, embedded and firmware software, backend services, and games. Analyze user needs and develop software solutions, applying principles of computer science and engineering. Design, write, and update software and write specifications and performance requirements for new applications or systems. The defining focus is designing and building software systems, as opposed to only implementing others' specifications (Computer Programmers), testing (QA Testers), websites (Web Developers), or data analysis and modeling (Data Scientists)."
+    },
+    {
+      "code": "15-1251.00",
+      "title": "Computer Programmers",
+      "description": "Create, modify, and test the code and scripts that allow computer applications to run. Work from specifications drawn up by software developers or other individuals. May write programs to store, locate, and retrieve specific documents, data, and information. Focus is on implementing and maintaining code rather than designing the software."
+    },
+    {
+      "code": "15-1253.00",
+      "title": "Software Quality Assurance Analysts and Testers",
+      "description": "Develop and execute software tests to identify software problems and their causes. Test system modifications to prepare for implementation. Document defects using a bug tracking system and report them to developers. Primary focus is testing and quality assurance, not building product software."
+    },
+    {
+      "code": "15-1254.00",
+      "title": "Web Developers",
+      "description": "Develop and implement websites, web applications, application databases, and interactive web interfaces. Evaluate code to ensure it meets standards and is compatible with browsers and devices. Optimize website performance, scalability, and server-side code. Primary focus is websites and web front-ends."
+    },
+    {
+      "code": "15-1255.00",
+      "title": "Web and Digital Interface Designers",
+      "description": "Design digital user interfaces or websites. Develop and test layouts, interfaces, functionality, and navigation menus to ensure usability across browsers and devices. Focus is on user-facing design and interface layout rather than building software systems."
+    },
+    {
+      "code": "15-1211.00",
+      "title": "Computer Systems Analysts",
+      "description": "Analyze business, engineering, and other data-processing problems to design and implement solutions and improve existing computer systems. Bridge business needs and technology, configuring systems and coordinating their integration rather than primarily writing application software."
+    },
+    {
+      "code": "15-1242.00",
+      "title": "Database Administrators",
+      "description": "Administer, test, and implement computer databases, applying knowledge of database management systems. Coordinate changes to databases and resolve database performance, capacity, and security issues. Focus is operating and maintaining databases."
+    },
+    {
+      "code": "15-1243.00",
+      "title": "Database Architects",
+      "description": "Design strategies for enterprise databases, data warehouse systems, and multidimensional networks. Set standards for database operations and build large relational databases or data warehouses and the pipelines that feed them. Often includes data-engineering work on data infrastructure."
+    },
+    {
+      "code": "15-1244.00",
+      "title": "Network and Computer Systems Administrators",
+      "description": "Install, configure, and maintain an organization's networks, operating systems, and servers. Monitor systems and verify availability of hardware, network, and server resources. May write scripts to automate administration, but do not build product software."
+    },
+    {
+      "code": "15-1241.00",
+      "title": "Computer Network Architects",
+      "description": "Design and implement computer and information networks, such as local area networks, wide area networks, intranets, and extranets. Focus is network design and infrastructure, not software development."
+    },
+    {
+      "code": "15-1212.00",
+      "title": "Information Security Analysts",
+      "description": "Plan, implement, upgrade, or monitor security measures to protect computer networks and information. Assess vulnerabilities, respond to incidents, and implement risk-mitigation strategies. Focus is security operations rather than building software."
+    },
+    {
+      "code": "15-1232.00",
+      "title": "Computer User Support Specialists",
+      "description": "Provide technical assistance to computer users. Answer questions and resolve computer problems for clients in person, by phone, or electronically, including hardware, software, and account issues (help desk / desktop support)."
+    },
+    {
+      "code": "15-2051.00",
+      "title": "Data Scientists",
+      "description": "Develop techniques and analytics applications to transform raw data into meaningful information using data-oriented programming and visualization. Apply data mining, statistical modeling, and machine learning to extract and analyze information. Focus is analysis and modeling rather than building production software."
+    },
+    {
+      "code": "11-3021.00",
+      "title": "Computer and Information Systems Managers",
+      "description": "Plan, direct, or coordinate activities in fields such as information systems, systems analysis, and software development. Manage teams, budgets, and roadmaps. Primary role is management rather than hands-on software development."
+    },
+    {
+      "code": "17-2061.00",
+      "title": "Computer Hardware Engineers",
+      "description": "Research, design, develop, or test computer or computer-related equipment such as circuit boards, processors, and physical hardware. Focus is hardware rather than software."
+    }
+  ]
+}

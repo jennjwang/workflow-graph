@@ -6,3 +6,6 @@ sessions/
 
 # generated interview sim output
 sim_transcripts.txt
+
+# validation: participant assignments + responses are data, not code
+validation/out/

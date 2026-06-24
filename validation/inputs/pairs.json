@@ -1,0 +1,21 @@
+{
+  "occupation": "Software Developer",
+  "onetCode": "15-1252.00",
+  "_source": {
+    "ours": "resolved_tasks.json (32 nodes; nParticipants joined from step2_clusters.json)",
+    "matcher": "/Users/jenniferwang/PhD/task_aggregation/results/onet_matching/alignment/onet15_5way.json"
+  },
+  "_relation": "5-way classifier `equivalence` (same task, different wording); coverage-alignment + subsumption excluded",
+  "_excludedManyToMany": 0,
+  "pairs": [
+    {
+      "id": "O3",
+      "onet": [
+        "Confer with stakeholders to obtain information on project limitations and capabilities"
+      ],
+      "ours": [
+        "Conduct meetings with clients or businesses to gather or clarify requirements and project constraints"
+      ]
+    }
+  ]
+}

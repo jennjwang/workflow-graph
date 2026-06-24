@@ -1,0 +1,31 @@
+{
+  "_note": "Analyst-perspective quality rubric, adapted from O*NET task-statement review criteria. STARTING POINT — refine the criteria/wording with Phil. Binary per criterion; the judge returns pass/fail + a short reason for each. Pass rates get Wilson CIs.",
+  "scale": "binary",
+  "criteria": [
+    {
+      "key": "faceValidity",
+      "label": "Face validity",
+      "question": "Does the statement describe genuine, relevant work that someone in this occupation actually performs (not idiosyncratic, outdated, or out-of-scope)?"
+    },
+    {
+      "key": "singleActivity",
+      "label": "Single coherent activity",
+      "question": "Does it describe a single COHERENT work activity? IMPORTANT: enumerated examples or facets of one activity PASS (e.g. 'debug and fix issues such as code errors, database problems, and bugs' is one activity — debugging — with examples; 'review PRs and provide feedback' is one activity — reviewing). FAIL ONLY when genuinely DISTINCT activities are conjoined into one statement (e.g. 'develop or direct testing procedures, programming, or documentation' bundles testing + programming + documentation; 'modify software to correct errors, adapt to new hardware, or upgrade interfaces' bundles distinct tasks)."
+    },
+    {
+      "key": "generality",
+      "label": "Appropriate generality",
+      "question": "Is it written at an appropriate level of generality — neither a vague umbrella that covers many different activities, nor a trivial micro-step?"
+    },
+    {
+      "key": "clarity",
+      "label": "Clarity / self-contained",
+      "question": "Is it clear, unambiguous, and understandable on its own without additional context or jargon?"
+    },
+    {
+      "key": "actionOriented",
+      "label": "Action-oriented",
+      "question": "Does it begin with an action verb and describe an observable work activity (what the worker does)?"
+    }
+  ]
+}

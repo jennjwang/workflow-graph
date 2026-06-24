@@ -1,0 +1,261 @@
+{
+  "occupation": "Software Developer",
+  "onetCode": "15-1252.00",
+  "_source": {
+    "ours": "resolved_tasks.json (32 nodes; nParticipants joined from step2_clusters.json)",
+    "onet": "onet_entailment_crosswalk.json _onet (15 deduped O*NET tasks)"
+  },
+  "methods": {
+    "ours": {
+      "label": "ours",
+      "statements": [
+        "Provide effort estimates for upcoming project phases and product roadmap quarterly planning",
+        "Review AI-generated code",
+        "Attend daily standup meetings to discuss work status, project progress, and coordinate team efforts",
+        "Debug and fix software issues such as code errors, database problems, and bugs to improve stability or resolve user-reported issues",
+        "Document and update API documentation, including endpoints and request or response formats",
+        "Conduct meetings with clients or businesses to gather or clarify requirements and project constraints",
+        "Address feedback from reviews such as code or portfolio reviews",
+        "Mentor and teach junior engineers or apprentices to develop technical skills and support their growth",
+        "Attend retrospective meetings to evaluate project performance",
+        "Request reviews from team members to enhance collaboration and code quality",
+        "Coordinate with engineers to integrate APIs and establish API contracts",
+        "Test application functionality across devices or operating systems before release",
+        "Set up or maintain CI/CD pipelines for deployment, automated builds, and releases",
+        "Negotiate technical trade-offs with product owners or managers during planning or on scope",
+        "Review pull requests to ensure code quality and provide feedback",
+        "Implement new features or write code based on product or project requirements",
+        "Escalate unresolved technical blockers to senior staff or the appropriate team member",
+        "Prepare and share demos of new or completed features with stakeholders",
+        "Generate boilerplate code using AI coding assistants",
+        "Create or implement APIs to facilitate interactions or enable communication between systems",
+        "Monitor production errors and application logs after deployment or releases",
+        "Refactor backend code to improve readability, maintainability, and performance without changing intended behavior",
+        "Maintain infrastructure and system health to ensure stability and reliability",
+        "Respond to internal team queries via messaging platforms such as Slack or async channels",
+        "Triage and prioritize tickets such as bug reports, feature requests, or engineering issues",
+        "Attend planning sessions to align on project objectives",
+        "Write and update tests such as unit, integration, and automated tests for components and code",
+        "Generate working code drafts using AI assistance",
+        "Update ticket status and project status in task tracking tools such as Jira to reflect progress or implement changes",
+        "Review code",
+        "Deploy changes to production environments to implement updates or new features",
+        "Respond to and resolve production incidents or outages to restore services or functionality"
+      ],
+      "nodes": [
+        {
+          "id": "C29",
+          "statement": "Provide effort estimates for upcoming project phases and product roadmap quarterly planning",
+          "nParticipants": 5,
+          "nVariants": 6
+        },
+        {
+          "id": "C6",
+          "statement": "Review AI-generated code",
+          "nParticipants": 4,
+          "nVariants": 6
+        },
+        {
+          "id": "C0",
+          "statement": "Attend daily standup meetings to discuss work status, project progress, and coordinate team efforts",
+          "nParticipants": 10,
+          "nVariants": 11
+        },
+        {
+          "id": "C1",
+          "statement": "Debug and fix software issues such as code errors, database problems, and bugs to improve stability or resolve user-reported issues",
+          "nParticipants": 6,
+          "nVariants": 6
+        },
+        {
+          "id": "C10",
+          "statement": "Document and update API documentation, including endpoints and request or response formats",
+          "nParticipants": 3,
+          "nVariants": 3
+        },
+        {
+          "id": "C11",
+          "statement": "Conduct meetings with clients or businesses to gather or clarify requirements and project constraints",
+          "nParticipants": 3,
+          "nVariants": 3
+        },
+        {
+          "id": "C12",
+          "statement": "Address feedback from reviews such as code or portfolio reviews",
+          "nParticipants": 2,
+          "nVariants": 2
+        },
+        {
+          "id": "C13",
+          "statement": "Mentor and teach junior engineers or apprentices to develop technical skills and support their growth",
+          "nParticipants": 2,
+          "nVariants": 2
+        },
+        {
+          "id": "C14",
+          "statement": "Attend retrospective meetings to evaluate project performance",
+          "nParticipants": 2,
+          "nVariants": 2
+        },
+        {
+          "id": "C15",
+          "statement": "Request reviews from team members to enhance collaboration and code quality",
+          "nParticipants": 2,
+          "nVariants": 2
+        },
+        {
+          "id": "C16",
+          "statement": "Coordinate with engineers to integrate APIs and establish API contracts",
+          "nParticipants": 2,
+          "nVariants": 2
+        },
+        {
+          "id": "C17",
+          "statement": "Test application functionality across devices or operating systems before release",
+          "nParticipants": 2,
+          "nVariants": 2
+        },
+        {
+          "id": "C18",
+          "statement": "Set up or maintain CI/CD pipelines for deployment, automated builds, and releases",
+          "nParticipants": 2,
+          "nVariants": 2
+        },
+        {
+          "id": "C19",
+          "statement": "Negotiate technical trade-offs with product owners or managers during planning or on scope",
+          "nParticipants": 2,
+          "nVariants": 2
+        },
+        {
+          "id": "C2",
+          "statement": "Review pull requests to ensure code quality and provide feedback",
+          "nParticipants": 6,
+          "nVariants": 5
+        },
+        {
+          "id": "C20",
+          "statement": "Implement new features or write code based on product or project requirements",
+          "nParticipants": 2,
+          "nVariants": 2
+        },
+        {
+          "id": "C21",
+          "statement": "Escalate unresolved technical blockers to senior staff or the appropriate team member",
+          "nParticipants": 2,
+          "nVariants": 2
+        },
+        {
+          "id": "C22",
+          "statement": "Prepare and share demos of new or completed features with stakeholders",
+          "nParticipants": 2,
+          "nVariants": 2
+        },
+        {
+          "id": "C23",
+          "statement": "Generate boilerplate code using AI coding assistants",
+          "nParticipants": 2,
+          "nVariants": 2
+        },
+        {
+          "id": "C24",
+          "statement": "Create or implement APIs to facilitate interactions or enable communication between systems",
+          "nParticipants": 2,
+          "nVariants": 2
+        },
+        {
+          "id": "C25",
+          "statement": "Monitor production errors and application logs after deployment or releases",
+          "nParticipants": 2,
+          "nVariants": 2
+        },
+        {
+          "id": "C26",
+          "statement": "Refactor backend code to improve readability, maintainability, and performance without changing intended behavior",
+          "nParticipants": 2,
+          "nVariants": 2
+        },
+        {
+          "id": "C27",
+          "statement": "Maintain infrastructure and system health to ensure stability and reliability",
+          "nParticipants": 2,
+          "nVariants": 2
+        },
+        {
+          "id": "C28",
+          "statement": "Respond to internal team queries via messaging platforms such as Slack or async channels",
+          "nParticipants": 2,
+          "nVariants": 2
+        },
+        {
+          "id": "C3",
+          "statement": "Triage and prioritize tickets such as bug reports, feature requests, or engineering issues",
+          "nParticipants": 6,
+          "nVariants": 5
+        },
+        {
+          "id": "C31",
+          "statement": "Attend planning sessions to align on project objectives",
+          "nParticipants": 2,
+          "nVariants": 2
+        },
+        {
+          "id": "C32",
+          "statement": "Write and update tests such as unit, integration, and automated tests for components and code",
+          "nParticipants": 2,
+          "nVariants": 2
+        },
+        {
+          "id": "C33",
+          "statement": "Generate working code drafts using AI assistance",
+          "nParticipants": 2,
+          "nVariants": 1
+        },
+        {
+          "id": "C4",
+          "statement": "Update ticket status and project status in task tracking tools such as Jira to reflect progress or implement changes",
+          "nParticipants": 4,
+          "nVariants": 5
+        },
+        {
+          "id": "C7",
+          "statement": "Review code",
+          "nParticipants": 4,
+          "nVariants": 1
+        },
+        {
+          "id": "C8",
+          "statement": "Deploy changes to production environments to implement updates or new features",
+          "nParticipants": 3,
+          "nVariants": 4
+        },
+        {
+          "id": "C9",
+          "statement": "Respond to and resolve production incidents or outages to restore services or functionality",
+          "nParticipants": 3,
+          "nVariants": 5
+        }
+      ]
+    },
+    "onet": {
+      "label": "onet",
+      "statements": [
+        "Analyze user needs and software requirements to determine feasibility of design within time and cost constraints.",
+        "Develop or direct software system testing or validation procedures, programming, or documentation.",
+        "Confer with stakeholders to obtain information on project limitations and capabilities",
+        "Modify existing software to correct errors, adapt it to new hardware, or upgrade interfaces and improve performance.",
+        "Prepare reports or correspondence concerning project specifications, activities, or status.",
+        "Analyze information to determine, recommend, and plan installation of a new system or modification of an existing system.",
+        "Store, retrieve, and manipulate data for analysis of system capabilities and requirements.",
+        "Design, develop and modify software systems, using scientific analysis and mathematical models to predict and measure outcomes and consequences of design.",
+        "Determine system performance standards.",
+        "Consult with customers or other departments on project status, proposals, or technical issues, such as software system design or maintenance.",
+        "Monitor functioning of equipment to ensure system operates in conformance with specifications.",
+        "Coordinate installation of software system.",
+        "Supervise the work of programmers, technologists, technicians, and other engineering or scientific personnel",
+        "Obtain and evaluate information on factors such as reporting formats required, costs, or security needs to determine hardware configuration.",
+        "Train users to use new or modified equipment."
+      ]
+    }
+  }
+}
