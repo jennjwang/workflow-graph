@@ -441,7 +441,7 @@ app.post('/api/generate-tasks-from-interview', async (req, res) => {
     res.flush?.();
   };
 
-  const { jobTitle, typicalWeek, aiUsage, responsibilities, interviewTasks = [], count, participant = null } = req.body;
+  const { jobTitle, typicalWeek, responsibilities, interviewTasks = [], count, participant = null } = req.body;
   // Burnout cap (tracks the picker). We show the participant's OWN tasks only —
   // the normalized MECE list of what they described — ranked by confidence and
   // capped at this ceiling.
@@ -485,7 +485,7 @@ No surrounding array. No markdown. No commentary. Just one JSON object per line.
       stream: true,
       messages: [
         { role: 'system', content: streamingSystem },
-        { role: 'user', content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${aiUsage ? `\nAI usage: ${aiUsage}` : ''}${exemplarBlock}${interviewBlock}\nGenerate the MECE task list from their mentioned tasks.` },
+        { role: 'user', content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${exemplarBlock}${interviewBlock}\nGenerate the MECE task list from their mentioned tasks.` },
       ],
     });
     let buffer = '';
@@ -1488,7 +1488,7 @@ function isMateriallyEmpty(d) {
   const phases = Object.keys(d.phaseEnteredAt || {});
   const beyondSetup = phases.some(p => p !== 'setup');
   if (beyondSetup) return false;
-  if (d.userProfile && (d.userProfile.jobTitle || d.userProfile.typicalWeek || d.userProfile.responsibilities || d.userProfile.aiUsage)) return false;
+  if (d.userProfile && (d.userProfile.jobTitle || d.userProfile.typicalWeek || d.userProfile.responsibilities)) return false;
   if (Array.isArray(d.backgroundTranscript) && d.backgroundTranscript.length > 0) return false;
   if (Array.isArray(d.selectedTasks) && d.selectedTasks.length > 0) return false;
   if (Array.isArray(d.taskItems) && d.taskItems.length > 0) return false;

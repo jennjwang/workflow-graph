@@ -46,6 +46,11 @@ const SHADOW_Q =
 
 const PLANNER_MODEL = process.env.PLANNER_MODEL || 'gpt-4o';
 const COUNT_MODEL = process.env.SMALL_MODEL || 'gpt-4o-mini';
+// Hard post-check that rewrites yes/no-stem / example-laden / "how do you handle"
+// questions via rewriteOpen. Set PLANNER_REWRITE=0 to turn it OFF and rely purely
+// on the soft phrasing guidance in the prompts (the rewrite can itself produce
+// stilted phrasings like "what does your work involve around X").
+const REWRITE_BAD = process.env.PLANNER_REWRITE !== '0';
 // Question budget (incl. shadow). Hard-capped at 20 — even if the env var is set
 // higher — so the interview can never run past 20 turns. Enforced below: at the
 // budget the planner forces the shadow catch-all and ends.
@@ -227,7 +232,7 @@ export async function plannerStep(client, { turns = [], state = null } = {}) {
     if (merged && merged.question) {
       const stat = staticText(merged.topic);
       let question = stat || merged.question;
-      if (!stat && looksBad(question)) question = await rewriteOpen(client, question);
+      if (!stat && REWRITE_BAD && looksBad(question)) question = await rewriteOpen(client, question);
       return { question, phase: 'spine', gap: merged.gap || '', done: false, stopReason: null, state: newState({ lastPhase: 'spine' }) };
     }
     const plan = await planNext(client, history, covered, asked, remaining.map((f) => BY_FIELD[f]));
@@ -236,7 +241,7 @@ export async function plannerStep(client, { turns = [], state = null } = {}) {
     }
     const stat = staticText(plan.topic);
     let question = stat || plan.question;
-    if (!stat && looksBad(question)) question = await rewriteOpen(client, question);
+    if (!stat && REWRITE_BAD && looksBad(question)) question = await rewriteOpen(client, question);
     return { question, phase: 'spine', gap: plan.gap || '', done: false, stopReason: null, state: newState({ lastPhase: 'spine' }) };
   }
 
@@ -251,6 +256,6 @@ export async function plannerStep(client, { turns = [], state = null } = {}) {
   }
   if (!eg.question) return askShadow();
   let question = eg.question;
-  if (looksBad(question)) question = await rewriteOpen(client, question);
+  if (REWRITE_BAD && looksBad(question)) question = await rewriteOpen(client, question);
   return { question, phase: 'emergent', gap: eg.gap || '', done: false, stopReason: null, state: newState({ lastPhase: 'emergent' }) };
 }

@@ -319,6 +319,7 @@ ANCHORS — VERBATIM ONLY:
 
 QUESTIONS — CRITICAL, MUST NOT LEAD:
 - NEVER name or hint at a hidden gap task. If a hidden task is "reconcile intercompany balances", do NOT say "reconcile", "intercompany", or "balances" — ask about the AREA openly.
+- NO META / PEER-COMPARISON. NEVER ask them to compare themselves to others or name their own gaps ("how do your tasks differ from others in your profession?", "anything you do that they don't?", "what's unique about your work?"). That offloads the gap-analysis onto them. You name the specific area; ask about THAT.
 - Anchor to the participant's OWN verbatim words when anchor is non-null ("You mentioned <their exact phrase> — ...").
 - Phrase as an open invitation answerable with NEW tasks in their words, or with "no": "is there anything else you regularly do around ___?", "what does ___ usually involve for you?".
 - One sentence, plain and conversational. One question per area. "No" must be a fine answer.`,

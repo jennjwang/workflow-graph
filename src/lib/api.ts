@@ -363,7 +363,6 @@ export async function fetchInterviewQuestion(
 export async function generateTasksFromInterview(
   jobTitle: string,
   typicalWeek: string,
-  aiUsage: string | undefined,
   responsibilities: string | undefined,
   interviewTasks: string[],
   onTask: (name: string, meta?: { source?: 'interview' | 'gap' }) => void,
@@ -373,7 +372,7 @@ export async function generateTasksFromInterview(
   const res = await fetch('/api/generate-tasks-from-interview', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jobTitle, typicalWeek, aiUsage, responsibilities, interviewTasks, count, participant }),
+    body: JSON.stringify({ jobTitle, typicalWeek, responsibilities, interviewTasks, count, participant }),
   });
   if (!res.ok || !res.body) throw new Error(await res.text());
   const reader = res.body.getReader();

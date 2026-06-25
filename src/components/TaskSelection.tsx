@@ -445,7 +445,6 @@ export function TaskSelection() {
         await generateTasksFromInterview(
           userProfile.jobTitle,
           userProfile.typicalWeek,
-          userProfile.aiUsage,
           userProfile.responsibilities,
           interviewTasks,
           (name, meta) => onTask(name, meta),

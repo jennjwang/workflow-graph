@@ -103,14 +103,9 @@ export interface DiscoveryNodeData extends Record<string, unknown> {
 export interface UserProfile {
   // Free-form answer to "What do you do at work? What are your primary responsibilities?"
   responsibilities: string;
-  // Single free-form field that captures role + tenure from the merged Q1
-  // ("What is your current role, and how long have you been in this job?").
+  // Role + field, from the opening question ("What's your current role and field?").
   jobTitle: string;
   typicalWeek: string;
-  // Q3: open-ended free-form answer to "Out of your weekly activities, are
-  // there tasks you're using AI for? Either tasks AI enabled you to do, or
-  // new tasks that exist because of AI (like verifying AI output)."
-  aiUsage: string;
   // Output pass: what the participant produces, maintains, approves, sends, or
   // delivers — task elicitation via the artifacts they own.
   outputs: string;
@@ -118,12 +113,6 @@ export interface UserProfile {
   // elicitation via the social side of work (interdependence, coordination,
   // external interaction, feedback).
   stakeholders: string;
-  // Tool pass: the systems/tools the participant uses — task elicitation via the
-  // software and systems that generate or carry their work (queues, alerts, etc.).
-  tools: string;
-  // Invisible-work pass: necessary but under-recognized work that would only be
-  // noticed if it stopped — task elicitation for background/maintenance/glue work.
-  invisibleWork: string;
 }
 
 export interface BackgroundTurn {

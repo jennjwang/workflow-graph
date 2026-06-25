@@ -354,11 +354,8 @@ export function BackgroundInterview() {
     responsibilities: "",
     jobTitle: "",
     typicalWeek: "",
-    aiUsage: "",
     outputs: "",
     stakeholders: "",
-    tools: "",
-    invisibleWork: "",
   });
 
   // Follow-up state for current question
