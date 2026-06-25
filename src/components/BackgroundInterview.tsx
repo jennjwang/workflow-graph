@@ -8,6 +8,7 @@ import {
   transcribeAudio,
   gapProbe,
   GapArea,
+  plannerNext,
 } from "../lib/api";
 import { UserProfile } from "../types";
 
@@ -41,10 +42,10 @@ const QUESTIONS: {
 }[] = [
   {
     field: "jobTitle",
-    text: "To start, what is your current role, and how long have you been in this job?",
+    text: "To start, what's your current role and field?",
     framingNotes:
-      "This is the opening question. Ask their current role/job title AND roughly how long they've been in it. Keep it warm and light.",
-    placeholder: "Your role + roughly how long you've been doing it",
+      "This is the opening question. Ask their current role/job title and what field or industry it's in. Keep it warm and light. (Tenure is asked separately, next.)",
+    placeholder: "Your role and the field/industry you're in",
     criteria: [
       "The participant has named their job title or role (e.g. 'nurse', 'software engineer', 'PhD student'). Any brief mention is sufficient — do not probe for more detail.",
       "It is clear what field or industry the participant works in.",
@@ -81,7 +82,7 @@ const QUESTIONS: {
       "RESPONSIBILITY COVERAGE — earlier in the conversation the participant described their primary responsibilities. If any responsibility or area they named does NOT clearly map to a task they mentioned, it is NOT fully covered: follow up ONCE, warmly, asking whether they regularly do anything on that responsibility (e.g. earlier they said they're responsible for hiring but never mentioned it → 'Earlier you mentioned you're responsible for hiring — is that something you work on in a typical week?'). Probe ONE uncovered responsibility per turn. If they didn't describe their responsibilities, or every responsibility already maps to something they mentioned, this is covered.",
     ],
     maxFollowups: 4,
-    minFollowups: 2,
+    minFollowups: 0,
   },
   {
     field: "outputs",
@@ -319,6 +320,16 @@ export function BackgroundInterview() {
     })),
   );
 
+  // SparkMe-style adaptive planner mode (live v3), opt-in via ?planner=1. When on,
+  // every question after the opening is chosen by /api/planner-next (forced spine →
+  // emergent gap-driving → shadow close) instead of the scripted spine + gap-probe.
+  const PLANNER =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("planner") === "1";
+  const plannerStateRef = useRef<unknown>(null);
+  const plannerTurnsRef = useRef<{ question: string; answer: string }[]>([]);
+  const [plannerTurnCount, setPlannerTurnCount] = useState(0);
+
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState<Record<keyof UserProfile, string>>({
     responsibilities: "",
@@ -358,6 +369,10 @@ export function BackgroundInterview() {
     string | null
   >(null);
   const [isEvaluating, setIsEvaluating] = useState(false);
+  // Progresses the inter-question loading label so a longer wait (3 sequential
+  // LLM calls: evaluate → coverage → rephrase) reads as steady progress rather
+  // than a frozen screen. Resets whenever evaluation starts/ends.
+  const [evalStage, setEvalStage] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [questionVisible, setQuestionVisible] = useState(true);
 
@@ -411,16 +426,39 @@ export function BackgroundInterview() {
   // gap-probe pass so the bar isn't pinned at 100% while gap questions remain.
   const progress = showOutro
     ? 1
-    : isGapActive
+    : PLANNER
+      ? Math.min(0.95, plannerTurnCount / 13)
+      : isGapActive
       ? CORE_PROGRESS_MAX +
         (1 - CORE_PROGRESS_MAX) *
           Math.min(1, (gapIdx + 0.5) / Math.max(1, gapAreas.length))
+      : isClosingActive
+      ? // The catch-all is ALWAYS the final core step before gap-probe/outro, so
+        // pin it to the core ceiling regardless of how many questions were
+        // skipped (otherwise a skipped question leaves the bar short on "the last
+        // one").
+        CORE_PROGRESS_MAX
       : CORE_PROGRESS_MAX *
         Math.min(
           1,
-          (step + (isFollowUpActive || isClosingActive ? 1 : 0.5)) /
-            QUESTIONS.length,
+          (step + (isFollowUpActive ? 1 : 0.5)) / QUESTIONS.length,
         );
+
+  // Advance the loading label while an answer is being processed: a quick
+  // acknowledgement first, then a "thinking" message, then a reassurance if the
+  // wait runs long. Resets the moment evaluation ends.
+  useEffect(() => {
+    if (!isEvaluating) {
+      setEvalStage(0);
+      return;
+    }
+    const t1 = setTimeout(() => setEvalStage(1), 1100);
+    const t2 = setTimeout(() => setEvalStage(2), 3500);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [isEvaluating]);
 
   // Re-size the input whenever its content, its placeholder (question/follow-up
   // change), or its visibility (voice↔text toggle, mount) changes.
@@ -475,6 +513,9 @@ export function BackgroundInterview() {
       setFollowUpCount(0);
       setAccumulatedAnswer("");
       setIsClosingActive(false);
+      // Clear any leftover transcription error so it doesn't carry into the
+      // next question ("Nothing was heard — try again." persisting).
+      setRecordTranscribeError(null);
     };
 
     // Pick the next question, AUTO-SKIPPING any eligible upcoming question whose
@@ -595,12 +636,70 @@ export function BackgroundInterview() {
     setQuestionVisible(true);
   };
 
+  // Planner-mode turn: record the answer, ask /api/planner-next for the next
+  // question (it processes the answer server-side: extracts tasks, strikes covered
+  // spine topics, decides spine vs emergent vs stop), and show it — or finish when
+  // the planner is done (the shadow catch-all was the last question).
+  const advancePlanner = async (answer: string) => {
+    const question = displayQuestion;
+    const isFollowUp = plannerTurnsRef.current.length > 0;
+    addBackgroundTurn({
+      field: "planner",
+      question,
+      answer,
+      isFollowUp,
+      timestamp: Date.now(),
+    });
+    convoRef.current.push({ q: question, a: answer });
+    plannerTurnsRef.current.push({ question, answer });
+    setPlannerTurnCount(plannerTurnsRef.current.length);
+
+    setQuestionVisible(false);
+    setIsEvaluating(true);
+    try {
+      console.log(`[planner] turn ${plannerTurnsRef.current.length} → calling /api/planner-next`);
+      const r = await plannerNext(plannerTurnsRef.current, plannerStateRef.current);
+      console.log(`[planner] ← phase=${r.phase} done=${r.done} stop=${r.stopReason ?? "-"} q=${JSON.stringify(r.question)}`);
+      plannerStateRef.current = r.state;
+      if (r.done || !r.question) {
+        // Best-effort profile so downstream steps have a role label — the full
+        // transcript (addBackgroundTurn) is the real grounding for task generation.
+        const firstAnswer = plannerTurnsRef.current[0]?.answer ?? "";
+        setUserProfile({ ...answers, jobTitle: firstAnswer } as UserProfile);
+        await finishInterview();
+        return;
+      }
+      await new Promise((res) => setTimeout(res, 260));
+      setFollowUpQ(r.question);
+      setIsEvaluating(false);
+      setQuestionVisible(true);
+    } catch (e) {
+      // Surface the failure ON SCREEN instead of silently ending the interview —
+      // a 404 here almost always means the API server wasn't restarted (it doesn't
+      // hot-reload). Keep the participant on the question so the error is obvious.
+      console.error("[planner] /api/planner-next FAILED:", e);
+      setFollowUpQ(
+        `⚠️ Planner request failed — the API server may need a full restart (Ctrl-C the whole \`npm run dev\`, not just the browser). Details: ${String(e instanceof Error ? e.message : e).slice(0, 200)}`,
+      );
+      setIsEvaluating(false);
+      setQuestionVisible(true);
+    }
+  };
+
   const advance = async (value: string) => {
     const trimmed = value.trim();
     if (!trimmed || isEvaluating) return;
 
     setInput("");
     setShowTextInput(false);
+    // Clear any stale transcription error so it never carries into the next
+    // question / follow-up.
+    setRecordTranscribeError(null);
+
+    if (PLANNER) {
+      await advancePlanner(trimmed);
+      return;
+    }
 
     // Record this turn. Gap-probe answers are tagged with a distinct field so
     // analysts (and the final extraction) can tell them apart from pass answers.
@@ -776,11 +875,6 @@ export function BackgroundInterview() {
       <div className="relative z-10 px-5 sm:px-8 pt-7 sm:pt-8 pb-5 shrink-0 w-full mx-auto max-w-[780px]">
         <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400 mb-3">
           Interview
-          {!showOutro && isFollowUpActive && (
-            <span className="ml-2 normal-case tracking-normal text-indigo-300">
-              · follow-up
-            </span>
-          )}
         </p>
         <div className="h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
           <div
@@ -858,9 +952,10 @@ export function BackgroundInterview() {
             </div>
           )}
 
-          {/* Evaluating indicator */}
-          {isEvaluating && (
-            <div className="flex items-center gap-2 mb-8 text-sm text-slate-400">
+          {/* Evaluating indicator — only mid-interview (while a submitted answer
+              is being processed), never on the outro where Continue is shown. */}
+          {isEvaluating && !showOutro && (
+            <div className="flex items-center gap-2.5 mb-8 text-sm text-slate-400">
               <div className="flex gap-1">
                 {[0, 150, 300].map((d) => (
                   <span
@@ -870,6 +965,13 @@ export function BackgroundInterview() {
                   />
                 ))}
               </div>
+              <span key={evalStage} className="animate-fadeSlideIn">
+                {evalStage === 0
+                  ? "Got it"
+                  : evalStage === 1
+                    ? "Thinking it through…"
+                    : "Putting together the next question…"}
+              </span>
             </div>
           )}
 

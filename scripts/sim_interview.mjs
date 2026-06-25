@@ -8,77 +8,24 @@
 // (including the prior-follow-ups guard so it never re-probes the same thread).
 
 import OpenAI from "openai";
+import { readFileSync } from "node:fs";
 
 const API = process.env.SIM_API || "http://localhost:3001";
 const PARTICIPANT_MODEL = process.env.SIM_PARTICIPANT_MODEL || "gpt-4o-mini";
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const only = process.argv[2]; // optional persona-name filter
 
-// Mirror of the live QUESTIONS (canonical text + criteria + caps).
-const QUESTIONS = [
-  {
-    field: "jobTitle",
-    text: "To start, what is your current role, and how long have you been in this job?",
-    evaluationStyle: "lenient",
-    maxFollowups: 1,
-    criteria: [
-      "Named their job title or role. Any brief mention is sufficient.",
-      "It is clear what field or industry they work in.",
-      "Indicated roughly how long they've been in this role — a rough range is enough, and a tenure cue ('first-year PhD', 'new grad') also satisfies this. Do NOT re-ask duration once present.",
-    ],
-  },
-  {
-    field: "responsibilities",
-    text: "What are your primary responsibilities at work?",
-    evaluationStyle: "lenient",
-    maxFollowups: 2,
-    minFollowups: 0,
-    criteria: [
-      "FLOOR — named at least one primary responsibility or area they own. If NONE ('a bit of everything'), follow up asking what they're mainly responsible for.",
-      "STAY AT OWNERSHIP ALTITUDE — map WHAT they own, not how they spend their time. Do NOT drill into the tasks under a responsibility (a later question covers that). Do NOT ask whether there are OTHER areas they're responsible for.",
-    ],
-  },
-  {
-    field: "typicalWeek",
-    text: "Walk me through a typical week. What are the recurring tasks you do?",
-    evaluationStyle: "lenient",
-    maxFollowups: 4,
-    minFollowups: 2,
-    criteria: [
-      "FLOOR — named at least one real recurring activity/task. If none, follow up asking what they regularly do.",
-      "BREADTH — if only ONE activity, acknowledge then ask whether there are others. If several distinct, covered.",
-      "SUBSTANCE — give the TASKS the work involves, not generic labels. If a central activity is a bare label, ask what they have to DO for it (the smaller tasks it breaks into) — NOT its topic. Probe ONE thread per turn.",
-      "DEEPEN THE CENTER — if ONE activity DOMINATES (e.g. a developer who mostly programs), drill into the DISTINCT KINDS of work within that core activity before broadening (e.g. 'what are the different kinds of programming work that come up?'). KINDS of work = tasks, not content. Only once the core is rich, rotate to smaller activities. If no activity dominates or the core is detailed, covered.",
-      "RESPONSIBILITY COVERAGE — if a responsibility named earlier does NOT map to a task they mentioned, follow up ONCE asking whether they regularly do anything on it. Probe ONE per turn.",
-    ],
-  },
-  {
-    field: "outputs",
-    text: "What do you produce or deliver in your work?",
-    evaluationStyle: "lenient",
-    maxFollowups: 2,
-    minFollowups: 0,
-    criteria: [
-      "FLOOR — named at least one concrete output/artifact. If NONE, follow up asking what they produce/maintain/deliver.",
-      "DELIVERY & UPKEEP (not building) — focus on FINISHING/DELIVERY: what they do to get it READY and OUT or keep it up to date (checking, formatting, approval, sending, maintenance). Do NOT re-ask how they build it. If clear or would just repeat building, covered.",
-      "BREADTH — if only ONE output, ask whether there are others. If several, covered.",
-    ],
-  },
-  {
-    field: "stakeholders",
-    text: "Who do you do your work for or with — the people, teams, or clients you deal with?",
-    evaluationStyle: "lenient",
-    maxFollowups: 1,
-    minFollowups: 0,
-    closingQuestion:
-      "Last one: if someone shadowed you for two weeks, what tasks would they see that we haven't named yet?",
-    criteria: [
-      "FLOOR — named at least one person/team/role/outside party they work for or with. If NONE, follow up asking who they work for or with.",
-      "RELATIONAL TASKS (PRIORITIZE) — surface the COMMUNICATION/INTERPERSONAL tasks each relationship carries. If a stakeholder is a bare label, follow up with a CLEAR plain question ('How do you usually interact with them?', 'What do you usually go to them for, or do for them?') — aim to NAME relational tasks, do NOT lead. Probe ONE relationship per turn.",
-      "BREADTH (secondary) — only if ONE party and others clearly exist; do NOT reflexively ask 'who else'.",
-    ],
-  },
-];
+// REVISED_STAKEHOLDERS=1 swaps in the depth-first stakeholders pass (chases the
+// communication TASKS per relationship instead of capping at one follow-up) — for
+// A/B'ing the fix to the #1 missed category (Coordination/Communication).
+const REV = process.env.REVISED_STAKEHOLDERS === "1";
+
+// Interview guide (spine topics, criteria, caps) loaded from the shared single
+// source of truth. REV swaps in the depth-first stakeholders variant.
+const GUIDE = JSON.parse(readFileSync(new URL("../prompts/interview-guide.json", import.meta.url)));
+const QUESTIONS = GUIDE.questions.map((q) =>
+  REV && q.field === "stakeholders" ? { ...q, ...GUIDE.stakeholdersRevised } : q,
+);
 
 const PERSONAS = [
   {
@@ -161,7 +108,7 @@ const PERSONAS = [
 async function participant(persona, question, history) {
   const res = await client.chat.completions.create({
     model: PARTICIPANT_MODEL,
-    temperature: 0.85,
+    temperature: 0.3,
     messages: [
       {
         role: "system",

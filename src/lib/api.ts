@@ -446,6 +446,32 @@ export async function gapProbe(
   }
 }
 
+// SparkMe-style adaptive planner interview (live v3). One decision step per call:
+// pass every Q/A asked so far plus the opaque `state` from the previous response;
+// get back the next question and updated state. First call: turns=[] → opening question.
+// done=true means the interview is over (the shadow catch-all was the last question).
+export interface PlannerStep {
+  question: string | null;
+  phase: 'open' | 'spine' | 'emergent' | 'shadow' | 'done';
+  gap: string | null;
+  done: boolean;
+  stopReason: string | null;
+  state: unknown;
+}
+
+export async function plannerNext(
+  turns: { question: string; answer: string }[],
+  state: unknown,
+): Promise<PlannerStep> {
+  const res = await fetch('/api/planner-next', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ turns, state }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 // Generate O*NET-style attention-check tasks tailored to the participant's role —
 // drawn from clearly unrelated occupations so a participant should always answer
 // "I don't do this". Caller can request `count`; server clamps to 1–20.

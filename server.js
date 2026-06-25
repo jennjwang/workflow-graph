@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { SUBTASK_WORKER_SYSTEM_PROMPT, INTERVIEW_TASK_EXTRACTOR_PROMPT, mentionedTasksBlock, buildAnchoredTaskSystemPrompt, buildGapProbeMessages } from './prompts/task-generator.js';
 import { evaluateAnswerMessages, rewordQuestionMessages, checkCoverageMessages } from './prompts/interview.js';
+import { plannerStep } from './prompts/planner.js';
 import { retrieveExemplarBlock } from './lib/retrieval.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -396,6 +397,26 @@ app.post('/api/gap-probe', async (req, res) => {
   } catch (err) {
     console.error('[gap-probe]', err);
     res.json({ areas: [] });   // fail open — never block the interview
+  }
+});
+
+// SparkMe-style ADAPTIVE PLANNER interview (live v3). One decision step per call:
+// process the latest answer, then return the next question — forced spine coverage,
+// then importance-ranked emergent gap-driving, then the shadow catch-all. The client
+// holds the opaque `state` blob and passes it back each turn (stateless server).
+// Fails open to the canonical opening question so a bad call never bricks the interview.
+app.post('/api/planner-next', async (req, res) => {
+  const { turns = [], state = null } = req.body;
+  if (!Array.isArray(turns)) {
+    return res.status(400).json({ error: 'turns must be an array' });
+  }
+  try {
+    const result = await plannerStep(client, { turns, state });
+    console.log(`[planner-next] turn=${turns.length} phase=${result.phase} done=${result.done}${result.stopReason ? ` stop=${result.stopReason}` : ''} q="${(result.question || '').slice(0, 60)}"`);
+    res.json(result);
+  } catch (err) {
+    console.error('[planner-next]', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
