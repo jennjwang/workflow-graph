@@ -73,25 +73,14 @@
       ]
     },
     {
-      "field": "distinctiveTasks",
-      "text": "What are some tasks you do that you think most others in your role don't?",
+      "field": "taskDifferences",
+      "text": "Think about others in the same profession — how do you think your tasks differ from theirs? Anything you do that they don't, or that they do that you don't?",
       "static": true,
       "evaluationStyle": "lenient",
       "maxFollowups": 1,
       "minFollowups": 0,
       "criteria": [
-        "FLOOR — named at least one task they do that's unusual for their role, OR clearly indicated there isn't one. A single example, or a plain 'nothing really' / 'not that I can think of', is enough — do NOT push or keep probing."
-      ]
-    },
-    {
-      "field": "excludedTasks",
-      "text": "And what are some tasks others do that you don't?",
-      "static": true,
-      "evaluationStyle": "lenient",
-      "maxFollowups": 1,
-      "minFollowups": 0,
-      "criteria": [
-        "FLOOR — named at least one task others in their role do that they don't, OR clearly indicated there isn't one. A single example, or a plain 'nothing comes to mind', is enough — do NOT push or keep probing."
+        "FLOOR — named at least one way their tasks differ from others in their role — either something they do that others don't, OR something others do that they don't. A single example in EITHER direction is enough, as is a plain 'my work is pretty typical' / 'nothing comes to mind' — do NOT push or keep probing."
       ]
     }
   ],
