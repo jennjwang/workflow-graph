@@ -323,8 +323,10 @@ async function extractMentionedTasks(backgroundTranscript, userProfile) {
     ],
   });
   const parsed = JSON.parse(response.choices[0].message.content);
+  // No cap — extract every task the participant mentioned; downstream decides
+  // what to show.
   return Array.isArray(parsed.tasks)
-    ? parsed.tasks.filter(t => typeof t === 'string' && t.trim()).map(t => t.trim()).slice(0, 30)
+    ? parsed.tasks.filter(t => typeof t === 'string' && t.trim()).map(t => t.trim())
     : [];
 }
 

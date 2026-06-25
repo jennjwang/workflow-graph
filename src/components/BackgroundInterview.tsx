@@ -128,14 +128,31 @@ const OUTRO_TEXT =
 const FINAL_CATCHALL =
   "Final question: if someone shadowed you for two weeks, what tasks would they see that we haven't named yet?";
 
+// Varied first-stage acknowledgements for the inter-question loader, so it
+// doesn't always read the same. One is picked at random each time.
+const ACK_MESSAGES = [
+  "Got it",
+  "Got that",
+  "Thanks!",
+  "Makes sense",
+  "Good to know",
+  "Noted",
+  "Perfect",
+  "Great, thanks",
+];
+
 // GAP PROBE: after the static passes + catch-all, the server assesses what the
 // participant has mentioned, finds substantive role-specific coverage gaps, and
 // returns up to GAP_MAX_AREAS open, non-leading questions to ask before the outro.
 const GAP_MAX_AREAS = 3;
 
-// The static passes + final catch-all fill the progress bar up to this fraction;
-// the rest is reserved for the gap-probe pass (whose length isn't known upfront).
+// The static passes fill the progress bar up to this fraction.
 const CORE_PROGRESS_MAX = 0.9;
+
+// The final catch-all ("Final question…") sits here — nearly closed, since it's
+// the last question the participant sees in the common case. The thin remainder
+// is reserved for any gap-probe questions that follow (often there are none).
+const CLOSING_PROGRESS = 0.97;
 
 // AUTO skip (#3): questions eligible to be skipped automatically when earlier
 // answers already cover their criteria. The opening role question and the
@@ -323,9 +340,11 @@ export function BackgroundInterview() {
   // SparkMe-style adaptive planner mode (live v3), opt-in via ?planner=1. When on,
   // every question after the opening is chosen by /api/planner-next (forced spine →
   // emergent gap-driving → shadow close) instead of the scripted spine + gap-probe.
+  // The v3 adaptive planner is the DEFAULT interviewer. Append ?planner=0 to opt
+  // out and run the static QUESTIONS flow instead (e.g. for comparison/testing).
   const PLANNER =
-    typeof window !== "undefined" &&
-    new URLSearchParams(window.location.search).get("planner") === "1";
+    typeof window === "undefined" ||
+    new URLSearchParams(window.location.search).get("planner") !== "0";
   const plannerStateRef = useRef<unknown>(null);
   const plannerTurnsRef = useRef<{ question: string; answer: string }[]>([]);
   const [plannerTurnCount, setPlannerTurnCount] = useState(0);
@@ -373,6 +392,8 @@ export function BackgroundInterview() {
   // LLM calls: evaluate → coverage → rephrase) reads as steady progress rather
   // than a frozen screen. Resets whenever evaluation starts/ends.
   const [evalStage, setEvalStage] = useState(0);
+  // A varied acknowledgement, picked fresh each time so it doesn't feel canned.
+  const [ackMsg, setAckMsg] = useState("Got it");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [questionVisible, setQuestionVisible] = useState(true);
 
@@ -429,15 +450,14 @@ export function BackgroundInterview() {
     : PLANNER
       ? Math.min(0.95, plannerTurnCount / 13)
       : isGapActive
-      ? CORE_PROGRESS_MAX +
-        (1 - CORE_PROGRESS_MAX) *
+      ? CLOSING_PROGRESS +
+        (1 - CLOSING_PROGRESS) *
           Math.min(1, (gapIdx + 0.5) / Math.max(1, gapAreas.length))
       : isClosingActive
-      ? // The catch-all is ALWAYS the final core step before gap-probe/outro, so
-        // pin it to the core ceiling regardless of how many questions were
-        // skipped (otherwise a skipped question leaves the bar short on "the last
-        // one").
-        CORE_PROGRESS_MAX
+      ? // The catch-all is the last question in the common case, so pin it
+        // nearly closed regardless of how many questions were skipped (otherwise
+        // a skipped question leaves the bar short on "the last one").
+        CLOSING_PROGRESS
       : CORE_PROGRESS_MAX *
         Math.min(
           1,
@@ -452,8 +472,9 @@ export function BackgroundInterview() {
       setEvalStage(0);
       return;
     }
-    const t1 = setTimeout(() => setEvalStage(1), 1100);
-    const t2 = setTimeout(() => setEvalStage(2), 3500);
+    setAckMsg(ACK_MESSAGES[Math.floor(Math.random() * ACK_MESSAGES.length)]);
+    const t1 = setTimeout(() => setEvalStage(1), 4000);
+    const t2 = setTimeout(() => setEvalStage(2), 7500);
     return () => {
       clearTimeout(t1);
       clearTimeout(t2);
@@ -685,6 +706,56 @@ export function BackgroundInterview() {
       setQuestionVisible(true);
     }
   };
+
+  // RESUME across a reload. Hydration restores the saved transcript into the
+  // store, but this component remounts with fresh refs (plannerTurnsRef = []) and
+  // would otherwise re-ask the opener — appending DUPLICATE opening turns and
+  // restarting the planner. If saved planner turns exist, rebuild the refs from
+  // them and jump straight to the NEXT question. The server re-derives coverage
+  // from the turns (state = null), so it skips already-covered topics.
+  const didResumeRef = useRef(false);
+  useEffect(() => {
+    if (didResumeRef.current) return;
+    didResumeRef.current = true;
+    if (!PLANNER) return;
+    const prior = useWorkflowStore
+      .getState()
+      .backgroundTranscript.filter(
+        (t) => t.field === "planner" && t.answer?.trim(),
+      );
+    if (prior.length === 0) return; // fresh interview — normal opener flow
+    plannerTurnsRef.current = prior.map((t) => ({
+      question: t.question,
+      answer: t.answer,
+    }));
+    convoRef.current = prior.map((t) => ({ q: t.question, a: t.answer }));
+    setPlannerTurnCount(prior.length);
+    setQuestionVisible(false);
+    setIsEvaluating(true);
+    (async () => {
+      try {
+        const r = await plannerNext(plannerTurnsRef.current, null);
+        plannerStateRef.current = r.state;
+        if (r.done || !r.question) {
+          setUserProfile({
+            ...answers,
+            jobTitle: prior[0].answer,
+          } as UserProfile);
+          await finishInterview();
+          return;
+        }
+        setFollowUpQ(r.question);
+      } catch (e) {
+        // Resume failed — fall back to the normal opener so the participant
+        // isn't stuck (worst case is the prior restart behavior, not a dead end).
+        console.error("[planner] resume failed:", e);
+      } finally {
+        setIsEvaluating(false);
+        setQuestionVisible(true);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const advance = async (value: string) => {
     const trimmed = value.trim();
@@ -967,10 +1038,10 @@ export function BackgroundInterview() {
               </div>
               <span key={evalStage} className="animate-fadeSlideIn">
                 {evalStage === 0
-                  ? "Got it"
+                  ? ackMsg
                   : evalStage === 1
                     ? "Thinking it through…"
-                    : "Putting together the next question…"}
+                    : "Following up on that…"}
               </span>
             </div>
           )}

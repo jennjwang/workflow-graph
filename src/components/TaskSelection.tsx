@@ -45,17 +45,15 @@ const RELEVANCE_OPTIONS: {
   { value: "unsure", label: "Unsure", answer: "no" },
 ];
 
-// Hard cap on the picker list (real tasks + spliced attention checks). This is
-// a BURNOUT budget — participants can only rate so many before fatigue — so the
-// generated list must never exceed it. The generator produces normalized +
-// gap-fill tasks freely; if the combined list exceeds this, the server
-// down-samples both groups, preserving their natural proportion.
-const MAX_TASKS = 15;
+// Ceiling on the generated list. We show ALL the participant's tasks — no
+// artificial max or min — so nothing they described gets dropped; this only
+// bounds pathological runs. The server caps the model at this and emits
+// everything it produces under it.
+const GENERATION_CEILING = 40;
 
-// Number of tasks the participant must rate before the "Finish early"
-// affordance unlocks. Pinned to MAX_TASKS so the threshold tracks the picker
-// cap — finishing early now means "after the full list".
-const DONE_THRESHOLD = MAX_TASKS;
+// Number of cards the participant must rate before the "Finish early" escape
+// unlocks — a burnout valve, independent of how long the full list is.
+const DONE_THRESHOLD = 15;
 
 // Master switch for attention checks. When false, none are fetched or spliced
 // into the picker (and the real-task budget reclaims their slots), so the
@@ -64,9 +62,8 @@ const ATTENTION_CHECKS_ENABLED = false;
 
 // Attention checks: O*NET-style tasks from clearly unrelated occupations,
 // spliced into the picker. Any honest participant marks them "I don't do this";
-// answering "yes" counts as a fail (see advance()). The count is part of the
-// MAX_TASKS budget — real tasks are capped at MAX_TASKS - ATTENTION_CHECK_COUNT
-// so the combined list never exceeds the burnout cap.
+// answering "yes" counts as a fail (see advance()). When enabled they splice in
+// on top of the full generated list.
 const ATTENTION_CHECK_COUNT = ATTENTION_CHECKS_ENABLED ? 2 : 0;
 
 // Used when the LLM call fails or returns too few items — guarantees the picker
@@ -87,6 +84,7 @@ function buildAttentionCheckItems(
   generated: string[],
   count: number,
 ): TaskItem[] {
+  if (count <= 0) return [];
   const seen = new Set<string>();
   const pool: string[] = [];
   for (const raw of [...generated, ...FALLBACK_ATTENTION_CHECKS]) {
@@ -420,12 +418,11 @@ export function TaskSelection() {
             })
           : Promise.resolve([] as string[]);
 
-        // Generate the real task list while the processing screen stays up, so
-        // the participant only reaches the intro/cards once every task is ready
-        // (no streaming-in behind the intro). Real tasks are capped at
-        // REAL_BUDGET = MAX_TASKS - ATTENTION_CHECK_COUNT so the spliced list
-        // never exceeds the burnout cap.
-        const REAL_BUDGET = MAX_TASKS - ATTENTION_CHECK_COUNT;
+        // Generate the full rewritten task list while the processing screen
+        // stays up, so the participant only reaches the cards once every task is
+        // ready. We show ALL the generated tasks — no max/min cap — so nothing
+        // they described gets dropped. (When attention checks are on, they
+        // splice in on top below.)
         let realCount = 0;
         const onTask = (
           name: string,
@@ -434,18 +431,15 @@ export function TaskSelection() {
           },
         ) => {
           realCount += 1;
-          setTasks((prev) => {
-            if (prev.length >= REAL_BUDGET) return prev;
-            return [
-              ...prev,
-              {
-                name,
-                originalName: name,
-                source: meta?.source,
-                status: "unreviewed",
-              },
-            ];
-          });
+          setTasks((prev) => [
+            ...prev,
+            {
+              name,
+              originalName: name,
+              source: meta?.source,
+              status: "unreviewed",
+            },
+          ]);
           if (realCount === 1) setLoadState("ready");
         };
         await generateTasksFromInterview(
@@ -455,7 +449,7 @@ export function TaskSelection() {
           userProfile.responsibilities,
           interviewTasks,
           (name, meta) => onTask(name, meta),
-          REAL_BUDGET,
+          GENERATION_CEILING,
           prolific.pid || useWorkflowStore.getState().sessionId,
         );
         // If the stream returned zero tasks (model fluke), surface an error
@@ -894,13 +888,12 @@ export function TaskSelection() {
             )}
         </div>
         <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
-          {/* Linear progress over the full picker (MAX_TASKS). isExhausted
-              still pegs to 100% so a short stream (fewer tasks than the cap)
-              shows a full bar when the participant finishes the last one. */}
+          {/* Linear progress over the full generated list (variable length).
+              isExhausted pegs to 100% on the last card. */}
           <div
             className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-violet-400 transition-all duration-500 ease-out"
             style={{
-              width: `${isExhausted ? 100 : Math.min((currentIdx / MAX_TASKS) * 100, 100)}%`,
+              width: `${isExhausted || tasks.length === 0 ? 100 : Math.min((currentIdx / tasks.length) * 100, 100)}%`,
             }}
           />
         </div>
@@ -1012,35 +1005,34 @@ function IntroScreen({ onStart }: { onStart: () => void }) {
             className="text-[1.4rem] sm:text-[1.65rem] font-light text-slate-800 leading-snug tracking-tight animate-fadeSlideUp"
             style={{ animationDelay: "80ms" }}
           >
-            A few tasks we think you might do.
+            Let's check what we heard.
           </h2>
           <p
             className="text-slate-500 mt-6 text-[15px] leading-[1.7] animate-fadeSlideUp"
             style={{ animationDelay: "160ms" }}
           >
-            We know the interview can't catch everything — routine,
-            behind-the-scenes work is the easiest to forget. To jog your memory,
-            here are some tasks you might do: a few common to roles like yours,
-            and a few we drew from what you told us.
+            From your interview, we pulled together the tasks below. This step
+            is just to make sure we captured your work correctly.
           </p>
           <p
             className="text-slate-500 mt-4 text-[15px] leading-[1.7] animate-fadeSlideUp"
             style={{ animationDelay: "220ms" }}
           >
-            Confirm which ones you actually do, and reword any that don't quite
-            match how you'd describe them.
+            Go through each one: confirm the tasks you actually do, drop the
+            ones you don't, and reword anything that doesn't quite match how
+            you'd describe it.
           </p>
           <div
             className="mt-6 px-5 py-4 rounded-xl border border-indigo-100 bg-indigo-50/60 animate-fadeSlideUp"
             style={{ animationDelay: "280ms" }}
           >
             <p className="text-sm font-semibold text-indigo-700 mb-1.5">
-              Why edit the task statements
+              Why edit the tasks
             </p>
             <p className="text-sm text-slate-600 leading-relaxed">
-              No one understands your work better than you do. Rewording tasks
-              to match how you'd actually describe them helps us understand your
-              role in a way that standardized descriptions might miss.
+              No one understands your work better than you do. Correcting and
+              rewording these tasks so they match what you actually do — and how
+              you'd describe it — is exactly what helps us get your role right.
             </p>
           </div>
           <div className="mt-6 space-y-4">
@@ -1360,124 +1352,82 @@ function HoursSummaryScreen({
           {/* my-auto centers the whole block vertically when it fits the panel,
               and collapses to scroll when the task list is long. */}
           <div className="my-auto w-full py-4">
-          {/* Heading + total bar */}
-          <div className="pb-4">
-            <h2 className="text-[1.5rem] font-light text-slate-800 leading-snug tracking-tight">
-              Your week at a glance
-            </h2>
-            <p className="text-sm text-slate-500 mt-2 leading-relaxed">
-              Here's how your hours add up across tasks. Drag a bar for a quick
-              estimate, then use −/+ to fine-tune to the half hour.
-            </p>
+            {/* Heading + total bar */}
+            <div className="pb-4">
+              <h2 className="text-[1.5rem] font-light text-slate-800 leading-snug tracking-tight">
+                Your week at a glance
+              </h2>
+              <p className="text-sm text-slate-500 mt-2 leading-relaxed">
+                Here's how your hours add up across tasks. Drag a bar for a
+                quick estimate, then use −/+ to fine-tune to the half hour.
+              </p>
 
-            {/* Total pill + stacked breakdown bar */}
-            <div className="mt-6 px-6 py-5 rounded-2xl bg-indigo-50/70">
-              <div>
-                <span className="text-3xl font-semibold text-indigo-600 tabular-nums align-middle">
-                  {formatHours(total)}
-                </span>
-                <span className="ml-2 text-sm text-slate-500 align-middle">
-                  hours / week across {taskCount} task
-                  {taskCount !== 1 ? "s" : ""}
-                </span>
-              </div>
+              {/* Total pill + stacked breakdown bar */}
+              <div className="mt-6 px-6 py-5 rounded-2xl bg-indigo-50/70">
+                <div>
+                  <span className="text-3xl font-semibold text-indigo-600 tabular-nums align-middle">
+                    {formatHours(total)}
+                  </span>
+                  <span className="ml-2 text-sm text-slate-500 align-middle">
+                    hours / week across {taskCount} task
+                    {taskCount !== 1 ? "s" : ""}
+                  </span>
+                </div>
 
-              <div className="mt-4 flex w-full h-12 rounded-xl overflow-hidden bg-indigo-100/60 ring-1 ring-inset ring-indigo-200/50">
-                {total > 0 ? (
-                  items.map((it, i) => {
-                    const pct = ((it.hours ?? 0) / total) * 100;
-                    if (pct <= 0) return null;
-                    return (
-                      <div
-                        key={it.key}
-                        className="flex items-center justify-center text-white text-sm font-semibold border-r-[3px] border-white last:border-r-0 overflow-hidden whitespace-nowrap transition-[width] duration-300 ease-out"
-                        style={{
-                          width: `${pct}%`,
-                          background: segmentColor(i),
-                          textShadow: "0 1px 2px rgba(15,23,42,0.18)",
-                        }}
-                        title={`${it.name}: ${formatHours(it.hours ?? 0)}h`}
-                      >
-                        {pct >= 6 ? formatHours(it.hours ?? 0) : ""}
-                      </div>
-                    );
-                  })
-                ) : (
-                  <div className="flex items-center justify-center w-full text-xs text-slate-400">
-                    Set hours below to see your week
-                  </div>
-                )}
+                <div className="mt-4 flex w-full h-12 rounded-xl overflow-hidden bg-indigo-100/60 ring-1 ring-inset ring-indigo-200/50">
+                  {total > 0 ? (
+                    items.map((it, i) => {
+                      const pct = ((it.hours ?? 0) / total) * 100;
+                      if (pct <= 0) return null;
+                      return (
+                        <div
+                          key={it.key}
+                          className="flex items-center justify-center text-white text-sm font-semibold border-r-[3px] border-white last:border-r-0 overflow-hidden whitespace-nowrap transition-[width] duration-300 ease-out"
+                          style={{
+                            width: `${pct}%`,
+                            background: segmentColor(i),
+                            textShadow: "0 1px 2px rgba(15,23,42,0.18)",
+                          }}
+                          title={`${it.name}: ${formatHours(it.hours ?? 0)}h`}
+                        >
+                          {pct >= 6 ? formatHours(it.hours ?? 0) : ""}
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="flex items-center justify-center w-full text-xs text-slate-400">
+                      Set hours below to see your week
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
 
-          {/* Task rows + footer flow together under the bar. */}
-          <div>
-            <div className="divide-y divide-slate-100">
-              {items.map((it, i) => (
-                <HoursSliderRow
-                  key={it.key}
-                  name={it.name}
-                  hours={it.hours}
-                  color={segmentColor(i)}
-                  badge={it.badge}
-                  onChange={it.onChange}
-                />
-              ))}
-            </div>
+            {/* Task rows + footer flow together under the bar. */}
+            <div>
+              <div className="divide-y divide-slate-100">
+                {items.map((it, i) => (
+                  <HoursSliderRow
+                    key={it.key}
+                    name={it.name}
+                    hours={it.hours}
+                    color={segmentColor(i)}
+                    badge={it.badge}
+                    onChange={it.onChange}
+                  />
+                ))}
+              </div>
 
-            {/* Footer — add-a-missed-task + Continue, just below the rows. */}
-            <div className="pt-4 pb-4 mt-2 border-t border-slate-100">
-            {/* Add a task they only thought of now — feeds the same added-task
+              {/* Footer — add-a-missed-task + Continue, just below the rows. */}
+              <div className="pt-4 pb-4 mt-2 border-t border-slate-100">
+                {/* Add a task they only thought of now — feeds the same added-task
                 flow, then needs its own hours set before they can continue. The
                 add action is embedded in the field (matches the review screen's
                 mic affordance) so it reads as one compact control. */}
-            <div className="relative">
-              <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-300">
-                <svg
-                  className="w-4 h-4"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <line x1="12" y1="5" x2="12" y2="19" />
-                  <line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
-              </span>
-              <input
-                type="text"
-                value={addInput}
-                onChange={(e) => setAddInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    submitAdd();
-                  }
-                }}
-                placeholder="Add a task we missed…"
-                className="w-full pl-10 pr-24 py-3 text-sm text-slate-700 placeholder:text-slate-400 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 transition"
-              />
-              <button
-                type="button"
-                onClick={submitAdd}
-                disabled={!addInput.trim()}
-                className="absolute right-2 top-1/2 -translate-y-1/2 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed text-white text-xs font-medium rounded-lg transition-all active:scale-[0.97]"
-              >
-                Add
-              </button>
-            </div>
-
-            {/* Over/under-budget warning — the per-task hours don't sum to the
-                weekly total they stated. One-click rescale, or add a task above. */}
-            {avgValid &&
-              Math.abs(total - (avgWeeklyHours as number)) >= 0.5 && (
-                <div className="mt-4 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-                  <div className="flex items-start gap-2">
+                <div className="relative">
+                  <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-300">
                     <svg
-                      className="w-4 h-4 mt-0.5 shrink-0 text-amber-500"
+                      className="w-4 h-4"
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
@@ -1485,48 +1435,91 @@ function HoursSummaryScreen({
                       strokeLinecap="round"
                       strokeLinejoin="round"
                     >
-                      <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-                      <line x1="12" y1="9" x2="12" y2="13" />
-                      <line x1="12" y1="17" x2="12.01" y2="17" />
+                      <line x1="12" y1="5" x2="12" y2="19" />
+                      <line x1="5" y1="12" x2="19" y2="12" />
                     </svg>
-                    <p className="text-sm text-amber-800 leading-relaxed">
-                      You said about{" "}
-                      <span className="font-semibold">
-                        {formatHours(avgWeeklyHours as number)}
-                      </span>{" "}
-                      hours/week, but your tasks add up to{" "}
-                      <span className="font-semibold">
-                        {formatHours(total)}
-                      </span>
-                      . Rescale them to match, or add a task you missed above.
-                    </p>
-                  </div>
+                  </span>
+                  <input
+                    type="text"
+                    value={addInput}
+                    onChange={(e) => setAddInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        submitAdd();
+                      }
+                    }}
+                    placeholder="Add a task we missed…"
+                    className="w-full pl-10 pr-24 py-3 text-sm text-slate-700 placeholder:text-slate-400 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 transition"
+                  />
                   <button
                     type="button"
-                    onClick={normalizeHoursToTotal}
-                    className="shrink-0 px-4 py-2.5 bg-white border border-amber-300 text-amber-700 hover:bg-amber-100 text-sm font-medium rounded-lg transition-all active:scale-[0.98]"
+                    onClick={submitAdd}
+                    disabled={!addInput.trim()}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed text-white text-xs font-medium rounded-lg transition-all active:scale-[0.97]"
                   >
-                    Rescale to {formatHours(avgWeeklyHours as number)}
+                    Add
                   </button>
                 </div>
-              )}
 
-            <div className="mt-4 flex items-center justify-end gap-3">
-              {!allFilled && (
-                <p className="text-xs text-slate-400">
-                  Enter hours for every task to continue.
-                </p>
-              )}
-              <button
-                onClick={() => onConfirm()}
-                disabled={!allFilled}
-                className="shrink-0 inline-flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed text-white text-sm font-medium rounded-full transition-all active:scale-[0.98] shadow-sm shadow-indigo-200"
-              >
-                Continue
-              </button>
+                {/* Over/under-budget warning — the per-task hours don't sum to the
+                weekly total they stated. One-click rescale, or add a task above. */}
+                {avgValid &&
+                  Math.abs(total - (avgWeeklyHours as number)) >= 0.5 && (
+                    <div className="mt-4 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                      <div className="flex items-start gap-2">
+                        <svg
+                          className="w-4 h-4 mt-0.5 shrink-0 text-amber-500"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                          <line x1="12" y1="9" x2="12" y2="13" />
+                          <line x1="12" y1="17" x2="12.01" y2="17" />
+                        </svg>
+                        <p className="text-sm text-amber-800 leading-relaxed">
+                          You said about{" "}
+                          <span className="font-semibold">
+                            {formatHours(avgWeeklyHours as number)}
+                          </span>{" "}
+                          hours/week, but your tasks add up to{" "}
+                          <span className="font-semibold">
+                            {formatHours(total)}
+                          </span>
+                          . Rescale them to match, or add a task you missed
+                          above.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={normalizeHoursToTotal}
+                        className="shrink-0 px-4 py-2.5 bg-white border border-amber-300 text-amber-700 hover:bg-amber-100 text-sm font-medium rounded-lg transition-all active:scale-[0.98]"
+                      >
+                        Rescale to {formatHours(avgWeeklyHours as number)}
+                      </button>
+                    </div>
+                  )}
+
+                <div className="mt-4 flex items-center justify-end gap-3">
+                  {!allFilled && (
+                    <p className="text-xs text-slate-400">
+                      Enter hours for every task to continue.
+                    </p>
+                  )}
+                  <button
+                    onClick={() => onConfirm()}
+                    disabled={!allFilled}
+                    className="shrink-0 inline-flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed text-white text-sm font-medium rounded-full transition-all active:scale-[0.98] shadow-sm shadow-indigo-200"
+                  >
+                    Continue
+                  </button>
+                </div>
+              </div>
             </div>
-          </div>
-          </div>
           </div>
         </div>
       )}
