@@ -136,6 +136,13 @@ NAME MUST BE SELF-EXPLANATORY. The task statement has to stand on its own — a 
 - ✓ "Draft software design documents to specify new feature requirements for engineering review." (specific output + audience)
 - ✗ "Write docs."                               (which docs?)
 
+RIGHT GRANULARITY — ONE ACTIVITY PER TASK. The "too broad" complaint is about GRANULARITY, not word choice: a single statement that bundles several DISTINCT activities reads as too coarse. A task that strings together different actions is really multiple tasks:
+- ✗ "Draft, revise, and publish research papers."          → drafting, revising, and submitting are THREE separate activities → three tasks.
+- ✗ "Write code and build research systems for experiments." → writing analysis code and building/maintaining systems are different work → split.
+- ✗ "Present findings and explain statistical concepts."     → presenting results and explaining concepts are two activities → split.
+- ✗ "Develop research questions and decide experiment setups." → two activities → split.
+Each distinct action the person does as its OWN piece of work gets its OWN task — that is the granularity participants expect. SPLIT a bundled statement; do NOT just reword it. KEEP combined ONLY when it is genuinely ONE continuous action, or a "such as" list of KINDS/CASES of the SAME action ("Clean and reshape raw data, such as removing duplicates and filling gaps"). TEST: if the verbs name things done at different times or as separate pieces of work, they are separate tasks. (This does NOT mean drop to sub-step level — "revise papers" is still a whole activity with its own sub-steps; it means don't fuse several whole activities into one line.)
+
 NEUTRAL PHRASING. Never use "our", "my", or "the team's" — write neutral articles ("the schedule", "a customer order", "students") instead.
 
 ONE THING PER TASK — PREFER SPLITTING. If you find yourself writing "X and Y" as a task name, that is a signal to OUTPUT TWO TASKS, not one merged task. Examples:
@@ -278,6 +285,34 @@ MECE IS THE MASTER CONSTRAINT. The mentioned tasks are evidence to be covered, N
 5. Cover ONLY what they actually described (rolled up). Do NOT add tasks they didn't mention — that's handled separately. NEVER manufacture overlapping or near-duplicate tasks.
 6. SELF-CHECK: (a) every recoverable mentioned task is represented — a vague or awkward one was REFORMULATED into a concrete task rather than dropped, and only genuinely meaningless mentions were left out; (b) each maps to exactly one output task; (c) no two output tasks overlap; (d) granularity is consistent O*NET level throughout.
 7. Total must not exceed ${count}. Output as few as faithfully covers their tasks.`;
+}
+
+// ── Gap-fill: INFERRED tasks the participant did NOT explicitly say ────────────
+//
+// Runs AFTER the anchored list is built. Adds a small number of recognition
+// tasks the participant likely does but never stated — but INFERRED FROM WHAT
+// THEY SAID, not occupation-wide. Each must be implied by their own
+// responsibilities / week / mentioned tasks, MECE with the already-built list,
+// and as specific as the rest. Emitted at LOW confidence, tagged source:'gap'.
+export function buildGapFillSystemPrompt(count, alreadyTasks = []) {
+  const haveBlock = alreadyTasks.length
+    ? `\n\nTASKS ALREADY IN THEIR LIST — do NOT repeat, restate, or add a KIND/CASE of any of these:\n${alreadyTasks.map((t) => `- ${t}`).join('\n')}`
+    : '';
+  return `You are adding a FEW inferred "you might also do this" tasks to a participant's task list. They have already described their job; the list of tasks they explicitly named is below. Your job: propose up to ${count} ADDITIONAL recurring tasks they very likely do but did NOT mention.
+
+THE HARD RULE — INFER FROM WHAT THEY SAID, NOT FROM THE JOB TITLE. Every task you add must be plausibly IMPLIED by something THIS participant actually described — their stated responsibilities, their typical week, or a task they named. It is a likely NEIGHBOR or NEXT-STEP of work they already do, not a generic duty of the occupation. For each one, you should be able to point to the specific thing they said that implies it. If the only reason to add a task is "people in this job usually do this", DROP it — that's the occupation-wide guessing we do NOT want.
+- ✓ They said they run experiments and write papers → "Respond to peer-review feedback and revise papers for resubmission." (implied next-step of submitting papers they mentioned)
+- ✓ They said they manage a team's work → "Hold one-on-one check-ins with team members about their progress and blockers." (implied by managing the team)
+- ✗ Generic filler with no anchor in their answers: "Keep records up to date", "Attend company meetings", "Respond to email", "Stay current with industry trends" — DROP unless they specifically pointed at it.
+
+CONSTRAINTS:
+- MECE with their existing list: each addition must be a genuinely DISTINCT activity, not a duplicate, restatement, or kind/case of a task already there.${haveBlock}
+- SPECIFIC and same shape as the rest: O*NET style, verb-led, 8–18 words, sentence case, terminal period, plain language. Name the actual artifact / audience / output — match the specificity of their other tasks, do NOT go vague.
+- QUALITY OVER QUANTITY. ${count} is a CEILING, not a target. Add only tasks with a real anchor in their answers; if only two are well-grounded, return two. Zero is fine.
+
+OUTPUT: one JSON object per line (JSONL), no array, no commentary:
+{"name": "...", "confidence": 0.0-1.0}
+These are INFERRED, so confidence is LOW by definition — use 0.1–0.3, higher only when the implication is very strong.`;
 }
 
 // ── Gap-probe: turn coverage gaps into OPEN interview questions ────────────────

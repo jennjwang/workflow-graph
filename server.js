@@ -3,7 +3,7 @@ import express from 'express';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { SUBTASK_WORKER_SYSTEM_PROMPT, INTERVIEW_TASK_EXTRACTOR_PROMPT, mentionedTasksBlock, buildAnchoredTaskSystemPrompt, buildGapProbeMessages } from './prompts/task-generator.js';
+import { SUBTASK_WORKER_SYSTEM_PROMPT, INTERVIEW_TASK_EXTRACTOR_PROMPT, mentionedTasksBlock, buildAnchoredTaskSystemPrompt, buildGapFillSystemPrompt, buildGapProbeMessages } from './prompts/task-generator.js';
 import { evaluateAnswerMessages, rewordQuestionMessages, checkCoverageMessages } from './prompts/interview.js';
 import { plannerStep } from './prompts/planner.js';
 import { retrieveExemplarBlock } from './lib/retrieval.js';
@@ -428,8 +428,9 @@ app.post('/api/planner-next', async (req, res) => {
 //      vague/short ones; verb-led, sentence case, ~8-18 words)
 //   2. Deduplicates / rolls up any that describe the same activity (MECE)
 //   3. Scores each with a confidence and streams them ranked most-confident first
-// Recognition gap-fill (tasks they did NOT mention) is intentionally NOT added —
-// the picker is pure validation of what they actually described.
+//   4. Adds a few INFERRED gap-fill tasks (PASS 2) — work they likely do but
+//      didn't say, inferred FROM their own answers (not occupation-wide) — at low
+//      confidence, tagged source:'gap'. Disable with GAPFILL_COUNT=0.
 app.post('/api/generate-tasks-from-interview', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -511,8 +512,41 @@ No surrounding array. No markdown. No commentary. Just one JSON object per line.
 
     for (const name of outNorm) sendEvent('task', { name, source: 'interview' });
 
+    // ── PASS 2: GAP-FILL — a few INFERRED tasks they likely do but didn't say,
+    //    inferred FROM their own answers (not occupation-wide). Emitted last, at
+    //    low confidence, tagged source:'gap' so they're mixed into the list but
+    //    distinguishable in the data. Fails open — any error just skips them. ──
+    const gapCount = Math.max(0, Number(process.env.GAPFILL_COUNT) || 6);
+    const gapNames = [];
+    if (gapCount > 0 && outNorm.length > 0) {
+      try {
+        const gapResp = await client.chat.completions.create({
+          model: MODEL,
+          temperature: 0.7,
+          messages: [
+            { role: 'system', content: buildGapFillSystemPrompt(gapCount, outNorm) },
+            { role: 'user', content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${interviewBlock}\n\nPropose up to ${gapCount} inferred tasks they likely do but did NOT mention, each implied by what they said above.` },
+          ],
+        });
+        const seen = new Set(outNorm.map((n) => n.toLowerCase().trim()));
+        for (const line of (gapResp.choices[0].message.content || '').split('\n')) {
+          const t = line.trim();
+          if (!t) continue;
+          try {
+            const obj = JSON.parse(t);
+            const name = String(obj.name || '').trim();
+            if (name && !seen.has(name.toLowerCase())) { seen.add(name.toLowerCase()); gapNames.push(name); }
+          } catch { /* skip non-JSON lines */ }
+        }
+        for (const name of gapNames.slice(0, gapCount)) sendEvent('task', { name, source: 'gap' });
+      } catch (gapErr) {
+        console.error('[generate-tasks-from-interview] gap-fill skipped:', gapErr.message);
+      }
+    }
+
     const confDebug = [...normalized].sort((a, b) => a.confidence - b.confidence).map((t) => t.confidence.toFixed(2)).join(',');
-    console.log(`[generate-tasks-from-interview] role=${jobTitle} mentioned=${interviewTasks.length} normalized=${normalized.length}->shown=${outNorm.length} conf=[${confDebug}]`);
+    console.log(`[generate-tasks-from-interview] role=${jobTitle} mentioned=${interviewTasks.length} normalized=${normalized.length}->shown=${outNorm.length} gapfill=${gapNames.length} conf=[${confDebug}]`);
+    for (const g of gapNames) console.log(`    + (gap) ${g}`);
     sendEvent('done', {});
     res.end();
   } catch (err) {
