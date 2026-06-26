@@ -44,7 +44,7 @@ const SHADOW_Q =
   BY_FIELD.stakeholders?.closingQuestion ||
   'Last one: if someone shadowed you for two weeks, what tasks would they see that we haven’t named yet?';
 
-const PLANNER_MODEL = process.env.PLANNER_MODEL || 'gpt-4o';
+const PLANNER_MODEL = process.env.PLANNER_MODEL || 'gpt-5.4';
 const COUNT_MODEL = process.env.SMALL_MODEL || 'gpt-4o-mini';
 // Hard post-check that rewrites yes/no-stem / example-laden / "how do you handle"
 // questions via rewriteOpen. Set PLANNER_REWRITE=0 to turn it OFF and rely purely

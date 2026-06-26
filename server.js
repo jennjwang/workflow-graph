@@ -20,7 +20,7 @@ const MODEL = process.env.MODEL || 'gpt-4o-mini';
 const SMALL_MODEL = process.env.SMALL_MODEL || 'gpt-4o-mini';
 // Model for rewording interview questions — gpt-4o-mini produced clunky/leading
 // phrasings, so this defaults to a stronger model.
-const QUESTION_MODEL = process.env.QUESTION_MODEL || 'gpt-4o';
+const QUESTION_MODEL = process.env.QUESTION_MODEL || 'gpt-5.4';
 // Model for the validation occupation screener. The screener is a hard gate
 // (a wrong reject burns a real recruit), so it defaults to a stronger model and
 // has its own knob, independent of the interview app's models.

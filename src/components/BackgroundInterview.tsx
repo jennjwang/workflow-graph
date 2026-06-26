@@ -122,6 +122,14 @@ const QUESTIONS: {
 const OUTRO_TEXT =
   "Great! From this quick interview, we'll generate a list of tasks for you to review and refine next.";
 
+// Intro screens shown once, before the first question — explain the process and ask
+// for detailed answers up front, since knowing what's coming tends to make people give
+// fuller responses from the start. Shown one at a time with a Continue button.
+const INTRO_SCREENS = [
+  "In a moment, an AI interviewer will ask you a few questions about your job and the tasks you do. From your answers, we'll put together a list of your tasks to review afterwards.",
+  "Please be as detailed and thorough as you can — including the smaller, less obvious tasks, not just the main ones. The more you share, the more complete your task list will be.",
+];
+
 // The catch-all is asked ONCE at the very end, as a final step before the outro —
 // independent of any single question, so it always runs even when the last
 // question(s) were auto- or manually skipped.
@@ -168,12 +176,22 @@ const AUTO_SKIP_FIELDS = new Set<string>([
 const POP_START = 30;
 const POP_STAGGER = 58;
 const POP_FADE = 600;
-function PopInText({ text, onDone }: { text: string; onDone?: () => void }) {
+function PopInText({
+  text,
+  onDone,
+  stagger = POP_STAGGER,
+  fade = POP_FADE,
+}: {
+  text: string;
+  onDone?: () => void;
+  stagger?: number;
+  fade?: number;
+}) {
   const [shown, setShown] = useState(false);
   useEffect(() => {
     const start = setTimeout(() => setShown(true), POP_START);
     const wordCount = text.split(" ").length;
-    const total = POP_START + (wordCount - 1) * POP_STAGGER + POP_FADE;
+    const total = POP_START + (wordCount - 1) * stagger + fade;
     const done = onDone ? setTimeout(onDone, total) : undefined;
     return () => {
       clearTimeout(start);
@@ -190,8 +208,8 @@ function PopInText({ text, onDone }: { text: string; onDone?: () => void }) {
             style={{
               opacity: shown ? 1 : 0,
               transform: shown ? "translateY(0)" : "translateY(10px)",
-              transition: `opacity ${POP_FADE}ms ease, transform ${POP_FADE}ms ease`,
-              transitionDelay: `${i * POP_STAGGER}ms`,
+              transition: `opacity ${fade}ms ease, transform ${fade}ms ease`,
+              transitionDelay: `${i * stagger}ms`,
             }}
           >
             {word}
@@ -394,6 +412,21 @@ export function BackgroundInterview() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [questionVisible, setQuestionVisible] = useState(true);
 
+  // Intro screens (how-to + process), shown once before the first question.
+  const [showIntro, setShowIntro] = useState(true);
+  const [introStep, setIntroStep] = useState(0);
+  // Continue button appears only once the words finish popping in.
+  const [introButtonReady, setIntroButtonReady] = useState(false);
+
+  const advanceIntro = () => {
+    setIntroButtonReady(false);
+    if (introStep < INTRO_SCREENS.length - 1) {
+      setIntroStep((s) => s + 1);
+    } else {
+      setShowIntro(false);
+    }
+  };
+
   // Closing thank-you screen, shown after the last question
   const [showOutro, setShowOutro] = useState(false);
   const [outroButtonReady, setOutroButtonReady] = useState(false);
@@ -442,24 +475,26 @@ export function BackgroundInterview() {
   // it the rest of the way toward the next step. The static passes + catch-all
   // fill up to CORE_PROGRESS_MAX; the remainder is reserved for the (dynamic)
   // gap-probe pass so the bar isn't pinned at 100% while gap questions remain.
-  const progress = showOutro
-    ? 1
-    : PLANNER
-      ? Math.min(0.95, plannerTurnCount / 13)
-      : isGapActive
-      ? CLOSING_PROGRESS +
-        (1 - CLOSING_PROGRESS) *
-          Math.min(1, (gapIdx + 0.5) / Math.max(1, gapAreas.length))
-      : isClosingActive
-      ? // The catch-all is the last question in the common case, so pin it
-        // nearly closed regardless of how many questions were skipped (otherwise
-        // a skipped question leaves the bar short on "the last one").
-        CLOSING_PROGRESS
-      : CORE_PROGRESS_MAX *
-        Math.min(
-          1,
-          (step + (isFollowUpActive ? 1 : 0.5)) / QUESTIONS.length,
-        );
+  const progress = showIntro
+    ? 0
+    : showOutro
+      ? 1
+      : PLANNER
+        ? Math.min(0.95, plannerTurnCount / 13)
+        : isGapActive
+          ? CLOSING_PROGRESS +
+            (1 - CLOSING_PROGRESS) *
+              Math.min(1, (gapIdx + 0.5) / Math.max(1, gapAreas.length))
+          : isClosingActive
+            ? // The catch-all is the last question in the common case, so pin it
+              // nearly closed regardless of how many questions were skipped (otherwise
+              // a skipped question leaves the bar short on "the last one").
+              CLOSING_PROGRESS
+            : CORE_PROGRESS_MAX *
+              Math.min(
+                1,
+                (step + (isFollowUpActive ? 1 : 0.5)) / QUESTIONS.length,
+              );
 
   // Advance the loading label while an answer is being processed: a quick
   // acknowledgement first, then a "thinking" message, then a reassurance if the
@@ -602,7 +637,11 @@ export function BackgroundInterview() {
     setIsClosingActive(false);
 
     const { backgroundTranscript, userProfile } = useWorkflowStore.getState();
-    const areas = await gapProbe(backgroundTranscript, userProfile, GAP_MAX_AREAS);
+    const areas = await gapProbe(
+      backgroundTranscript,
+      userProfile,
+      GAP_MAX_AREAS,
+    );
 
     if (!areas.length) {
       await finishInterview();
@@ -675,9 +714,16 @@ export function BackgroundInterview() {
     setQuestionVisible(false);
     setIsEvaluating(true);
     try {
-      console.log(`[planner] turn ${plannerTurnsRef.current.length} → calling /api/planner-next`);
-      const r = await plannerNext(plannerTurnsRef.current, plannerStateRef.current);
-      console.log(`[planner] ← phase=${r.phase} done=${r.done} stop=${r.stopReason ?? "-"} q=${JSON.stringify(r.question)}`);
+      console.log(
+        `[planner] turn ${plannerTurnsRef.current.length} → calling /api/planner-next`,
+      );
+      const r = await plannerNext(
+        plannerTurnsRef.current,
+        plannerStateRef.current,
+      );
+      console.log(
+        `[planner] ← phase=${r.phase} done=${r.done} stop=${r.stopReason ?? "-"} q=${JSON.stringify(r.question)}`,
+      );
       plannerStateRef.current = r.state;
       if (r.done || !r.question) {
         // Best-effort profile so downstream steps have a role label — the full
@@ -963,7 +1009,15 @@ export function BackgroundInterview() {
               transform: questionVisible ? "translateY(0)" : "translateY(10px)",
             }}
           >
-            {showOutro ? (
+            {showIntro ? (
+              <p className="text-[1.3rem] sm:text-[1.6rem] font-light text-slate-800 leading-[1.55] tracking-[-0.01em]">
+                <PopInText
+                  key={`intro-${introStep}`}
+                  text={INTRO_SCREENS[introStep]}
+                  onDone={() => setIntroButtonReady(true)}
+                />
+              </p>
+            ) : showOutro ? (
               <p className="text-[1.3rem] sm:text-[1.6rem] font-light text-slate-800 leading-[1.55] tracking-[-0.01em]">
                 <PopInText
                   key="outro"
@@ -979,11 +1033,60 @@ export function BackgroundInterview() {
                   </p>
                 )}
                 <p className="text-[1.4rem] sm:text-[1.75rem] font-light text-slate-800 leading-[1.4] sm:leading-[1.45] tracking-[-0.015em]">
-                  {displayQuestion}
+                  <PopInText key={displayQuestion} text={displayQuestion} stagger={38} fade={460} />
                 </p>
               </>
             )}
           </div>
+
+          {/* Action slot — Continue (intro) */}
+          {showIntro && (
+            <div
+              className="mt-10 flex flex-col items-start gap-5 transition-all duration-500"
+              style={{
+                opacity: introButtonReady ? 1 : 0,
+                transform: introButtonReady
+                  ? "translateY(0)"
+                  : "translateY(8px)",
+                pointerEvents: introButtonReady ? "auto" : "none",
+              }}
+            >
+              <button
+                onClick={advanceIntro}
+                className="inline-flex items-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-700
+                           text-white text-sm font-medium rounded-xl transition-all active:scale-95
+                           shadow-sm shadow-indigo-200"
+              >
+                {introStep < INTRO_SCREENS.length - 1 ? "Next" : "Begin"}
+                <svg
+                  className="w-4 h-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                  <polyline points="12 5 19 12 12 19" />
+                </svg>
+              </button>
+              {INTRO_SCREENS.length > 1 && (
+                <div className="flex gap-1.5">
+                  {INTRO_SCREENS.map((_, i) => (
+                    <span
+                      key={i}
+                      className={`h-1.5 rounded-full transition-all duration-300 ${
+                        i === introStep
+                          ? "w-5 bg-indigo-400"
+                          : "w-1.5 bg-slate-200"
+                      }`}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Action slot — Continue (outro) */}
           {showOutro && (
@@ -1044,23 +1147,27 @@ export function BackgroundInterview() {
           )}
 
           {/* Mic orb */}
-          {!showOutro && questionVisible && !showTextInput && !isEvaluating && (
-            <div className="flex flex-col items-center py-4 mb-8 gap-3">
-              <MicOrb
-                state={recordState}
-                onToggle={toggleRecording}
-                disabled={isEvaluating}
-              />
-              {recordTranscribeError && (
-                <p className="text-xs text-red-500 text-center">
-                  {recordTranscribeError}
-                </p>
-              )}
-            </div>
-          )}
+          {!showIntro &&
+            !showOutro &&
+            questionVisible &&
+            !showTextInput &&
+            !isEvaluating && (
+              <div className="flex flex-col items-center py-4 mb-8 gap-3">
+                <MicOrb
+                  state={recordState}
+                  onToggle={toggleRecording}
+                  disabled={isEvaluating}
+                />
+                {recordTranscribeError && (
+                  <p className="text-xs text-red-500 text-center">
+                    {recordTranscribeError}
+                  </p>
+                )}
+              </div>
+            )}
 
           {/* Text input */}
-          {showTextInput && !isEvaluating && (
+          {!showIntro && showTextInput && !isEvaluating && (
             <div className="space-y-3 mb-8">
               <div className="flex gap-2 items-end">
                 <textarea
@@ -1123,7 +1230,7 @@ export function BackgroundInterview() {
           )}
 
           {/* Type / speak toggle */}
-          {!showOutro && questionVisible && !isEvaluating && (
+          {!showIntro && !showOutro && questionVisible && !isEvaluating && (
             <div className="text-center">
               {showTextInput ? (
                 <button
