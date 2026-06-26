@@ -368,11 +368,12 @@ export async function generateTasksFromInterview(
   onTask: (name: string, meta?: { source?: 'interview' | 'gap' }) => void,
   count?: number,
   participant?: string,                              // records volunteered tasks as spontaneous mentions
+  backgroundTranscript?: { question: string; answer: string }[], // full Q/A — grounds gap-fill in their actual words/background
 ): Promise<void> {
   const res = await fetch('/api/generate-tasks-from-interview', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jobTitle, typicalWeek, responsibilities, interviewTasks, count, participant }),
+    body: JSON.stringify({ jobTitle, typicalWeek, responsibilities, interviewTasks, count, participant, backgroundTranscript }),
   });
   if (!res.ok || !res.body) throw new Error(await res.text());
   const reader = res.body.getReader();

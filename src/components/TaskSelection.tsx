@@ -450,6 +450,7 @@ export function TaskSelection() {
           (name, meta) => onTask(name, meta),
           GENERATION_CEILING,
           prolific.pid || useWorkflowStore.getState().sessionId,
+          backgroundTranscript,
         );
         // If the stream returned zero tasks (model fluke), surface an error
         // state so the participant sees something rather than a frozen loader.

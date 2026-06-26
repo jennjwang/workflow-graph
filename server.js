@@ -442,7 +442,11 @@ app.post('/api/generate-tasks-from-interview', async (req, res) => {
     res.flush?.();
   };
 
-  const { jobTitle, typicalWeek, responsibilities, interviewTasks = [], count, participant = null } = req.body;
+  const { jobTitle, typicalWeek, responsibilities, interviewTasks = [], count, participant = null, backgroundTranscript = [] } = req.body;
+  // Full Q/A transcript — used ONLY to ground gap-fill in the participant's
+  // actual words and background (seniority, domains, stakeholders like boards)
+  // that the short extracted-task list drops. Empty string if not provided.
+  const fullTranscript = Array.isArray(backgroundTranscript) ? transcriptFromTurns(backgroundTranscript) : '';
   // Burnout cap (tracks the picker). We show the participant's OWN tasks only —
   // the normalized MECE list of what they described — ranked by confidence and
   // capped at this ceiling.
@@ -525,7 +529,7 @@ No surrounding array. No markdown. No commentary. Just one JSON object per line.
           temperature: 0.7,
           messages: [
             { role: 'system', content: buildGapFillSystemPrompt(gapCount, outNorm) },
-            { role: 'user', content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${interviewBlock}\n\nPropose up to ${gapCount} inferred tasks they likely do but did NOT mention, each implied by what they said above.` },
+            { role: 'user', content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${interviewBlock}${fullTranscript ? `\n\nFULL INTERVIEW (their own words — read it for background, seniority, domains, and stakeholders like boards/investors that the task list above drops):\n${fullTranscript}` : ''}\n\nPropose up to ${gapCount} inferred tasks they likely do but did NOT mention, each implied by their described work OR their background above.` },
           ],
         });
         const seen = new Set(outNorm.map((n) => n.toLowerCase().trim()));

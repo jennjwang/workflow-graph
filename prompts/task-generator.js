@@ -290,20 +290,26 @@ MECE IS THE MASTER CONSTRAINT. The mentioned tasks are evidence to be covered, N
 // ── Gap-fill: INFERRED tasks the participant did NOT explicitly say ────────────
 //
 // Runs AFTER the anchored list is built. Adds a small number of recognition
-// tasks the participant likely does but never stated — but INFERRED FROM WHAT
-// THEY SAID, not occupation-wide. Each must be implied by their own
-// responsibilities / week / mentioned tasks, MECE with the already-built list,
-// and as specific as the rest. Emitted at LOW confidence, tagged source:'gap'.
+// tasks the participant likely does but never stated — inferred from THIS
+// SPECIFIC PERSON: both their described work AND their stated background
+// (seniority, domains, portfolio), pitched at their level. Not occupation-wide
+// title-padding. MECE with the already-built list, as specific as the rest.
+// Emitted at LOW confidence, tagged source:'gap'.
 export function buildGapFillSystemPrompt(count, alreadyTasks = []) {
   const haveBlock = alreadyTasks.length
     ? `\n\nTASKS ALREADY IN THEIR LIST — do NOT repeat, restate, or add a KIND/CASE of any of these:\n${alreadyTasks.map((t) => `- ${t}`).join('\n')}`
     : '';
   return `You are adding a FEW inferred "you might also do this" tasks to a participant's task list. They have already described their job; the list of tasks they explicitly named is below. Your job: propose up to ${count} ADDITIONAL recurring tasks they very likely do but did NOT mention.
 
-THE HARD RULE — INFER FROM WHAT THEY SAID, NOT FROM THE JOB TITLE. Every task you add must be plausibly IMPLIED by something THIS participant actually described — their stated responsibilities, their typical week, or a task they named. It is a likely NEIGHBOR or NEXT-STEP of work they already do, not a generic duty of the occupation. For each one, you should be able to point to the specific thing they said that implies it. If the only reason to add a task is "people in this job usually do this", DROP it — that's the occupation-wide guessing we do NOT want.
-- ✓ They said they run experiments and write papers → "Respond to peer-review feedback and revise papers for resubmission." (implied next-step of submitting papers they mentioned)
-- ✓ They said they manage a team's work → "Hold one-on-one check-ins with team members about their progress and blockers." (implied by managing the team)
-- ✗ Generic filler with no anchor in their answers: "Keep records up to date", "Attend company meetings", "Respond to email", "Stay current with industry trends" — DROP unless they specifically pointed at it.
+THE HARD RULE — INFER FROM THIS SPECIFIC PERSON, NOT FROM A GENERIC JOB TITLE. Anchor every task you add in something THIS participant actually told you — and use BOTH:
+  (a) their described WORK — the responsibilities, weekly tasks, and activities they named; and
+  (b) their stated BACKGROUND — their seniority and level, the years and roles of experience they mention, the specific industries / domains / clients / institutions they name, and the full portfolio of practices they say they operate (e.g. someone who advises boards, spans consulting + teaching + coaching, or has 25 years in senior leadership).
+Use that background RICHLY: surface the tasks that a person with THAT background, operating at THAT level, doing THIS described work, very likely also does. A good addition is a likely NEIGHBOR, NEXT-STEP, or LEVEL-APPROPRIATE counterpart of what they described or who they are — e.g. a senior leader who names board members and investors among their stakeholders very likely does board-level / governance advisory, even if they didn't list it as a task.
+PITCH AT THEIR LEVEL. Match the seniority and framing of their actual work: for a senior, strategic, or advisory professional the inferred tasks should be senior and strategic (shaping strategy, advising leadership/boards, governance), NOT junior execution.
+What to DROP: generic filler whose ONLY justification is "people with this title usually do this", with no anchor in who THIS person is or what they described. The test is specificity to THEM (their work AND their background), not avoidance of inference.
+- ✓ Runs experiments and writes papers → "Respond to peer-review feedback and revise papers for resubmission." (next-step of submitting papers)
+- ✓ Background: 25 years senior leadership, names board members/investors among stakeholders → "Provide board-level and governance advisory on strategic decisions to senior leadership." (implied by their seniority + stated board interactions)
+- ✗ Generic filler with no anchor in their work OR background: "Keep records up to date", "Attend company meetings", "Respond to email" — DROP unless they specifically pointed at it.
 
 CONSTRAINTS:
 - MECE with their existing list: each addition must be a genuinely DISTINCT activity, not a duplicate, restatement, or kind/case of a task already there.${haveBlock}
