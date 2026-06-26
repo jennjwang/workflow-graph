@@ -1014,6 +1014,8 @@ export function BackgroundInterview() {
                 <PopInText
                   key={`intro-${introStep}`}
                   text={INTRO_SCREENS[introStep]}
+                  stagger={38}
+                  fade={460}
                   onDone={() => setIntroButtonReady(true)}
                 />
               </p>

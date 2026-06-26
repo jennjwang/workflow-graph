@@ -491,27 +491,6 @@ export async function generateAttentionChecks(
   return Array.isArray(data.tasks) ? data.tasks.filter((t: unknown) => typeof t === 'string') : [];
 }
 
-export interface AiDerivedItem {
-  name: string;
-  kind: 'task' | 'responsibility';
-}
-
-// Generates work items (tasks OR new responsibilities) that emerged in this
-// participant's job because of their AI usage. Distinct from generateTasksForCategory,
-// which maps the role's broad MECE coverage.
-export async function generateAiTasks(
-  userProfile: { jobTitle: string; responsibilities?: string; typicalWeek?: string; aiUsage: string },
-): Promise<AiDerivedItem[]> {
-  const res = await fetch('/api/generate-ai-tasks', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(userProfile),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  const data = await res.json();
-  return Array.isArray(data.items) ? data.items : [];
-}
-
 export async function transcribeAudio(blob: Blob): Promise<string> {
   const base64 = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
