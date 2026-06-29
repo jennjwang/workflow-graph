@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { Node, Edge, applyEdgeChanges, EdgeChange, Connection, addEdge } from '@xyflow/react';
 import { v4 as uuidv4 } from 'uuid';
-import { WorkflowNodeData, Message, GraphUpdate, Phase, NodeType, UserProfile, TaskCategory, TaskItem, DiscoveryNodeData, DiscoveryLevel, DiscoveryStatus, BackgroundTurn, BonusSnapshot, StudyCondition } from './types';
+import { WorkflowNodeData, Message, GraphUpdate, Phase, NodeType, TaskCategory, TaskItem, DiscoveryNodeData, DiscoveryLevel, DiscoveryStatus, BackgroundTurn, BonusSnapshot, StudyCondition, OccupationSelection } from './types';
 import {
   levenshtein,
   mappingEditBonusUsd,
@@ -56,8 +56,6 @@ interface WorkflowStore {
   setProlific: (p: Partial<ProlificContext>) => void;
 
   // Phase 1 — background
-  userProfile: UserProfile;
-  setUserProfile: (profile: UserProfile) => void;
   backgroundTranscript: BackgroundTurn[];
   addBackgroundTurn: (turn: BackgroundTurn) => void;
   bonusSnapshot: BonusSnapshot | null;
@@ -194,6 +192,9 @@ interface WorkflowStore {
   // the time-allocation section (distinct from the sum of per-task hours).
   avgWeeklyHours: number | null;
   setAvgWeeklyHours: (hours: number | null) => void;
+  // Participant occupation self-ID, captured on the final 'occupation-select' screen.
+  occupationSelection: OccupationSelection | null;
+  setOccupationSelection: (sel: OccupationSelection) => void;
   addMessage: (role: 'user' | 'assistant', content: string) => void;
   setLoading: (loading: boolean) => void;
   applyGraphUpdates: (updates: GraphUpdate[]) => void;
@@ -279,14 +280,6 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   prolific: initialProlific,
   setProlific: (p) => set(state => ({ prolific: { ...state.prolific, ...p } })),
 
-  userProfile: {
-    responsibilities: '',
-    jobTitle: '',
-    typicalWeek: '',
-    outputs: '',
-    stakeholders: '',
-  },
-  setUserProfile: (userProfile) => set({ userProfile }),
   backgroundTranscript: [],
   addBackgroundTurn: (turn) =>
     set(state => ({ backgroundTranscript: [...state.backgroundTranscript, turn] })),
@@ -752,6 +745,8 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     set({ experienceRating, feedback, interviewRating, interviewComment, selectionRating, selectionComment }),
   avgWeeklyHours: null,
   setAvgWeeklyHours: (avgWeeklyHours) => set({ avgWeeklyHours }),
+  occupationSelection: null,
+  setOccupationSelection: (occupationSelection) => set({ occupationSelection }),
   setLoading: (isLoading) => set({ isLoading }),
   setEditingNodeId: (editingNodeId) => set({ editingNodeId }),
 
@@ -938,7 +933,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     }),
 
   getExportData: () => {
-    const { sessionId, externalId, condition, status, prolific, userProfile, backgroundTranscript, selectedTasks, taskItems, taskCategories, interviewExtractedTasks, coreTask, typicalWorkflow, bonusSnapshot, nodes, edges, messages, taskWorkflows, currentTaskIdx, experienceRating, feedback, interviewRating, interviewComment, selectionRating, selectionComment, avgWeeklyHours, sessionStartedAt, phaseEnteredAt, mappingEditChars, mappingAddedNodes } = get();
+    const { sessionId, externalId, condition, status, prolific, backgroundTranscript, selectedTasks, taskItems, taskCategories, interviewExtractedTasks, coreTask, typicalWorkflow, bonusSnapshot, nodes, edges, messages, taskWorkflows, currentTaskIdx, experienceRating, feedback, interviewRating, interviewComment, selectionRating, selectionComment, avgWeeklyHours, occupationSelection, sessionStartedAt, phaseEnteredAt, mappingEditChars, mappingAddedNodes } = get();
     // Live-computed mapping bonus, recorded on every save so the persisted
     // session always reflects what the participant has earned so far in the
     // workflow-mapping phase (raw counters are alongside for verification).
@@ -975,7 +970,6 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
       completed,
       completedAt,
       prolific,
-      userProfile,
       backgroundTranscript,
       interviewExtractedTasks,
       taskCategories,
@@ -997,6 +991,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
       selectionRating,
       selectionComment,
       avgWeeklyHours,
+      occupationSelection,
       sessionStartedAt,
       phaseEnteredAt,
       exportedAt: new Date().toISOString(),
@@ -1037,9 +1032,6 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     if (typeof d.status === 'string' && state.status === null) {
       next.status = d.status;
     }
-    if (d.userProfile && typeof d.userProfile === 'object') {
-      next.userProfile = { ...state.userProfile, ...(d.userProfile as Partial<UserProfile>) };
-    }
     if (Array.isArray(d.backgroundTranscript)) next.backgroundTranscript = d.backgroundTranscript as BackgroundTurn[];
     if (Array.isArray(d.taskCategories)) next.taskCategories = d.taskCategories as TaskCategory[];
     if (Array.isArray(d.selectedTasks)) next.selectedTasks = d.selectedTasks as string[];
@@ -1063,6 +1055,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     if (typeof d.selectionRating === 'number') next.selectionRating = d.selectionRating;
     if (typeof d.selectionComment === 'string') next.selectionComment = d.selectionComment;
     if (typeof d.avgWeeklyHours === 'number') next.avgWeeklyHours = d.avgWeeklyHours;
+    if (d.occupationSelection && typeof d.occupationSelection === 'object') next.occupationSelection = d.occupationSelection as OccupationSelection;
     if (d.phaseEnteredAt && typeof d.phaseEnteredAt === 'object') {
       next.phaseEnteredAt = d.phaseEnteredAt as WorkflowStore['phaseEnteredAt'];
     }

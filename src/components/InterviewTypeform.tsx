@@ -142,7 +142,7 @@ export function InterviewTypeform({ onShowMap, mapVisible }: Props) {
   const {
     sessionId, coreTask, messages, isLoading,
     addMessage, setLoading, applyGraphUpdates, nodes, getExportData,
-    userProfile, selectedTasks,
+    selectedTasks,
   } = useWorkflowStore(useShallow(s => ({
     sessionId: s.sessionId,
     coreTask: s.coreTask,
@@ -153,7 +153,6 @@ export function InterviewTypeform({ onShowMap, mapVisible }: Props) {
     applyGraphUpdates: s.applyGraphUpdates,
     nodes: s.nodes,
     getExportData: s.getExportData,
-    userProfile: s.userProfile,
     selectedTasks: s.selectedTasks,
   })));
 
@@ -185,7 +184,7 @@ export function InterviewTypeform({ onShowMap, mapVisible }: Props) {
     hasKickedOff.current = true;
     const kickoff = [{ id: '__kickoff__', role: 'user' as const, content: KICKOFF_MESSAGE, timestamp: 0 }];
     setLoading(true);
-    sendChatMessage(kickoff, coreTask, [], true, userProfile, selectedTasks)
+    sendChatMessage(kickoff, coreTask, [], true, selectedTasks)
       .then(({ message, graphUpdates, suggestions: s }) => {
         addMessage('assistant', message);
         if (graphUpdates.length) applyGraphUpdates(graphUpdates);
@@ -215,7 +214,7 @@ export function InterviewTypeform({ onShowMap, mapVisible }: Props) {
         { id: '__new__', role: 'user' as const, content, timestamp: Date.now() },
       ];
       const nodeSnapshot = nodes.map(n => ({ id: n.id, type: n.type as string, label: n.data.label }));
-      const { message, graphUpdates, suggestions: s } = await sendChatMessage(allMessages, coreTask, nodeSnapshot, false, userProfile, selectedTasks);
+      const { message, graphUpdates, suggestions: s } = await sendChatMessage(allMessages, coreTask, nodeSnapshot, false, selectedTasks);
       addMessage('assistant', message);
       if (graphUpdates.length) {
         applyGraphUpdates(graphUpdates);

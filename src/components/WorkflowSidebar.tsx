@@ -77,7 +77,7 @@ export function WorkflowSidebar() {
   const {
     sessionId, coreTask, messages, isLoading,
     addMessage, setLoading, applyGraphUpdates, nodes, getExportData,
-    userProfile, selectedTasks,
+    selectedTasks,
   } = useWorkflowStore(useShallow(s => ({
     sessionId: s.sessionId,
     coreTask: s.coreTask,
@@ -88,7 +88,6 @@ export function WorkflowSidebar() {
     applyGraphUpdates: s.applyGraphUpdates,
     nodes: s.nodes,
     getExportData: s.getExportData,
-    userProfile: s.userProfile,
     selectedTasks: s.selectedTasks,
   })));
 
@@ -112,7 +111,7 @@ export function WorkflowSidebar() {
     hasKickedOff.current = true;
     const kickoff = [{ id: '__kickoff__', role: 'user' as const, content: KICKOFF_MESSAGE, timestamp: 0 }];
     setLoading(true);
-    sendChatMessage(kickoff, coreTask, [], true, userProfile, selectedTasks)
+    sendChatMessage(kickoff, coreTask, [], true, selectedTasks)
       .then(({ message, graphUpdates, suggestions: s }) => {
         addMessage('assistant', message);
         if (graphUpdates.length) applyGraphUpdates(graphUpdates);
@@ -146,7 +145,7 @@ export function WorkflowSidebar() {
       ];
       const nodeSnapshot = nodes.map(n => ({ id: n.id, type: n.type as string, label: n.data.label }));
       const { message, graphUpdates, suggestions: s } = await sendChatMessage(
-        allMessages, coreTask, nodeSnapshot, false, userProfile, selectedTasks
+        allMessages, coreTask, nodeSnapshot, false, selectedTasks
       );
       addMessage('assistant', message);
       if (graphUpdates.length) {

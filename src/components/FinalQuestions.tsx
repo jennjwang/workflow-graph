@@ -144,7 +144,7 @@ export function FinalQuestions() {
     try {
       await saveSession(sessionId, undefined, undefined, undefined, payload);
     } catch {
-      // Best-effort — proceed to the thank-you screen regardless.
+      // Best-effort — proceed regardless.
     }
     setPhase("study-complete");
   }

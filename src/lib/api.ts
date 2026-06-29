@@ -1,4 +1,4 @@
-import { Message, GraphUpdate, UserProfile } from '../types';
+import { Message, GraphUpdate } from '../types';
 
 export interface Suggestion {
   label: string;
@@ -101,14 +101,13 @@ export async function sendHandoffMessage(
   nodes: { id: string; type: string; label: string; actor?: string }[],
   edges: { source: string; target: string }[],
   coreTask: string,
-  userProfile: UserProfile | null,
   onGraphUpdate?: (update: GraphUpdate) => void,
   onSuggestions?: (items: SuggestionSet['items']) => void,
 ): Promise<{ message: string }> {
   const res = await fetch('/api/handoff-chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages, nodes, edges, coreTask, userProfile }),
+    body: JSON.stringify({ messages, nodes, edges, coreTask }),
   });
   if (!res.ok) throw new Error(await res.text());
 
@@ -241,7 +240,6 @@ export async function sendChatMessage(
   coreTask: string,
   nodes: { id: string; type: string; label: string }[],
   skipSuggestions = false,
-  userProfile?: UserProfile | null,
   selectedTasks?: string[],
   typicalWorkflow?: string[] | null,
   onGraphUpdate?: (update: GraphUpdate) => void,
@@ -251,7 +249,7 @@ export async function sendChatMessage(
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages, coreTask, nodes, skipSuggestions, userProfile, selectedTasks, typicalWorkflow }),
+    body: JSON.stringify({ messages, coreTask, nodes, skipSuggestions, selectedTasks, typicalWorkflow }),
   });
   if (!res.ok) throw new Error(await res.text());
 
@@ -362,18 +360,17 @@ export async function fetchInterviewQuestion(
 // importance gap-fill — streaming one flat list over SSE.
 export async function generateTasksFromInterview(
   jobTitle: string,
-  typicalWeek: string,
-  responsibilities: string | undefined,
   interviewTasks: string[],
   onTask: (name: string, meta?: { source?: 'interview' | 'gap' }) => void,
   count?: number,
   participant?: string,                              // records volunteered tasks as spontaneous mentions
   backgroundTranscript?: { question: string; answer: string }[], // full Q/A — grounds gap-fill in their actual words/background
+  occupationCode?: string,                           // self-identified O*NET-SOC code → exact retrieval lookup
 ): Promise<void> {
   const res = await fetch('/api/generate-tasks-from-interview', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jobTitle, typicalWeek, responsibilities, interviewTasks, count, participant, backgroundTranscript }),
+    body: JSON.stringify({ jobTitle, occupationCode, interviewTasks, count, participant, backgroundTranscript }),
   });
   if (!res.ok || !res.body) throw new Error(await res.text());
   const reader = res.body.getReader();
@@ -405,12 +402,11 @@ export async function generateTasksFromInterview(
 // reflects what the participant said, not just what's typical for the role.
 export async function extractInterviewTasks(
   backgroundTranscript: { field: string; question: string; answer: string; isFollowUp: boolean; timestamp: number }[],
-  userProfile?: { jobTitle?: string; responsibilities?: string },
 ): Promise<string[]> {
   const res = await fetch('/api/extract-interview-tasks', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ backgroundTranscript, userProfile }),
+    body: JSON.stringify({ backgroundTranscript }),
   });
   if (!res.ok) throw new Error(await res.text());
   const data = await res.json();
@@ -429,14 +425,13 @@ export interface GapArea {
 // Fails open — returns [] on any error so the interview can always finish.
 export async function gapProbe(
   backgroundTranscript: { field: string; question: string; answer: string; isFollowUp: boolean; timestamp: number }[],
-  userProfile?: { jobTitle?: string; responsibilities?: string; typicalWeek?: string },
   maxAreas = 3,
 ): Promise<GapArea[]> {
   try {
     const res = await fetch('/api/gap-probe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ backgroundTranscript, userProfile, maxAreas }),
+      body: JSON.stringify({ backgroundTranscript, maxAreas }),
     });
     if (!res.ok) return [];
     const data = await res.json();
@@ -477,14 +472,12 @@ export async function plannerNext(
 // "I don't do this". Caller can request `count`; server clamps to 1–20.
 export async function generateAttentionChecks(
   jobTitle: string,
-  responsibilities?: string,
-  typicalWeek?: string,
   count = 8,
 ): Promise<string[]> {
   const res = await fetch('/api/generate-attention-checks', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jobTitle, responsibilities, typicalWeek, count }),
+    body: JSON.stringify({ jobTitle, count }),
   });
   if (!res.ok) throw new Error(await res.text());
   const data = await res.json();

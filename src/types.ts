@@ -75,7 +75,27 @@ export interface GraphUpdate {
   input: Record<string, unknown>;
 }
 
-export type Phase = 'setup' | 'background' | 'graph-discovery' | 'task-selection' | 'task-priority' | 'final-questions' | 'study-complete' | 'screen-out' | 'workflow-kickoff' | 'workflow' | 'actor-assignment' | 'handoff-interview' | 'complete';
+export type Phase = 'setup' | 'background' | 'graph-discovery' | 'task-selection' | 'task-priority' | 'final-questions' | 'occupation-select' | 'study-complete' | 'screen-out' | 'workflow-kickoff' | 'workflow' | 'actor-assignment' | 'handoff-interview' | 'complete';
+
+// One O*NET-SOC occupation shown on the occupation self-ID screen.
+export interface OccupationCandidate {
+  code: string;        // O*NET-SOC code, e.g. "15-1252.00"
+  title: string;
+  definition?: string;
+  why?: string;        // model's one-line reason (shown candidates only)
+}
+
+// The participant's occupation self-identification, captured on the occupation
+// self-ID screen (shown after the interview, before task selection).
+export interface OccupationSelection {
+  selectedCode: string;                  // the SOC the participant identified with
+  selectedTitle: string;
+  fromSearch: boolean;                   // true if picked via free search rather than a shown candidate
+  shownSets: OccupationCandidate[][];    // every model-suggested set shown (incl. after "show different")
+  rejectedCodes: string[];               // codes cycled past via "show different"
+  hints: string[];                       // steerable hints the participant gave
+  selectedAt: number;                    // epoch ms
+}
 
 // Study condition selected via the ?cond= URL param. `full` runs all three
 // parts (background → task selection → task decomposition). `short` skips
@@ -98,21 +118,6 @@ export interface DiscoveryNodeData extends Record<string, unknown> {
   frequency?: DiscoveryFrequency;
   aiUse?: DiscoveryAiUse;
   aiHowSo?: string[];
-}
-
-export interface UserProfile {
-  // Free-form answer to "What do you do at work? What are your primary responsibilities?"
-  responsibilities: string;
-  // Role + field, from the opening question ("What's your current role and field?").
-  jobTitle: string;
-  typicalWeek: string;
-  // Output pass: what the participant produces, maintains, approves, sends, or
-  // delivers — task elicitation via the artifacts they own.
-  outputs: string;
-  // Stakeholder pass: who the participant does work for or with — task
-  // elicitation via the social side of work (interdependence, coordination,
-  // external interaction, feedback).
-  stakeholders: string;
 }
 
 export interface BackgroundTurn {

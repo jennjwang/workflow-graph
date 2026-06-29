@@ -49,7 +49,7 @@ const RELEVANCE_OPTIONS: {
 // artificial max or min — so nothing they described gets dropped; this only
 // bounds pathological runs. The server caps the model at this and emits
 // everything it produces under it.
-const GENERATION_CEILING = 40;
+const GENERATION_CEILING = 30;
 
 // Number of cards the participant must rate before the "Finish early" escape
 // unlocks — a burnout valve, independent of how long the full list is.
@@ -252,8 +252,8 @@ function formatUsd(n: number) {
 
 export function TaskSelection() {
   const {
-    userProfile,
     backgroundTranscript,
+    occupationSelection,
     setSelectedTasks,
     setTaskItems,
     setBonusSnapshot,
@@ -265,8 +265,8 @@ export function TaskSelection() {
     setAvgWeeklyHours,
   } = useWorkflowStore(
     useShallow((s) => ({
-      userProfile: s.userProfile,
       backgroundTranscript: s.backgroundTranscript,
+      occupationSelection: s.occupationSelection,
       setSelectedTasks: s.setSelectedTasks,
       setTaskItems: s.setTaskItems,
       setBonusSnapshot: s.setBonusSnapshot,
@@ -382,14 +382,19 @@ export function TaskSelection() {
       // Keep the "Processing your interview…" screen up for the whole
       // extraction + generation pass, with a 1.2s floor so it never flashes.
       const minDisplay = new Promise((r) => setTimeout(r, 1200));
+      // Grounding role for task generation / occupation-matched retrieval. Prefer
+      // the O*NET occupation the participant self-identified with on the prior
+      // occupation-select screen (a clean, canonical title); fall back to the
+      // opening turn of the interview if they somehow skipped it.
+      const jobTitle =
+        occupationSelection?.selectedTitle?.trim() ||
+        backgroundTranscript.find((t) => t.answer?.trim())?.answer ||
+        "";
       try {
         // Extract interview tasks first (grounding for generation).
         let interviewTasks: string[] = [];
         try {
-          interviewTasks = await extractInterviewTasks(backgroundTranscript, {
-            jobTitle: userProfile.jobTitle,
-            responsibilities: userProfile.responsibilities,
-          });
+          interviewTasks = await extractInterviewTasks(backgroundTranscript);
           setInterviewExtractedTasks(interviewTasks);
         } catch (e) {
           console.warn(
@@ -405,9 +410,7 @@ export function TaskSelection() {
         // Skipped entirely when attention checks are disabled.
         const attnPromise = ATTENTION_CHECKS_ENABLED
           ? generateAttentionChecks(
-              userProfile.jobTitle,
-              userProfile.responsibilities,
-              userProfile.typicalWeek,
+              jobTitle,
               ATTENTION_CHECK_COUNT + 2,
             ).catch((e) => {
               console.warn(
@@ -443,14 +446,13 @@ export function TaskSelection() {
           if (realCount === 1) setLoadState("ready");
         };
         await generateTasksFromInterview(
-          userProfile.jobTitle,
-          userProfile.typicalWeek,
-          userProfile.responsibilities,
+          jobTitle,
           interviewTasks,
           (name, meta) => onTask(name, meta),
           GENERATION_CEILING,
           prolific.pid || useWorkflowStore.getState().sessionId,
           backgroundTranscript,
+          occupationSelection?.selectedCode,
         );
         // If the stream returned zero tasks (model fluke), surface an error
         // state so the participant sees something rather than a frozen loader.

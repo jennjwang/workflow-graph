@@ -27,7 +27,6 @@ export function ScreenOut() {
     if (hasSaved.current) return;
     hasSaved.current = true;
     const exportData = getExportData() as {
-      userProfile: unknown;
       backgroundTranscript: unknown;
       selectedTasks: unknown;
       taskItems: unknown;
@@ -40,7 +39,6 @@ export function ScreenOut() {
       {
         screenedOut: true,
         screenOutReason: 'attention-check-failed',
-        userProfile: exportData.userProfile,
         backgroundTranscript: exportData.backgroundTranscript,
         selectedTasks: exportData.selectedTasks,
         taskItems: exportData.taskItems,

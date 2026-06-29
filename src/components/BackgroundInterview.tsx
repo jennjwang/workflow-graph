@@ -10,13 +10,22 @@ import {
   GapArea,
   plannerNext,
 } from "../lib/api";
-import { UserProfile } from "../types";
-
 type RecordState = "idle" | "recording" | "transcribing";
+
+// The structured (?planner=0) interview's question keys. There is no typed
+// user profile anymore — every answer is captured in the backgroundTranscript
+// (the sole grounding for downstream steps), so these keys are just transcript
+// field labels, used to drive the scripted question flow.
+type ProfileField =
+  | "jobTitle"
+  | "responsibilities"
+  | "typicalWeek"
+  | "outputs"
+  | "stakeholders";
 
 // Coverage criteria and follow-up rules per question, taken from SparkMe topics_intake.json
 const QUESTIONS: {
-  field: keyof UserProfile;
+  field: ProfileField;
   text: string;
   placeholder: string;
   criteria: string[];
@@ -347,9 +356,8 @@ const AUTOFOCUS_ANSWER =
   window.matchMedia("(pointer: fine)").matches;
 
 export function BackgroundInterview() {
-  const { setUserProfile, setPhase, addBackgroundTurn } = useWorkflowStore(
+  const { setPhase, addBackgroundTurn } = useWorkflowStore(
     useShallow((s) => ({
-      setUserProfile: s.setUserProfile,
       setPhase: s.setPhase,
       addBackgroundTurn: s.addBackgroundTurn,
     })),
@@ -368,7 +376,7 @@ export function BackgroundInterview() {
   const [plannerTurnCount, setPlannerTurnCount] = useState(0);
 
   const [step, setStep] = useState(0);
-  const [answers, setAnswers] = useState<Record<keyof UserProfile, string>>({
+  const [answers, setAnswers] = useState<Record<ProfileField, string>>({
     responsibilities: "",
     jobTitle: "",
     typicalWeek: "",
@@ -433,7 +441,7 @@ export function BackgroundInterview() {
 
   const finishOutro = () => {
     setIsSubmitting(true);
-    setPhase("task-selection");
+    setPhase("occupation-select");
   };
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -610,12 +618,10 @@ export function BackgroundInterview() {
       setIsEvaluating(false);
       setQuestionVisible(true);
     } else {
-      // Exhausted all questions (some may have been skipped). Persist the
-      // profile, then ALWAYS ask the catch-all once before the outro — it's the
-      // one step that runs no matter what. Its answer is captured in the
-      // transcript (addBackgroundTurn), not in a profile field, so it can't
-      // overwrite the last question's answer.
-      setUserProfile(newAnswers as UserProfile);
+      // Exhausted all questions (some may have been skipped). ALWAYS ask the
+      // catch-all once before the outro — it's the one step that runs no matter
+      // what. Every answer (incl. the role) already lives in the transcript via
+      // addBackgroundTurn, which is the sole grounding for downstream steps.
       setIsClosingActive(true);
       setFollowUpCount(0);
       setAccumulatedAnswer("");
@@ -636,12 +642,8 @@ export function BackgroundInterview() {
     setIsEvaluating(true);
     setIsClosingActive(false);
 
-    const { backgroundTranscript, userProfile } = useWorkflowStore.getState();
-    const areas = await gapProbe(
-      backgroundTranscript,
-      userProfile,
-      GAP_MAX_AREAS,
-    );
+    const { backgroundTranscript } = useWorkflowStore.getState();
+    const areas = await gapProbe(backgroundTranscript, GAP_MAX_AREAS);
 
     if (!areas.length) {
       await finishInterview();
@@ -726,10 +728,9 @@ export function BackgroundInterview() {
       );
       plannerStateRef.current = r.state;
       if (r.done || !r.question) {
-        // Best-effort profile so downstream steps have a role label — the full
-        // transcript (addBackgroundTurn) is the real grounding for task generation.
-        const firstAnswer = plannerTurnsRef.current[0]?.answer ?? "";
-        setUserProfile({ ...answers, jobTitle: firstAnswer } as UserProfile);
+        // No profile to persist — every turn (incl. the opening role answer) is
+        // already in the transcript via addBackgroundTurn, which is the sole
+        // grounding for downstream steps.
         await finishInterview();
         return;
       }
@@ -780,10 +781,6 @@ export function BackgroundInterview() {
         const r = await plannerNext(plannerTurnsRef.current, null);
         plannerStateRef.current = r.state;
         if (r.done || !r.question) {
-          setUserProfile({
-            ...answers,
-            jobTitle: prior[0].answer,
-          } as UserProfile);
           await finishInterview();
           return;
         }

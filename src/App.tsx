@@ -4,9 +4,11 @@ import { Welcome } from "./components/Welcome";
 import { BackgroundInterview } from "./components/BackgroundInterview";
 import { TaskSelection } from "./components/TaskSelection";
 import { FinalQuestions } from "./components/FinalQuestions";
+import { OccupationSelect } from "./components/OccupationSelect";
 import { StudyComplete } from "./components/StudyComplete";
 import { ScreenOut } from "./components/ScreenOut";
 import { DevNav } from "./components/DevNav";
+import type { Phase } from "./types";
 import {
   fetchAppConfig,
   checkScreenStatus,
@@ -78,7 +80,6 @@ export default function App() {
   const phase = useWorkflowStore((s) => s.phase);
   const setProlific = useWorkflowStore((s) => s.setProlific);
   const setPhase = useWorkflowStore((s) => s.setPhase);
-  const setUserProfile = useWorkflowStore((s) => s.setUserProfile);
   const addBackgroundTurn = useWorkflowStore((s) => s.addBackgroundTurn);
   const prolificPid = useWorkflowStore((s) => s.prolific.pid);
   const externalId = useWorkflowStore((s) => s.externalId);
@@ -92,15 +93,19 @@ export default function App() {
     const key = new URLSearchParams(window.location.search).get("persona");
     const persona = key ? DEV_PERSONAS[key] : null;
     if (!persona) return;
-    setUserProfile({ ...persona, outputs: "" });
     // Seed a synthetic transcript so extractInterviewTasks has something to
     // extract from — without this, grounding is empty and the generator repeats
-    // things the persona's profile already covers.
+    // things the persona's profile already covers. The role goes FIRST so the
+    // transcript's opening turn is the job title (how role grounding is derived).
+    addBackgroundTurn({ field: "jobTitle", question: "What's your current role and field?", answer: persona.jobTitle, isFollowUp: false, timestamp: Date.now() });
     addBackgroundTurn({ field: "responsibilities", question: "What are your primary responsibilities?", answer: persona.responsibilities, isFollowUp: false, timestamp: Date.now() });
     addBackgroundTurn({ field: "typicalWeek", question: "What does a typical week look like?", answer: persona.typicalWeek, isFollowUp: false, timestamp: Date.now() });
     if (persona.outputs) addBackgroundTurn({ field: "outputs", question: "What do you produce, maintain, approve, send, or deliver?", answer: persona.outputs, isFollowUp: false, timestamp: Date.now() });
     if (persona.stakeholders) addBackgroundTurn({ field: "stakeholders", question: "Who do you do your work for or with?", answer: persona.stakeholders, isFollowUp: false, timestamp: Date.now() });
-    setPhase("task-selection");
+    // Land on task-selection by default, but honor ?dev=<phase> so a persona can
+    // be used to seed grounding for any later screen (e.g. occupation-select).
+    const devTarget = new URLSearchParams(window.location.search).get("dev") as Phase | null;
+    setPhase(devTarget ?? "task-selection");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -181,7 +186,6 @@ export default function App() {
   const getExportData = useWorkflowStore((s) => s.getExportData);
   // Each slice is subscribed individually so the effect re-runs only when one
   // actually changes (avoids the every-render churn of an object selector).
-  const userProfile = useWorkflowStore((s) => s.userProfile);
   const backgroundTranscript = useWorkflowStore((s) => s.backgroundTranscript);
   const taskCategories = useWorkflowStore((s) => s.taskCategories);
   const taskItems = useWorkflowStore((s) => s.taskItems);
@@ -202,6 +206,7 @@ export default function App() {
       phase === "setup" ||
       phase === "screen-out" ||
       phase === "final-questions" ||
+      phase === "occupation-select" ||
       phase === "study-complete"
     )
       return;
@@ -221,7 +226,6 @@ export default function App() {
     sessionId,
     hydrating,
     getExportData,
-    userProfile,
     backgroundTranscript,
     taskCategories,
     taskItems,
@@ -342,6 +346,10 @@ export default function App() {
 
     if (phase === "final-questions") {
       return <FinalQuestions />;
+    }
+
+    if (phase === "occupation-select") {
+      return <OccupationSelect />;
     }
 
     if (phase === "study-complete") {

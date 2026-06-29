@@ -7,12 +7,16 @@ import { SUBTASK_WORKER_SYSTEM_PROMPT, INTERVIEW_TASK_EXTRACTOR_PROMPT, mentione
 import { evaluateAnswerMessages, rewordQuestionMessages, checkCoverageMessages } from './prompts/interview.js';
 import { plannerStep } from './prompts/planner.js';
 import { retrieveExemplarBlock } from './lib/retrieval.js';
+import { occupationCandidates, listOccupations } from './lib/occupation-candidates.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(express.json({ limit: '25mb' }));
 
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+  ...(process.env.OPENAI_BASE_URL ? { baseURL: process.env.OPENAI_BASE_URL } : {}),
+});
 const MODEL = process.env.MODEL || 'gpt-4o-mini';
 // Smaller/cheaper model used for high-volume, lower-stakes calls (subtask
 // proposals, interviews, walker chat, etc.). The upper-level task generator
@@ -69,16 +73,12 @@ function safePid(pid) {
   return typeof pid === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(pid) ? pid : null;
 }
 
-function buildSystemPrompt(userProfile = null, selectedTasks = [], typicalWorkflow = null) {
-  const profileCtx = userProfile
-    ? `\n\nPARTICIPANT PROFILE:\n- Role: ${userProfile.jobTitle}\n- Typical week: ${userProfile.typicalWeek}`
-    : '';
-
+function buildSystemPrompt(selectedTasks = [], typicalWorkflow = null) {
   const typicalCtx = typicalWorkflow
     ? `\n\nTYPICAL WORKFLOW (internal reference only — never mention this to the participant):\n${typicalWorkflow.map((s, i) => `${i + 1}. ${s}`).join('\n')}\n\nUse this to spot where this participant deviates from the norm. Deviations are the most interesting research data.`
     : '';
 
-  return `You are mapping the CURRENT WORKFLOW TASK with a participant. After their overview, extract the top-level steps as nodes and connect them with edges so the workflow reads start → end.${profileCtx}${typicalCtx}
+  return `You are mapping the CURRENT WORKFLOW TASK with a participant. After their overview, extract the top-level steps as nodes and connect them with edges so the workflow reads start → end.${typicalCtx}
 
 PERFORMANCE — CRITICAL: In your VERY FIRST response, you must include ALL add_node calls AND ALL add_edge calls together as parallel tool calls in a single message. Do NOT first call add_node, get results, then call add_edge — that triggers a second round-trip and is much slower. Bundle every single tool call (every node, every edge) into ONE batch in your first response. After that batch, return final text only.
 
@@ -300,16 +300,22 @@ function transcriptFromTurns(backgroundTranscript = []) {
     .join('\n\n');
 }
 
+// The participant's role/field is the opening turn of every interview (the role
+// question in the structured flow, the opener in the planner flow). There is no
+// separate userProfile anymore — the transcript is the single source of truth.
+function roleFromTranscript(backgroundTranscript = []) {
+  return backgroundTranscript.find(t => t && typeof t.answer === 'string' && t.answer.trim())?.answer.trim() || '';
+}
+
 // Extract the distinct recurring paid-work tasks the participant MENTIONED.
 // Shared by /api/extract-interview-tasks and the live gap-probe. Returns string[].
-async function extractMentionedTasks(backgroundTranscript, userProfile) {
+async function extractMentionedTasks(backgroundTranscript) {
   const turns = transcriptFromTurns(backgroundTranscript);
   if (!turns) return [];
-  const profileBlock = userProfile && (userProfile.jobTitle || userProfile.responsibilities)
+  const jobTitle = roleFromTranscript(backgroundTranscript);
+  const profileBlock = jobTitle
     ? `Participant role context (for resolving pronouns and references — do NOT invent activities from it):\n` +
-      (userProfile.jobTitle ? `- Job title: ${userProfile.jobTitle}\n` : '') +
-      (userProfile.responsibilities ? `- Responsibilities (their words): ${userProfile.responsibilities}\n` : '') +
-      '\n'
+      `- Job title: ${jobTitle}\n\n`
     : '';
   const response = await client.chat.completions.create({
     model: 'gpt-4o',
@@ -331,18 +337,51 @@ async function extractMentionedTasks(backgroundTranscript, userProfile) {
 }
 
 app.post('/api/extract-interview-tasks', async (req, res) => {
-  const { backgroundTranscript = [], userProfile } = req.body;
+  const { backgroundTranscript = [] } = req.body;
   if (!Array.isArray(backgroundTranscript)) {
     return res.status(400).json({ error: 'backgroundTranscript must be an array' });
   }
   try {
-    const tasks = await extractMentionedTasks(backgroundTranscript, userProfile);
+    const tasks = await extractMentionedTasks(backgroundTranscript);
     // Log what the extractor pulled so we can verify grounding in Cloud Run logs.
-    console.log(`[extract-interview-tasks] role=${userProfile?.jobTitle ?? '(none)'} count=${tasks.length}`);
+    console.log(`[extract-interview-tasks] role=${roleFromTranscript(backgroundTranscript) || '(none)'} count=${tasks.length}`);
     for (const t of tasks) console.log(`  • ${t}`);
     res.json({ tasks });
   } catch (err) {
     console.error('[extract-interview-tasks]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Occupation self-ID shortlist for the final screen: ranked top-N O*NET-SOC the
+// participant would identify with, from the full interview transcript. excludeCodes
+// + hint drive the "show different options" loop. Fails open (returns []), in which
+// case the screen falls back to free search over the full SOC list.
+app.post('/api/occupation-candidates', async (req, res) => {
+  const { backgroundTranscript = [], excludeCodes = [], hint = '' } = req.body;
+  if (!Array.isArray(backgroundTranscript)) {
+    return res.status(400).json({ error: 'backgroundTranscript must be an array' });
+  }
+  try {
+    const candidates = await occupationCandidates(backgroundTranscript, {
+      excludeCodes: Array.isArray(excludeCodes) ? excludeCodes : [],
+      hint: typeof hint === 'string' ? hint : '',
+    });
+    console.log(`[occupation-candidates] excluded=${(excludeCodes || []).length} hint=${hint ? 'y' : 'n'} -> ${candidates.length}`);
+    res.json({ candidates });
+  } catch (err) {
+    console.error('[occupation-candidates]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Full O*NET-SOC list (code + title) for the final screen's "search all
+// occupations" fallback.
+app.get('/api/occupations', async (_req, res) => {
+  try {
+    res.json({ occupations: await listOccupations() });
+  } catch (err) {
+    console.error('[occupations]', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -353,7 +392,7 @@ app.post('/api/extract-interview-tasks', async (req, res) => {
 // Their answers re-enter the transcript and feed the final extraction. Fails open
 // (returns no areas) so a slow/failed call never blocks finishing the interview.
 app.post('/api/gap-probe', async (req, res) => {
-  const { backgroundTranscript = [], userProfile = {}, maxAreas = 3 } = req.body;
+  const { backgroundTranscript = [], maxAreas = 3 } = req.body;
   if (!Array.isArray(backgroundTranscript)) {
     return res.status(400).json({ error: 'backgroundTranscript must be an array' });
   }
@@ -369,9 +408,7 @@ app.post('/api/gap-probe', async (req, res) => {
       temperature: 0.4,
       response_format: { type: 'json_object' },
       messages: buildGapProbeMessages({
-        jobTitle: userProfile.jobTitle,
-        responsibilities: userProfile.responsibilities,
-        typicalWeek: userProfile.typicalWeek,
+        jobTitle: roleFromTranscript(backgroundTranscript),
         transcript,
         maxAreas: cap,
       }),
@@ -393,7 +430,7 @@ app.post('/api/gap-probe', async (req, res) => {
           hiddenGapTasks: Array.isArray(a.hiddenGapTasks) ? a.hiddenGapTasks : [],
         };
       });
-    console.log(`[gap-probe] role=${userProfile?.jobTitle ?? '(none)'} areas=${areas.length}`);
+    console.log(`[gap-probe] role=${roleFromTranscript(backgroundTranscript) || '(none)'} areas=${areas.length}`);
     for (const a of areas) console.log(`  ? ${a.question}  [${(a.hiddenGapTasks || []).join('; ')}]`);
     res.json({ areas });
   } catch (err) {
@@ -442,7 +479,7 @@ app.post('/api/generate-tasks-from-interview', async (req, res) => {
     res.flush?.();
   };
 
-  const { jobTitle, typicalWeek, responsibilities, interviewTasks = [], count, participant = null, backgroundTranscript = [] } = req.body;
+  const { jobTitle, occupationCode, interviewTasks = [], count, participant = null, backgroundTranscript = [] } = req.body;
   // Full Q/A transcript — used ONLY to ground gap-fill in the participant's
   // actual words and background (seniority, domains, stakeholders like boards)
   // that the short extracted-task list drops. Empty string if not provided.
@@ -472,7 +509,7 @@ Calibrate honestly and use the full range — do NOT mark everything high.
 No surrounding array. No markdown. No commentary. Just one JSON object per line.`;
 
   try {
-    const { block: exemplarBlock } = await retrieveExemplarBlock({ jobTitle, responsibilities, typicalWeek });
+    const { block: exemplarBlock } = await retrieveExemplarBlock({ jobTitle, occupationCode });
 
     // ── PASS 1: normalize the participant's mentioned tasks (buffered, not emitted
     //    yet — proportional down-sampling may need to trim this group too) ──
@@ -490,7 +527,7 @@ No surrounding array. No markdown. No commentary. Just one JSON object per line.
       stream: true,
       messages: [
         { role: 'system', content: streamingSystem },
-        { role: 'user', content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${exemplarBlock}${interviewBlock}\nGenerate the MECE task list from their mentioned tasks.` },
+        { role: 'user', content: `Job: ${jobTitle}${exemplarBlock}${interviewBlock}\nGenerate the MECE task list from their mentioned tasks.` },
       ],
     });
     let buffer = '';
@@ -520,7 +557,7 @@ No surrounding array. No markdown. No commentary. Just one JSON object per line.
     //    inferred FROM their own answers (not occupation-wide). Emitted last, at
     //    low confidence, tagged source:'gap' so they're mixed into the list but
     //    distinguishable in the data. Fails open — any error just skips them. ──
-    const gapCount = Math.max(0, Number(process.env.GAPFILL_COUNT) || 6);
+    const gapCount = Math.max(0, Number(process.env.GAPFILL_COUNT) || 10);
     const gapNames = [];
     if (gapCount > 0 && outNorm.length > 0) {
       try {
@@ -529,7 +566,7 @@ No surrounding array. No markdown. No commentary. Just one JSON object per line.
           temperature: 0.7,
           messages: [
             { role: 'system', content: buildGapFillSystemPrompt(gapCount, outNorm) },
-            { role: 'user', content: `Job: ${jobTitle}${responsibilities ? `\nPrimary responsibilities: ${responsibilities}` : ''}\nTypical week: ${typicalWeek}${interviewBlock}${fullTranscript ? `\n\nFULL INTERVIEW (their own words — read it for background, seniority, domains, and stakeholders like boards/investors that the task list above drops):\n${fullTranscript}` : ''}\n\nPropose up to ${gapCount} inferred tasks they likely do but did NOT mention, each implied by their described work OR their background above.` },
+            { role: 'user', content: `Job: ${jobTitle}${interviewBlock}${fullTranscript ? `\n\nFULL INTERVIEW (their own words — read it for background, seniority, domains, and stakeholders like boards/investors that the task list above drops):\n${fullTranscript}` : ''}\n\nPropose up to ${gapCount} inferred tasks they likely do but did NOT mention, each implied by their described work OR their background above.` },
           ],
         });
         const seen = new Set(outNorm.map((n) => n.toLowerCase().trim()));
@@ -564,7 +601,7 @@ No surrounding array. No markdown. No commentary. Just one JSON object per line.
 // occupations clearly unrelated to the participant's role — used to confirm
 // the participant is reading carefully. Returns up to `count` items.
 app.post('/api/generate-attention-checks', async (req, res) => {
-  const { jobTitle, responsibilities, typicalWeek, count = 8 } = req.body ?? {};
+  const { jobTitle, count = 8 } = req.body ?? {};
   const targetCount = Math.max(1, Math.min(20, Number(count) || 8));
   const systemPrompt = `You generate ATTENTION-CHECK task statements for a study. The participant will see them mixed in with real tasks for their job and is expected to mark them "I don't do this".
 
@@ -584,8 +621,6 @@ Return JSON: { "tasks": ["...", "...", ...] }. Exactly ${targetCount} items.`;
 
   const userBlock =
     `Participant's role: ${jobTitle ?? '(unknown)'}\n` +
-    (responsibilities ? `Responsibilities: ${responsibilities}\n` : '') +
-    (typicalWeek ? `Typical week: ${typicalWeek}\n` : '') +
     `\nGenerate ${targetCount} O*NET-style attention-check tasks from occupations clearly unrelated to this role.`;
 
   try {
@@ -1180,7 +1215,7 @@ app.post('/api/suggest-actors', async (req, res) => {
 });
 
 app.post('/api/handoff-chat', async (req, res) => {
-  const { messages, nodes, edges, coreTask, userProfile } = req.body;
+  const { messages, nodes, edges, coreTask } = req.body;
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -1204,7 +1239,6 @@ app.post('/api/handoff-chat', async (req, res) => {
 
 CONTEXT:
 - Task: ${coreTask}
-- Role: ${userProfile?.jobTitle}
 
 WORKFLOW NODES:\n${nodeList}
 
@@ -1300,7 +1334,7 @@ app.post('/api/typical-workflow', async (req, res) => {
 });
 
 app.post('/api/chat', async (req, res) => {
-  const { messages, coreTask, nodes = [], skipSuggestions = false, userProfile = null, selectedTasks = [], typicalWorkflow = null } = req.body;
+  const { messages, coreTask, nodes = [], skipSuggestions = false, selectedTasks = [], typicalWorkflow = null } = req.body;
 
   // SSE setup
   res.setHeader('Content-Type', 'text/event-stream');
@@ -1323,7 +1357,7 @@ app.post('/api/chat', async (req, res) => {
 
     const systemMessage = {
       role: 'system',
-      content: `${buildSystemPrompt(userProfile, selectedTasks, typicalWorkflow)}\n\nCURRENT WORKFLOW TASK: "${coreTask}"\nNODES IN GRAPH:\n${nodeList}`,
+      content: `${buildSystemPrompt(selectedTasks, typicalWorkflow)}\n\nCURRENT WORKFLOW TASK: "${coreTask}"\nNODES IN GRAPH:\n${nodeList}`,
     };
 
     let apiMessages = [
@@ -1391,7 +1425,7 @@ app.post('/api/chat', async (req, res) => {
         messages: [
           {
             role: 'system',
-            content: `${buildSystemPrompt(userProfile, selectedTasks, typicalWorkflow)}\n\nCurrent task: "${coreTask}". Current nodes:\n${nodeList2}\n\nThe assistant just said: "${finalText}"\n\nCall suggest_nodes with 2–4 options that directly answer the question just asked. Generate options from role knowledge — do NOT recycle the existing node labels.`,
+            content: `${buildSystemPrompt(selectedTasks, typicalWorkflow)}\n\nCurrent task: "${coreTask}". Current nodes:\n${nodeList2}\n\nThe assistant just said: "${finalText}"\n\nCall suggest_nodes with 2–4 options that directly answer the question just asked. Generate options from role knowledge — do NOT recycle the existing node labels.`,
           },
           ...messages.map(m => ({ role: m.role, content: m.content })),
           ...(finalText ? [{ role: 'assistant', content: finalText }] : []),
@@ -1450,7 +1484,6 @@ function isMateriallyEmpty(d) {
   const phases = Object.keys(d.phaseEnteredAt || {});
   const beyondSetup = phases.some(p => p !== 'setup');
   if (beyondSetup) return false;
-  if (d.userProfile && (d.userProfile.jobTitle || d.userProfile.typicalWeek || d.userProfile.responsibilities)) return false;
   if (Array.isArray(d.backgroundTranscript) && d.backgroundTranscript.length > 0) return false;
   if (Array.isArray(d.selectedTasks) && d.selectedTasks.length > 0) return false;
   if (Array.isArray(d.taskItems) && d.taskItems.length > 0) return false;
