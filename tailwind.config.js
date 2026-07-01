@@ -5,10 +5,15 @@ export default {
     extend: {
       animation: {
         fadeSlideIn: 'fadeSlideIn 0.22s ease-out both',
-        fadeSlideUp: 'fadeSlideUp 0.3s ease-out both',
+        fadeSlideUp: 'fadeSlideUp 0.45s ease-out both',
         popIn:       'popIn 0.18s ease-out both',
+        waveBar:     'waveBar 0.9s ease-in-out infinite',
       },
       keyframes: {
+        waveBar: {
+          '0%, 100%': { transform: 'scaleY(0.4)' },
+          '50%':      { transform: 'scaleY(1)' },
+        },
         fadeSlideIn: {
           '0%':   { opacity: '0', transform: 'translateY(7px)' },
           '100%': { opacity: '1', transform: 'translateY(0)' },

@@ -49,11 +49,14 @@ const VALIDATION_OUT_DIR = path.join(VALIDATION_DIR, 'out');
 const VALIDATION_VERIFY_DIR = path.join(VALIDATION_OUT_DIR, 'verifications');
 const COVERAGE_ASSIGN_DIR = path.join(VALIDATION_OUT_DIR, 'assignments', 'coverage');
 const COVERAGE_RESPONSE_DIR = path.join(VALIDATION_OUT_DIR, 'responses', 'coverage');
+// Post-self-ID fit judgments (incl. screen-outs, which never submit a response).
+const COVERAGE_FIT_DIR = path.join(VALIDATION_OUT_DIR, 'fit', 'coverage');
 const WINRATE_ASSIGN_DIR = path.join(VALIDATION_OUT_DIR, 'assignments', 'winrate');
 const WINRATE_RESPONSE_DIR = path.join(VALIDATION_OUT_DIR, 'responses', 'winrate');
 await fs.mkdir(VALIDATION_VERIFY_DIR, { recursive: true });
 await fs.mkdir(COVERAGE_ASSIGN_DIR, { recursive: true });
 await fs.mkdir(COVERAGE_RESPONSE_DIR, { recursive: true });
+await fs.mkdir(COVERAGE_FIT_DIR, { recursive: true });
 await fs.mkdir(WINRATE_ASSIGN_DIR, { recursive: true });
 await fs.mkdir(WINRATE_RESPONSE_DIR, { recursive: true });
 
@@ -61,6 +64,16 @@ await fs.mkdir(WINRATE_RESPONSE_DIR, { recursive: true });
 async function readVerification(externalId) {
   try {
     return JSON.parse(await fs.readFile(path.join(VALIDATION_VERIFY_DIR, `${externalId}.json`), 'utf-8'));
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+// Coverage's single screener is the post-self-ID fit judge; assign gates on it.
+async function readCoverageFit(externalId) {
+  try {
+    return JSON.parse(await fs.readFile(path.join(COVERAGE_FIT_DIR, `${externalId}.json`), 'utf-8'));
   } catch (err) {
     if (err.code === 'ENOENT') return null;
     throw err;
@@ -1593,6 +1606,14 @@ async function loadInventories() {
   const raw = await fs.readFile(path.join(VALIDATION_INPUTS_DIR, 'inventories.json'), 'utf-8');
   const data = JSON.parse(raw);
   if (!data || typeof data.methods !== 'object') throw new Error('bad inventories.json');
+  // Optional cap on inventory size (COVERAGE_MAX_TASKS) — handy for testing the
+  // flow with a short list without hand-editing the generated inventories.json.
+  const cap = parseInt(process.env.COVERAGE_MAX_TASKS || '', 10);
+  if (Number.isFinite(cap) && cap > 0) {
+    for (const m of Object.values(data.methods)) {
+      if (Array.isArray(m.statements)) m.statements = m.statements.slice(0, cap);
+    }
+  }
   return data;
 }
 
@@ -1716,13 +1737,14 @@ app.post('/api/validation/verify', async (req, res) => {
 app.post('/api/validation/coverage/assign', async (req, res) => {
   const externalId = safeExternalId(req.body && req.body.externalId);
   if (!externalId) return res.status(400).json({ error: 'externalId required' });
-  // Gate on a passing screener so assign can't be hit directly to skip it.
+  // Coverage's single screener is the self-ID fit judge — gate on a passing fit
+  // verdict so assign can't be hit directly to skip it.
   try {
-    const v = await readVerification(externalId);
-    if (!v || v.match !== true) return res.status(403).json({ error: 'not verified' });
+    const f = await readCoverageFit(externalId);
+    if (!f || f.fit !== true) return res.status(403).json({ error: 'not screened' });
   } catch (err) {
-    console.error('[coverage] verify-gate read failed:', err);
-    return res.status(500).json({ error: 'verify check failed' });
+    console.error('[coverage] fit-gate read failed:', err);
+    return res.status(500).json({ error: 'screen check failed' });
   }
   const assignPath = path.join(COVERAGE_ASSIGN_DIR, `${externalId}.json`);
   try {
@@ -1752,7 +1774,7 @@ app.post('/api/validation/coverage/assign', async (req, res) => {
 app.post('/api/validation/coverage/response', async (req, res) => {
   const externalId = safeExternalId(req.body && req.body.externalId);
   if (!externalId) return res.status(400).json({ error: 'externalId required' });
-  const { totalHours, allocations, elapsedMs, startedAt } = req.body || {};
+  const { totalHours, allocations, elapsedMs, startedAt, occupation } = req.body || {};
   if (!Number.isFinite(totalHours) || !Array.isArray(allocations)) {
     return res.status(400).json({ error: 'totalHours and allocations required' });
   }
@@ -1778,6 +1800,7 @@ app.post('/api/validation/coverage/response', async (req, res) => {
       externalId,
       method: assignment.method,
       occupation: assignment.occupation,
+      selfIdOccupation: occupation && typeof occupation === 'object' ? occupation : null,
       totalHours,
       allocations: clean,
       coveredHours,
@@ -1796,6 +1819,44 @@ app.post('/api/validation/coverage/response', async (req, res) => {
   } catch (err) {
     console.error('[coverage] response failed:', err);
     res.status(500).json({ error: 'response failed' });
+  }
+});
+
+// Post-self-ID fit gate — coverage's single screener. The participant picked a
+// concrete O*NET occupation from the catalog, so screening is a DETERMINISTIC code
+// equality: their selected occupation must BE the study's target occupation. No
+// LLM (instant + reproducible); an adjacent pick (Web Developer, QA, etc.) has a
+// different code and is screened out.
+app.post('/api/validation/coverage/fit', async (req, res) => {
+  const externalId = safeExternalId(req.body && req.body.externalId);
+  if (!externalId) return res.status(400).json({ error: 'externalId required' });
+  const selectedCode = typeof (req.body && req.body.selectedCode) === 'string' ? req.body.selectedCode.trim() : '';
+  const selectedTitle = typeof (req.body && req.body.selectedTitle) === 'string' ? req.body.selectedTitle.trim() : '';
+  if (!selectedCode) return res.status(400).json({ error: 'selectedCode required' });
+  try {
+    const inv = await loadInventories();
+    const targetCode = (inv.onetCode || '').trim();
+    if (!targetCode) return res.status(500).json({ error: 'inventories.json missing onetCode' });
+
+    const fit = selectedCode === targetCode;
+    const rec = {
+      externalId,
+      targetCode,
+      targetTitle: inv.occupation,
+      selectedCode,
+      selectedTitle,
+      fit,
+      method: 'exact',
+      reason: fit
+        ? 'Selected occupation is the target occupation.'
+        : 'Selected occupation differs from the target occupation.',
+      at: new Date().toISOString(),
+    };
+    await fs.writeFile(path.join(COVERAGE_FIT_DIR, `${externalId}.json`), JSON.stringify(rec, null, 2));
+    res.json({ fit, reason: rec.reason });
+  } catch (err) {
+    console.error('[coverage] fit failed:', err);
+    res.status(500).json({ error: 'fit failed' });
   }
 });
 

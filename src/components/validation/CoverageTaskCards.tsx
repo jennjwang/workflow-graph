@@ -39,35 +39,40 @@ export function CoverageTaskCards({
   };
 
   const choiceBtn = (active: boolean) =>
-    `flex-1 px-5 py-3 rounded-xl border text-sm font-medium transition active:scale-[0.99] ${
+    `flex-1 px-5 py-4 rounded-xl border text-sm font-medium transition active:scale-[0.99] ${
       active
         ? "border-indigo-400 bg-indigo-50 text-indigo-700 ring-2 ring-indigo-200"
         : "border-slate-200 bg-white text-slate-600 hover:border-indigo-200 hover:bg-indigo-50/40"
     }`;
 
   return (
-    <div className="flex h-full items-center justify-center px-6">
-      <div key={idx} className="w-full max-w-xl animate-fadeSlideIn">
-        <div className="flex items-center justify-between">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400">
+    <div className="flex flex-col h-full">
+      {/* Progress header — pinned to the top of the screen */}
+      <div className="shrink-0 px-6 pt-8 pb-2">
+        <div className="mx-auto flex w-full max-w-2xl items-center gap-8">
+          <p className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-indigo-400">
             Task {idx + 1} of {total}
           </p>
-          <div className="h-1 w-32 rounded-full bg-slate-100 overflow-hidden">
+          <div className="h-1.5 flex-1 rounded-full bg-slate-100 overflow-hidden">
             <div
               className="h-full bg-indigo-400 transition-[width] duration-300"
               style={{ width: `${((idx + 1) / total) * 100}%` }}
             />
           </div>
         </div>
+      </div>
 
-        <p className="mt-5 text-xl font-light text-slate-800 leading-snug">
-          {statement}
-        </p>
+      {/* Question + answer — centered in the remaining space */}
+      <div className="flex flex-1 items-center justify-center px-6 pb-10">
+        <div key={idx} className="w-full max-w-2xl animate-fadeSlideIn">
+          <p className="text-[1.6rem] font-light text-slate-800 leading-snug">
+            {statement}
+          </p>
 
-        <p className="mt-6 text-sm font-medium text-slate-600">
+          <p className="mt-9 text-sm font-medium text-slate-600">
           Do you spend time on this in a typical week?
         </p>
-        <div className="mt-3 flex gap-3">
+        <div className="mt-4 flex gap-4">
           <button
             type="button"
             className={choiceBtn(choice === "yes")}
@@ -88,11 +93,11 @@ export function CoverageTaskCards({
         </div>
 
         {choice === "yes" && (
-          <div className="mt-5 animate-fadeSlideIn">
+          <div className="mt-7 animate-fadeSlideIn">
             <label className="block text-sm font-medium text-slate-600">
               About how many hours per week?
             </label>
-            <div className="mt-2 flex items-center gap-3">
+            <div className="mt-3 flex items-center gap-3">
               <input
                 type="number"
                 inputMode="decimal"
@@ -112,7 +117,7 @@ export function CoverageTaskCards({
           </div>
         )}
 
-        <div className="mt-8 flex justify-end">
+        <div className="mt-10 flex justify-end">
           <button
             onClick={advance}
             disabled={!canContinue}
@@ -120,6 +125,7 @@ export function CoverageTaskCards({
           >
             {idx + 1 >= total ? "Review" : "Continue"}
           </button>
+          </div>
         </div>
       </div>
     </div>

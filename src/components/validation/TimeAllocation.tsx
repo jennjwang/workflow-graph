@@ -261,8 +261,8 @@ export function TimeAllocation({
         </div>
       ) : (
         <div className="relative z-10 flex-1 flex flex-col min-h-0 overflow-y-auto w-full max-w-4xl mx-auto px-5 sm:px-8 animate-fadeSlideIn">
-          <div className="my-auto w-full py-4">
-            <div className="pb-4">
+          <div className="w-full">
+            <div className="sticky top-0 z-20 bg-white/95 backdrop-blur-sm pt-4 pb-4">
               <h2 className="text-[1.5rem] font-light text-slate-800 leading-snug tracking-tight">
                 {breakdownTitle}
               </h2>
@@ -327,7 +327,7 @@ export function TimeAllocation({
               </div>
             </div>
 
-            <div>
+            <div className="pb-8">
               <div className="divide-y divide-slate-100">
                 {items.map((it) => (
                   <HoursSliderRow

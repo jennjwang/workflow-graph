@@ -4,8 +4,13 @@ import { CoverageTaskCards } from "./CoverageTaskCards";
 import { Frame, Centered, resolveExternalId } from "./validationUi";
 import { OccupationScreener } from "./OccupationScreener";
 import {
+  ValidationOccupationSelect,
+  OccupationPick,
+} from "./ValidationOccupationSelect";
+import {
   assignCoverage,
   submitCoverageResponse,
+  judgeFit,
   CoverageAssignment,
 } from "../../lib/validation/coverageApi";
 
@@ -21,6 +26,8 @@ import {
 type Stage =
   | "no-id"
   | "screen"
+  | "occupation"
+  | "judging"
   | "assigning"
   | "total"
   | "cards"
@@ -33,6 +40,11 @@ export function CoverageStudy() {
   const externalId = useMemo(resolveExternalId, []);
   const [stage, setStage] = useState<Stage>(externalId ? "screen" : "no-id");
   const [assignment, setAssignment] = useState<CoverageAssignment | null>(null);
+  const [screenerInfo, setScreenerInfo] = useState<{
+    title: string;
+    duties: string;
+  } | null>(null);
+  const [occupation, setOccupation] = useState<OccupationPick | null>(null);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [startedAt] = useState(() => new Date().toISOString());
@@ -42,9 +54,38 @@ export function CoverageStudy() {
   const [totalInput, setTotalInput] = useState("");
   const [cardHours, setCardHours] = useState<Record<string, number>>({});
 
-  const handlePass = async () => {
-    setStage("assigning");
+  const handlePass = (info: { title: string; duties: string }) => {
+    setScreenerInfo(info);
+    setStage("occupation");
+  };
+
+  const handleOccupation = async (pick: OccupationPick) => {
+    setOccupation(pick);
+    setStage("judging");
     try {
+      // Second gate: is the self-identified occupation a good fit for the target?
+      // Retry a transient failure a couple times rather than wrongly screen out.
+      const duties = screenerInfo?.duties ?? "";
+      let verdict = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          verdict = await judgeFit(
+            externalId,
+            pick.selectedCode,
+            pick.selectedTitle,
+            duties,
+          );
+          break;
+        } catch (e) {
+          if (String((e as Error)?.message) !== "RETRY" || attempt === 2) throw e;
+          await new Promise((r) => setTimeout(r, 800));
+        }
+      }
+      if (!verdict || !verdict.fit) {
+        setStage("screened-out");
+        return;
+      }
+      setStage("assigning");
       const a = await assignCoverage(externalId);
       setAssignment(a);
       setStage("total");
@@ -61,6 +102,7 @@ export function CoverageStudy() {
       await submitCoverageResponse(externalId, result, {
         startedAt,
         elapsedMs: Date.now() - new Date(startedAt).getTime(),
+        occupation,
       });
       setStage("done");
     } catch (e) {
@@ -92,13 +134,31 @@ export function CoverageStudy() {
       <Frame>
         <OccupationScreener
           externalId={externalId}
+          verify={false}
           onPass={handlePass}
-          onFail={() => setStage("screened-out")}
-          onError={(msg) => {
-            setError(msg);
-            setStage("error");
-          }}
         />
+      </Frame>
+    );
+  }
+
+  if (stage === "occupation" && screenerInfo) {
+    return (
+      <Frame>
+        <ValidationOccupationSelect
+          title={screenerInfo.title}
+          duties={screenerInfo.duties}
+          onSelect={handleOccupation}
+        />
+      </Frame>
+    );
+  }
+
+  if (stage === "judging") {
+    return (
+      <Frame>
+        <Centered>
+          <p className="text-sm text-slate-400">Checking your responses…</p>
+        </Centered>
       </Frame>
     );
   }
@@ -219,11 +279,16 @@ export function CoverageStudy() {
   }
 
   if (stage === "summary" && assignment) {
-    const rows = assignment.statements.map((name, i) => ({
-      key: `s${i}`,
-      name,
-    }));
-    const covered = Object.values(cardHours).reduce((s, h) => s + h, 0);
+    // Only carry forward tasks the participant said they do (hours > 0) — the
+    // ones they answered "No" to are left out of the adjustable summary.
+    const rows = assignment.statements
+      .map((name, i) => ({ key: `s${i}`, name }))
+      .filter((r) => (cardHours[r.key] ?? 0) > 0);
+    // Seed only the surviving rows — never carry a "No" task's 0 into the summary.
+    const seededHours = Object.fromEntries(
+      rows.map((r) => [r.key, cardHours[r.key]]),
+    );
+    const covered = Object.values(seededHours).reduce((s, h) => s + h, 0);
     const residual = Math.max(0, (totalHours ?? 0) - covered);
     return (
       <Frame>
@@ -231,7 +296,7 @@ export function CoverageStudy() {
           rows={rows}
           initialStep="breakdown"
           initialTotalHours={totalHours}
-          initialHours={cardHours}
+          initialHours={seededHours}
           initialOtherHours={residual}
           breakdownHelp="Here's your week based on your answers. Drag to fine-tune, and put any time these tasks don't capture into “Other.”"
           submitting={submitting}

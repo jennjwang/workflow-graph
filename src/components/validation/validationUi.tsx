@@ -17,5 +17,21 @@ export function resolveExternalId(): string {
   const q = new URLSearchParams(window.location.search);
   const raw =
     q.get("externalId") || q.get("PROLIFIC_PID") || q.get("pid") || "";
-  return raw.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64);
+  const clean = raw.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64);
+  if (clean) return clean;
+  // No PID in the URL: mint (and remember) an anonymous id so the study is usable
+  // from a bare link. Fielded links still carry PROLIFIC_PID (which takes
+  // precedence); this just keeps the bare URL from dead-ending. Persisted in
+  // localStorage so a refresh keeps the same identity (sticky assignment).
+  const KEY = "validation_anon_id";
+  try {
+    let id = window.localStorage.getItem(KEY) || "";
+    if (!id) {
+      id = `anon-${Math.random().toString(36).slice(2, 10)}`;
+      window.localStorage.setItem(KEY, id);
+    }
+    return id;
+  } catch {
+    return `anon-${Math.random().toString(36).slice(2, 10)}`;
+  }
 }
