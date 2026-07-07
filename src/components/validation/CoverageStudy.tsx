@@ -63,25 +63,13 @@ export function CoverageStudy() {
     setOccupation(pick);
     setStage("judging");
     try {
-      // Second gate: is the self-identified occupation a good fit for the target?
-      // Retry a transient failure a couple times rather than wrongly screen out.
-      const duties = screenerInfo?.duties ?? "";
-      let verdict = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          verdict = await judgeFit(
-            externalId,
-            pick.selectedCode,
-            pick.selectedTitle,
-            duties,
-          );
-          break;
-        } catch (e) {
-          if (String((e as Error)?.message) !== "RETRY" || attempt === 2) throw e;
-          await new Promise((r) => setTimeout(r, 800));
-        }
-      }
-      if (!verdict || !verdict.fit) {
+      // The screener: does the self-identified occupation match the study target?
+      const verdict = await judgeFit(
+        externalId,
+        pick.selectedCode,
+        pick.selectedTitle,
+      );
+      if (!verdict.fit) {
         setStage("screened-out");
         return;
       }
