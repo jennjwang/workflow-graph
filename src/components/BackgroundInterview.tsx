@@ -136,7 +136,8 @@ const OUTRO_TEXT =
 // fuller responses from the start. Shown one at a time with a Continue button.
 const INTRO_SCREENS = [
   "In a moment, an AI interviewer will ask you a few questions about your job and the tasks you do. From your answers, we'll put together a list of your tasks to review afterwards.",
-  "Please be as detailed and thorough as you can — including the smaller, less obvious tasks, not just the main ones. The more you share, the more complete your task list will be.",
+  "Please refer to your job prior to Mercor for this interview — not tasks done through the Mercor platform.",
+  "Finally, please be as detailed and thorough as you can — including the smaller, less obvious tasks, not just the main ones. The more you share, the more complete your task list will be.",
 ];
 
 // The catch-all is asked ONCE at the very end, as a final step before the outro —
