@@ -284,7 +284,7 @@ MECE IS THE MASTER CONSTRAINT. The mentioned tasks are evidence to be covered, N
 4. NORMALIZE to O*NET standard: verb-led, 8–18 words, plain language, specific. Preserve their vocabulary — keep their nouns, tools, and context.
 5. Cover ONLY what they actually described (rolled up). Do NOT add tasks they didn't mention — that's handled separately. NEVER manufacture overlapping or near-duplicate tasks.
 6. SELF-CHECK: (a) every recoverable mentioned task is represented — a vague or awkward one was REFORMULATED into a concrete task rather than dropped, and only genuinely meaningless mentions were left out; (b) each maps to exactly one output task; (c) no two output tasks overlap; (d) granularity is consistent O*NET level throughout.
-7. Total must not exceed ${count}. Output as few as faithfully covers their tasks.`;
+7. ${count} is a CEILING, never a target to compress toward. MECE and the one-activity-per-task rule OUTRANK it: NEVER merge two different activities into one "X and Y" line to stay under the ceiling. If genuinely distinct activities would exceed ${count}, keep the most central and DROP the rest — never fuse distinct work into a single task to fit the number.`;
 }
 
 // ── Gap-fill: INFERRED tasks the participant did NOT explicitly say ────────────
@@ -299,7 +299,7 @@ export function buildGapFillSystemPrompt(count, alreadyTasks = []) {
   const haveBlock = alreadyTasks.length
     ? `\n\nTASKS ALREADY IN THEIR LIST — do NOT repeat, restate, or add a KIND/CASE of any of these:\n${alreadyTasks.map((t) => `- ${t}`).join('\n')}`
     : '';
-  return `You are adding a FEW inferred "you might also do this" tasks to a participant's task list. They have already described their job; the list of tasks they explicitly named is below. Your job: propose up to ${count} ADDITIONAL recurring tasks they very likely do but did NOT mention.
+  return `You are adding a FEW inferred "you might also do this" tasks to a participant's task list. They have already described their job; the list of tasks they explicitly named is below. Your job: propose up to ${count} ADDITIONAL recurring tasks they very likely do but did NOT mention — and return ONLY the MOST IMPORTANT, mutually exclusive ones.
 
 THE HARD RULE — INFER FROM THIS SPECIFIC PERSON, NOT FROM A GENERIC JOB TITLE. Anchor every task you add in something THIS participant actually told you — and use BOTH:
   (a) their described WORK — the responsibilities, weekly tasks, and activities they named; and
@@ -312,9 +312,9 @@ What to DROP: generic filler whose ONLY justification is "people with this title
 - ✗ Generic filler with no anchor in their work OR background: "Keep records up to date", "Attend company meetings", "Respond to email" — DROP unless they specifically pointed at it.
 
 CONSTRAINTS:
-- MECE with their existing list: each addition must be a genuinely DISTINCT activity, not a duplicate, restatement, or kind/case of a task already there.${haveBlock}
+- MUTUALLY EXCLUSIVE — each addition must be a genuinely DISTINCT activity: not a duplicate, restatement, kind/case, or subset of (a) any task already in their list, OR (b) any other task you add here. Tasks serving the SAME underlying activity or objective count as overlapping even when the channel, medium, or occasion differs (e.g. emailing parents vs. meeting parents is ONE task; routine coaching vs. competition-day prep is ONE task). When candidates overlap, keep only the single most important and drop the rest.${haveBlock}
 - SPECIFIC and same shape as the rest: O*NET style, verb-led, 8–18 words, sentence case, terminal period, plain language. Name the actual artifact / audience / output — match the specificity of their other tasks, do NOT go vague.
-- QUALITY OVER QUANTITY. ${count} is a CEILING, not a target. Add only tasks with a real anchor in their answers; if only two are well-grounded, return two. Zero is fine.
+- MOST IMPORTANT ONLY — QUALITY OVER QUANTITY. ${count} is a CEILING, not a target. Rank candidates by how central they are to THIS person's role and return only the most important, well-anchored, mutually exclusive ones; if only two qualify, return two. Zero is fine.
 
 OUTPUT: one JSON object per line (JSONL), no array, no commentary:
 {"name": "...", "confidence": 0.0-1.0}
