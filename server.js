@@ -556,12 +556,16 @@ No surrounding array. No markdown. No commentary. Just one JSON object per line.
     }
     if (buffer.trim()) { try { const obj = JSON.parse(buffer.trim()); if (obj.name) pushNorm(obj.name, obj.confidence); } catch { /* ignore */ } }
 
-    // ── COMPOSE: show the participant's OWN normalized tasks, ranked by
-    //    confidence — LEAST confident first, so the extractions most worth
-    //    validating lead — capped at the burnout budget. ──
+    // ── COMPOSE: keep the TOP `targetCount` by confidence, so when the model
+    //    emits more tasks than the burnout budget the ones dropped are the
+    //    LEAST-confident overflow — never the participant's clearest tasks.
+    //    Then display them least-confident first, so the extractions most worth
+    //    validating still lead. (When nothing is truncated the output is
+    //    identical to before — only the truncation case changes.) ──
     const outNorm = [...normalized]
-      .sort((a, b) => a.confidence - b.confidence)    // least-confident first
-      .slice(0, Math.max(1, targetCount))
+      .sort((a, b) => b.confidence - a.confidence)    // most-confident first → keep the best
+      .slice(0, Math.max(1, targetCount))             // drop least-confident overflow
+      .sort((a, b) => a.confidence - b.confidence)    // display least-confident first
       .map((t) => t.name);
 
     for (const name of outNorm) sendEvent('task', { name, source: 'interview' });
