@@ -152,6 +152,14 @@ ONE THING PER TASK — PREFER SPLITTING. If you find yourself writing "X and Y" 
   - ✗ "Treat illnesses and injuries"        → ✓ "Triage student illnesses" + ✓ "Treat student injuries"
 Only use a single noun phrase (no "and") when a clear umbrella term genuinely covers both things at the same observable-action level ("Run health screenings" covers vision and hearing because both are the same activity with different inputs). When the two items differ in audience, format, cadence, or output — split them.
 
+  SAME-OUTPUT TEST (the sharp rule for "X and Y"). Merge two verbs into ONE task only when they are the SAME FUNCTION serving the SAME GOAL and producing ONE shared output — sequential micro-steps of a single deliverable. If each half has its OWN deliverable, SPLIT, even when they share a goal:
+  - ✓ "Calculate and record accruals for expenses and revenues." — calculate → record is one bookkeeping action with one output (the booked accruals).
+  - ✓ "Review and approve teammates' code changes." — one gatekeeping decision, one output.
+  - ✓ "Collect, preprocess, and curate datasets for model training." — one data-prep pipeline toward one output (a training-ready dataset).
+  - ✗ "Document methods and write research papers." — same goal (share the work) but TWO outputs: internal documentation vs. a paper → split.
+  - ✗ "Review code and prepare trained models." — different function AND different output → split.
+  - ✗ "Prepare audit schedules and support financial reviews." — a schedule vs. review support are two deliverables → split.
+
   THE "SUCH AS" / "INCLUDING" DISCIPLINE (from O*NET cluster synthesis). When you fold variety into one task, do it cleanly:
   - Every item you fold in must read as a KIND or CASE of the task statement. "Wash" and "chop" are cases of prepping vegetables (fine to combine); "restock inventory" is NOT a case of "clean counters", and "plate dishes" is NOT a case of "cleaning" — those are different activities, so SPLIT them.
   - Use a "such as"/"including" list ONLY for genuinely DIFFERENT KINDS of the SAME activity, AT MOST 3, named generically, in the OBJECT only — NEVER to glue different ACTIONS. Prefer a plain generic object over a list when one word covers the kinds ("unit and integration tests" → "automated tests").
