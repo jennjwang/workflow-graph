@@ -51,12 +51,11 @@
       "field": "outputs",
       "text": "What do you produce or deliver in your work?",
       "evaluationStyle": "lenient",
-      "maxFollowups": 2,
+      "maxFollowups": 1,
       "minFollowups": 0,
       "criteria": [
-        "FLOOR — named at least one concrete output/artifact. If NONE, follow up asking what they produce/maintain/deliver.",
-        "DELIVERY & UPKEEP (not building) — focus on FINISHING/DELIVERY: what they do to get it READY and OUT or keep it up to date (checking, formatting, approval, sending, maintenance). Do NOT re-ask how they build it. If clear or would just repeat building, covered.",
-        "BREADTH — if only ONE output, ask whether there are others. If several, covered."
+        "FLOOR (single-touch) — once they've named at least one concrete thing they produce or deliver, this topic is COVERED. Do NOT drill DELIVERY/READINESS for each artifact, and do NOT work through every output type or reflexively ask 'anything else you produce' — the typical-week and emergent phases already capture task-level detail.",
+        "ONLY follow up if the answer was genuinely EMPTY or evasive ('stuff', 'depends', 'not sure'). When you do, ask once for one concrete thing they produce or deliver, then move on."
       ]
     },
     {
@@ -70,6 +69,18 @@
         "FLOOR — named at least one person/team/role/outside party they work for or with. If NONE, follow up asking who they work for or with.",
         "RELATIONAL TASKS (PRIORITIZE) — the goal is the COMMUNICATION/INTERPERSONAL tasks each relationship carries, but ask about it as INTERACTION / ENGAGEMENT, not as another 'what work do you do' question: 'How do you usually interact with them?', 'How do you engage with them day to day?', 'What do those interactions usually look like?'. Avoid the flat 'what do you do with them / what work do you do together' framing. Aim to surface relational tasks, do NOT lead. Probe ONE relationship per turn.",
         "BREADTH (secondary) — only if ONE party and others clearly exist; do NOT reflexively ask 'who else'."
+      ]
+    },
+    {
+      "field": "importantTasks",
+      "text": "Of everything you've described, which tasks would you say matter most?",
+      "evaluationStyle": "lenient",
+      "static": true,
+      "maxFollowups": 1,
+      "minFollowups": 0,
+      "criteria": [
+        "FLOOR — named at least one task they consider most important or central to their work. A single clear answer is enough; do NOT press for a full ranked list.",
+        "ONLY follow up if the answer was genuinely empty or evasive ('everything matters', 'hard to say'). When you do, ask them to point to just the one or two tasks that matter most — do NOT re-list their whole week back to them."
       ]
     }
   ],

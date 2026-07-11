@@ -51,10 +51,10 @@ const COUNT_MODEL = process.env.SMALL_MODEL || 'gpt-4o-mini';
 // on the soft phrasing guidance in the prompts (the rewrite can itself produce
 // stilted phrasings like "what does your work involve around X").
 const REWRITE_BAD = process.env.PLANNER_REWRITE !== '0';
-// Question budget (incl. shadow). Hard-capped at 20 — even if the env var is set
-// higher — so the interview can never run past 20 turns. Enforced below: at the
+// Question budget (incl. shadow). Hard-capped at 15 — even if the env var is set
+// higher — so the interview can never run past 15 turns. Enforced below: at the
 // budget the planner forces the shadow catch-all and ends.
-const MAX_TURNS = Math.min(20, Number(process.env.PLANNER_MAX_TURNS) || 20);
+const MAX_TURNS = Math.min(15, Number(process.env.PLANNER_MAX_TURNS) || 15);
 const MIN_TURNS = Number(process.env.PLANNER_MIN_TURNS) || 5;
 // Merge strike (coverage judge) + generate (next question) into ONE call on spine turns,
 // instead of two sequential gpt-4o calls. Default ALL spine turns (high cap): the A/B
