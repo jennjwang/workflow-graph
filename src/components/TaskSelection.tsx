@@ -58,7 +58,7 @@ const DONE_THRESHOLD = 15;
 // Master switch for attention checks. When false, none are fetched or spliced
 // into the picker (and the real-task budget reclaims their slots), so the
 // fail/screen-out path in advance() can never trigger.
-const ATTENTION_CHECKS_ENABLED = false;
+const ATTENTION_CHECKS_ENABLED = true;
 
 // Attention checks: O*NET-style tasks from clearly unrelated occupations,
 // spliced into the picker. Any honest participant marks them "I don't do this";
