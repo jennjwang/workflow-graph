@@ -627,7 +627,14 @@ Each attention check must be:
 - Written in O*NET TASK STATEMENT form: full action statement, verb-led, with a concrete object and (when natural) purpose or context. 10–25 words. Sentence case, terminal period.
 - Plausible as a real task in its source occupation — not absurd or comedic. The check works because it is obviously not THIS participant's work, not because it is silly.
 
-Pick source occupations from BROADLY DIFFERENT industries — e.g. healthcare, skilled trades (electrician, plumber, mechanic), agriculture, transportation, food service, public safety, manufacturing, education, construction. Avoid picking source occupations that share vocabulary or setting with the participant's job.
+Pick source occupations from hands-on trades and service work — e.g. welding, plumbing, electrical, carpentry, masonry, HVAC, machining, agriculture/farming, food service (cooking, baking), personal care (hairstyling, barbering), landscaping/groundskeeping, textiles/sewing, commercial fishing, firefighting. Avoid picking source occupations that share vocabulary or setting with the participant's job.
+
+CRITICAL EXCLUSIONS — this study recruits from the occupation families below, so a real participant might actually do such a task. NEVER draw an attention check from or adjacent to any of them:
+- Healthcare / medicine / nursing (examining or treating patients, administering medication or vaccines, charting).
+- Driving / trucking / transportation / delivery / logistics (operating trucks or vehicles, hauling freight, route driving).
+- Accounting / bookkeeping / auditing / tax / finance.
+- Insurance claims / adjusting / examining / investigation (assessing damage, processing or investigating claims).
+- IT / software / computing / project or program management (coordinating projects, managing stakeholders/timelines, technical or office coordination).
 
 CONSTRAINTS:
 - Each task must come from a different source occupation.

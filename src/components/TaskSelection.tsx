@@ -68,13 +68,19 @@ const ATTENTION_CHECK_COUNT = ATTENTION_CHECKS_ENABLED ? 2 : 0;
 
 // Used when the LLM call fails or returns too few items — guarantees the picker
 // still carries attention checks. Each is a real task from an occupation with no
-// overlap with knowledge/office work.
+// overlap with knowledge/office work. IMPORTANT: this study recruits truck
+// drivers, claims adjusters, accountants/auditors, IT project managers, and
+// family medicine physicians — so these are deliberately drawn ONLY from trades,
+// food, agriculture, and personal care, avoiding any healthcare, driving/
+// transport, accounting/finance, insurance/claims, or IT/PM task a real
+// participant might actually do.
 const FALLBACK_ATTENTION_CHECKS: string[] = [
-  "Replace worn brake pads and rotors on a customer's vehicle, then road-test it to confirm the repair.",
-  "Administer prescribed vaccines to patients and record each dose in their medical chart.",
-  "Inspect overhead power lines from a bucket truck and replace damaged insulators.",
+  "Cut, color, and style clients' hair according to their requests at a salon.",
+  "Prepare and plate dishes on the line during a restaurant's dinner service.",
+  "Weld steel components on a fabrication line using arc-welding equipment.",
   "Harvest ripe produce by hand and sort it into crates for shipment to distributors.",
-  "Cut, bend, and join sheet-metal ducting for a building's heating and cooling system.",
+  "Mow lawns, trim hedges, and plant seasonal flowers for residential properties.",
+  "Install and solder copper piping to supply water throughout a new building.",
 ];
 
 // Build TaskItem cards for the attention checks, padding from the fallback list
