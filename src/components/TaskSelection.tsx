@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   generateTasksFromInterview,
-  generateAttentionChecks,
   extractInterviewTasks,
   recordScreenOut,
   transcribeAudio,
@@ -83,25 +82,18 @@ const FALLBACK_ATTENTION_CHECKS: string[] = [
   "Install and solder copper piping to supply water throughout a new building.",
 ];
 
-// Build TaskItem cards for the attention checks, padding from the fallback list
-// when the model returns too few. De-dupes case-insensitively and returns up to
-// `count` items.
-function buildAttentionCheckItems(
-  generated: string[],
-  count: number,
-): TaskItem[] {
+// Build TaskItem cards for the attention checks. No LLM generation — checks are
+// drawn only from the curated FALLBACK list (guaranteed not to overlap any
+// recruited occupation). Shuffled so each participant gets a random subset rather
+// than the same items every time.
+function buildAttentionCheckItems(count: number): TaskItem[] {
   if (count <= 0) return [];
-  const seen = new Set<string>();
-  const pool: string[] = [];
-  for (const raw of [...generated, ...FALLBACK_ATTENTION_CHECKS]) {
-    const name = raw.trim();
-    const key = name.toLowerCase();
-    if (!name || seen.has(key)) continue;
-    seen.add(key);
-    pool.push(name);
-    if (pool.length >= count) break;
+  const shuffled = [...FALLBACK_ATTENTION_CHECKS];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
   }
-  return pool.map((name) => ({
+  return shuffled.slice(0, count).map((name) => ({
     name,
     originalName: name,
     status: "unreviewed" as const,
@@ -409,24 +401,6 @@ export function TaskSelection() {
           );
         }
 
-        // Kick off attention-check generation in parallel with the real task
-        // stream so it adds no latency to the processing screen. Fail-open:
-        // buildAttentionCheckItems pads from the fallback list if this rejects
-        // or returns too few. Request a couple extra for de-dupe headroom.
-        // Skipped entirely when attention checks are disabled.
-        const attnPromise = ATTENTION_CHECKS_ENABLED
-          ? generateAttentionChecks(
-              jobTitle,
-              ATTENTION_CHECK_COUNT + 2,
-            ).catch((e) => {
-              console.warn(
-                "[task-selection] attention-check fetch failed, using fallback:",
-                e,
-              );
-              return [] as string[];
-            })
-          : Promise.resolve([] as string[]);
-
         // Generate the full rewritten task list while the processing screen
         // stays up, so the participant only reaches the cards once every task is
         // ready. We show ALL the generated tasks — no max/min cap — so nothing
@@ -465,10 +439,7 @@ export function TaskSelection() {
         if (realCount === 0) setLoadState("error");
 
         // Splice the attention checks into the generated list at even intervals.
-        const attnItems = buildAttentionCheckItems(
-          await attnPromise,
-          ATTENTION_CHECK_COUNT,
-        );
+        const attnItems = buildAttentionCheckItems(ATTENTION_CHECK_COUNT);
         if (attnItems.length > 0) {
           setTasks((prev) => spliceAttentionChecks(prev, attnItems));
         }

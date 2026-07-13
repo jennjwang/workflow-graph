@@ -614,60 +614,6 @@ No surrounding array. No markdown. No commentary. Just one JSON object per line.
   }
 });
 
-// Generate attention-check tasks. These are O*NET-style task statements from
-// occupations clearly unrelated to the participant's role — used to confirm
-// the participant is reading carefully. Returns up to `count` items.
-app.post('/api/generate-attention-checks', async (req, res) => {
-  const { jobTitle, count = 8 } = req.body ?? {};
-  const targetCount = Math.max(1, Math.min(20, Number(count) || 8));
-  const systemPrompt = `You generate ATTENTION-CHECK task statements for a study. The participant will see them mixed in with real tasks for their job and is expected to mark them "I don't do this".
-
-Each attention check must be:
-- A real task from a CLEARLY UNRELATED occupation — one in a completely different industry, setting, and skill base than the participant's role. A participant should never answer "yes" to it.
-- Written in O*NET TASK STATEMENT form: full action statement, verb-led, with a concrete object and (when natural) purpose or context. 10–25 words. Sentence case, terminal period.
-- Plausible as a real task in its source occupation — not absurd or comedic. The check works because it is obviously not THIS participant's work, not because it is silly.
-
-Pick source occupations from hands-on trades and service work — e.g. welding, plumbing, electrical, carpentry, masonry, HVAC, machining, agriculture/farming, food service (cooking, baking), personal care (hairstyling, barbering), landscaping/groundskeeping, textiles/sewing, commercial fishing, firefighting. Avoid picking source occupations that share vocabulary or setting with the participant's job.
-
-CRITICAL EXCLUSIONS — this study recruits from the occupation families below, so a real participant might actually do such a task. NEVER draw an attention check from or adjacent to any of them:
-- Healthcare / medicine / nursing (examining or treating patients, administering medication or vaccines, charting).
-- Driving / trucking / transportation / delivery / logistics (operating trucks or vehicles, hauling freight, route driving).
-- Accounting / bookkeeping / auditing / tax / finance.
-- Insurance claims / adjusting / examining / investigation (assessing damage, processing or investigating claims).
-- IT / software / computing / project or program management (coordinating projects, managing stakeholders/timelines, technical or office coordination).
-
-CONSTRAINTS:
-- Each task must come from a different source occupation.
-- Do NOT echo the participant's role vocabulary, tools, audiences, or artifacts.
-- Do NOT use generic office vocabulary that could plausibly apply to many jobs.
-
-Return JSON: { "tasks": ["...", "...", ...] }. Exactly ${targetCount} items.`;
-
-  const userBlock =
-    `Participant's role: ${jobTitle ?? '(unknown)'}\n` +
-    `\nGenerate ${targetCount} O*NET-style attention-check tasks from occupations clearly unrelated to this role.`;
-
-  try {
-    const response = await client.chat.completions.create({
-      model: MODEL,
-      temperature: 0.8,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userBlock },
-      ],
-    });
-    const parsed = JSON.parse(response.choices[0].message.content);
-    const tasks = Array.isArray(parsed.tasks) ? parsed.tasks.filter(t => typeof t === 'string') : [];
-    console.log(`[generate-attention-checks] role=${jobTitle} requested=${targetCount} generated=${tasks.length}`);
-    for (const t of tasks) console.log(`    ◦ ${t}`);
-    res.json({ tasks });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
 app.post('/api/propose-subtasks', async (req, res) => {
   const { taskLabel, coreTask, jobTitle, statementClarification, existingNodes = [], existingChildren = [], ancestorChain = [], responsibilities, typicalWeek, rejected = [], promptVariant = 'default' } = req.body;
   // existingChildren: direct children of the node being expanded. When non-empty,

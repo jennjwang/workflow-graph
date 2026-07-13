@@ -467,23 +467,6 @@ export async function plannerNext(
   return res.json();
 }
 
-// Generate O*NET-style attention-check tasks tailored to the participant's role —
-// drawn from clearly unrelated occupations so a participant should always answer
-// "I don't do this". Caller can request `count`; server clamps to 1–20.
-export async function generateAttentionChecks(
-  jobTitle: string,
-  count = 8,
-): Promise<string[]> {
-  const res = await fetch('/api/generate-attention-checks', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jobTitle, count }),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  const data = await res.json();
-  return Array.isArray(data.tasks) ? data.tasks.filter((t: unknown) => typeof t === 'string') : [];
-}
-
 export async function transcribeAudio(blob: Blob): Promise<string> {
   const base64 = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
