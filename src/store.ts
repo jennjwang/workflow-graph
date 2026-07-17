@@ -26,6 +26,9 @@ export interface ProlificContext {
   attnCheckMaxFails: number;
   attnCheckFails: number;
   screenedOut: boolean;
+  // Why the participant was screened out (e.g. 'occupation-not-eligible',
+  // 'attention-check-failed'). Null until a screen-out happens.
+  screenOutReason: string | null;
 }
 
 interface WorkflowStore {
@@ -192,7 +195,8 @@ interface WorkflowStore {
   // the time-allocation section (distinct from the sum of per-task hours).
   avgWeeklyHours: number | null;
   setAvgWeeklyHours: (hours: number | null) => void;
-  // Participant occupation self-ID, captured on the final 'occupation-select' screen.
+  // Participant occupation self-ID, captured on the 'occupation-select' screen
+  // (SOC-FIRST variant: at the start of the study, before the interview).
   occupationSelection: OccupationSelection | null;
   setOccupationSelection: (sel: OccupationSelection) => void;
   addMessage: (role: 'user' | 'assistant', content: string) => void;
@@ -242,6 +246,7 @@ const initialProlific: ProlificContext = {
   attnCheckMaxFails: 0,
   attnCheckFails: 0,
   screenedOut: false,
+  screenOutReason: null,
 };
 
 const SESSION_START_MS = Date.now();

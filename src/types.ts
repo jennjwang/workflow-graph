@@ -85,12 +85,15 @@ export interface OccupationCandidate {
   why?: string;        // model's one-line reason (shown candidates only)
 }
 
-// The participant's occupation self-identification, captured on the occupation
-// self-ID screen (shown after the interview, before task selection).
+// The participant's occupation self-identification. In the default flow this is
+// captured AFTER the interview (candidates ranked from the transcript). In the
+// SOC-FIRST variant it is captured at the START, before the interview, from a
+// job title / description the participant searches with (stored in `query`).
 export interface OccupationSelection {
   selectedCode: string;                  // the SOC the participant identified with
   selectedTitle: string;
   fromSearch: boolean;                   // true if picked via free search rather than a shown candidate
+  query?: string;                        // SOC-FIRST: the job title / description the participant searched with
   shownSets: OccupationCandidate[][];    // every model-suggested set shown (incl. after "show different")
   rejectedCodes: string[];               // codes cycled past via "show different"
   hints: string[];                       // steerable hints the participant gave

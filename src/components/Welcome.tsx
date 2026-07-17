@@ -77,10 +77,10 @@ export function Welcome() {
           </a>
 
           <p className="mt-12 text-xs text-slate-500 leading-relaxed">
-            By clicking “Begin interview,” you confirm that you have read and
+            By clicking “Begin,” you confirm that you have read and
             agree to the{" "}
             <a
-              href="https://docs.google.com/document/d/15IlS2zdtZ9z28jNMu3i8KIb3YoaeIKk2/edit?usp=sharing&ouid=115842279112732201256&rtpof=true&sd=true"
+              href="https://docs.google.com/document/d/1JbR54H8U-aRfE4K-pl4N_FQrhWMhq-25/edit?usp=sharing&ouid=115842279112732201256&rtpof=true&sd=true"
               target="_blank"
               rel="noopener noreferrer"
               className="text-indigo-600 hover:text-indigo-700 underline font-medium"
@@ -91,10 +91,10 @@ export function Welcome() {
           </p>
 
           <button
-            onClick={() => setPhase("background")}
+            onClick={() => setPhase("occupation-select")}
             className="mt-4 inline-flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-full transition-all active:scale-[0.98] shadow-sm shadow-indigo-200"
           >
-            Begin interview
+            Begin
             <svg
               className="w-4 h-4"
               viewBox="0 0 24 24"

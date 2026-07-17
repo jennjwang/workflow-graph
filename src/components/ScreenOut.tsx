@@ -38,7 +38,7 @@ export function ScreenOut() {
       undefined,
       {
         screenedOut: true,
-        screenOutReason: 'attention-check-failed',
+        screenOutReason: prolific.screenOutReason ?? 'attention-check-failed',
         backgroundTranscript: exportData.backgroundTranscript,
         selectedTasks: exportData.selectedTasks,
         taskItems: exportData.taskItems,
@@ -84,10 +84,17 @@ export function ScreenOut() {
         </div>
 
         <h1 className="text-[1.6rem] font-light text-slate-800 leading-snug tracking-tight mb-3">
-          Your responses don't qualify for this study.
+          Sorry, your responses don't qualify for this study.
         </h1>
         <p className="text-sm text-slate-500 leading-relaxed mb-8">
-          Thanks for your time. You'll be returned to Prolific in <span className="font-semibold text-slate-700">{secondsLeft}s</span>.
+          {prolific.pid ? (
+            <>
+              Thanks for your time. You'll be returned to Prolific in{" "}
+              <span className="font-semibold text-slate-700">{secondsLeft}s</span>.
+            </>
+          ) : (
+            <>Thanks for your time. You can close this tab now.</>
+          )}
         </p>
 
         {prolific.pid && (

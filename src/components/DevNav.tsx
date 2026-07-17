@@ -20,6 +20,7 @@ type Page = {
 // Only the phases App renders a distinct screen for, in study order.
 const PAGES: Page[] = [
   { phase: 'setup', label: 'Welcome' },
+  { phase: 'occupation-select', label: 'Occupation search' },
   { phase: 'background', label: 'Background interview' },
   { phase: 'task-selection', label: 'Task selection (review)' },
   { phase: 'task-selection', label: 'Task selection (task card)', params: { card: '1' } },

@@ -442,7 +442,9 @@ export function BackgroundInterview() {
 
   const finishOutro = () => {
     setIsSubmitting(true);
-    setPhase("occupation-select");
+    // SOC-FIRST variant: the occupation was already chosen at the start of the
+    // study (before the interview), so go straight to task selection.
+    setPhase("task-selection");
   };
 
   const inputRef = useRef<HTMLTextAreaElement>(null);

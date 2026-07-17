@@ -7,7 +7,7 @@ import { SUBTASK_WORKER_SYSTEM_PROMPT, INTERVIEW_TASK_EXTRACTOR_PROMPT, mentione
 import { evaluateAnswerMessages, rewordQuestionMessages, checkCoverageMessages } from './prompts/interview.js';
 import { plannerStep } from './prompts/planner.js';
 import { retrieveExemplarBlock } from './lib/retrieval.js';
-import { occupationCandidates, listOccupations } from './lib/occupation-candidates.js';
+import { occupationCandidates, occupationSearch, listOccupations } from './lib/occupation-candidates.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -384,6 +384,29 @@ app.post('/api/occupation-candidates', async (req, res) => {
     res.json({ candidates });
   } catch (err) {
     console.error('[occupation-candidates]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// SOC-FIRST variant: rank the top occupations from a free-text job title /
+// description the participant types at the START of the study (before the
+// interview, so there is no transcript yet). excludeCodes + hint drive the
+// "show different options" loop. Fails open (returns []), in which case the
+// screen falls back to free search over the full SOC list.
+app.post('/api/occupation-search', async (req, res) => {
+  const { query = '', excludeCodes = [], hint = '' } = req.body;
+  if (typeof query !== 'string') {
+    return res.status(400).json({ error: 'query must be a string' });
+  }
+  try {
+    const candidates = await occupationSearch(query, {
+      excludeCodes: Array.isArray(excludeCodes) ? excludeCodes : [],
+      hint: typeof hint === 'string' ? hint : '',
+    });
+    console.log(`[occupation-search] q="${query.slice(0, 60)}" excluded=${(excludeCodes || []).length} hint=${hint ? 'y' : 'n'} -> ${candidates.length}`);
+    res.json({ candidates });
+  } catch (err) {
+    console.error('[occupation-search]', err);
     res.status(500).json({ error: err.message });
   }
 });
