@@ -148,10 +148,10 @@ export function OccupationSelect() {
 
       <div className="relative max-w-2xl w-full">
         <h1 className="text-[1.5rem] sm:text-[1.85rem] font-light text-slate-800 leading-snug tracking-tight mb-2">
-          Which occupation best describes your work?
+          Which occupation best describes your job?
         </h1>
         <p className="text-sm text-slate-500 leading-relaxed mb-10">
-          Based on your interview, here are the closest matches. Pick the one you most identify with.
+          Based on your interview, here are the closest matches. Read each description and pick the one you most identify with.
         </p>
 
         {mode === "candidates" ? (
