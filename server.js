@@ -43,22 +43,17 @@ await fs.mkdir(SCREEN_OUTS_DIR, { recursive: true });
 const VALIDATION_DIR = path.join(__dirname, 'validation');
 const VALIDATION_INPUTS_DIR = path.join(VALIDATION_DIR, 'inputs');
 const VALIDATION_OUT_DIR = path.join(VALIDATION_DIR, 'out');
-// Occupation verification is study-agnostic — a participant's occupation is the
-// same whether they're doing the coverage or win-rate study, so both gate on one
+// Occupation verification is study-agnostic — the coverage study gates on a
 // shared verification record keyed by externalId.
 const VALIDATION_VERIFY_DIR = path.join(VALIDATION_OUT_DIR, 'verifications');
 const COVERAGE_ASSIGN_DIR = path.join(VALIDATION_OUT_DIR, 'assignments', 'coverage');
 const COVERAGE_RESPONSE_DIR = path.join(VALIDATION_OUT_DIR, 'responses', 'coverage');
 // Post-self-ID fit judgments (incl. screen-outs, which never submit a response).
 const COVERAGE_FIT_DIR = path.join(VALIDATION_OUT_DIR, 'fit', 'coverage');
-const WINRATE_ASSIGN_DIR = path.join(VALIDATION_OUT_DIR, 'assignments', 'winrate');
-const WINRATE_RESPONSE_DIR = path.join(VALIDATION_OUT_DIR, 'responses', 'winrate');
 await fs.mkdir(VALIDATION_VERIFY_DIR, { recursive: true });
 await fs.mkdir(COVERAGE_ASSIGN_DIR, { recursive: true });
 await fs.mkdir(COVERAGE_RESPONSE_DIR, { recursive: true });
 await fs.mkdir(COVERAGE_FIT_DIR, { recursive: true });
-await fs.mkdir(WINRATE_ASSIGN_DIR, { recursive: true });
-await fs.mkdir(WINRATE_RESPONSE_DIR, { recursive: true });
 
 // Shared verification gate: returns the verification record, or null if absent.
 async function readVerification(externalId) {
@@ -1815,113 +1810,6 @@ app.post('/api/validation/coverage/fit', async (req, res) => {
   } catch (err) {
     console.error('[coverage] fit failed:', err);
     res.status(500).json({ error: 'fit failed' });
-  }
-});
-
-// ── Win-rate study endpoints ──────────────────────────────────────────────────
-// For each matched pair (an "ours" statement and an "onet" statement describing
-// the same work activity), the incumbent picks the one that more accurately and
-// clearly describes their work. Forced A-vs-B; every incumbent judges all pairs
-// in a randomized order with the ours/onet side randomized per pair (so position
-// can't bias the result). We never tell the client which side is "ours".
-
-async function loadPairs() {
-  const raw = await fs.readFile(path.join(VALIDATION_INPUTS_DIR, 'pairs.json'), 'utf-8');
-  const data = JSON.parse(raw);
-  if (!data || !Array.isArray(data.pairs)) throw new Error('bad pairs.json');
-  return data;
-}
-
-// Fisher-Yates shuffle (uses Math.random — fine on the server, unlike workflows).
-function shuffled(arr) {
-  const a = arr.slice();
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-app.post('/api/validation/winrate/assign', async (req, res) => {
-  const externalId = safeExternalId(req.body && req.body.externalId);
-  if (!externalId) return res.status(400).json({ error: 'externalId required' });
-  try {
-    const v = await readVerification(externalId);
-    if (!v || v.match !== true) return res.status(403).json({ error: 'not verified' });
-  } catch (err) {
-    console.error('[winrate] verify-gate read failed:', err);
-    return res.status(500).json({ error: 'verify check failed' });
-  }
-  const assignPath = path.join(WINRATE_ASSIGN_DIR, `${externalId}.json`);
-  try {
-    let assignment;
-    try {
-      assignment = JSON.parse(await fs.readFile(assignPath, 'utf-8'));
-    } catch (err) {
-      if (err.code !== 'ENOENT') throw err;
-      const { pairs } = await loadPairs();
-      // Per-participant randomized order + ours/onet side. Persist so a refresh
-      // is stable and so scoring can map each A/B choice back to ours vs onet.
-      const items = shuffled(pairs).map((p) => {
-        const oursSide = Math.random() < 0.5 ? 'A' : 'B';
-        return {
-          pairId: p.id,
-          oursSide,
-          A: oursSide === 'A' ? p.ours : p.onet,
-          B: oursSide === 'A' ? p.onet : p.ours,
-        };
-      });
-      assignment = { externalId, items, assignedAt: new Date().toISOString() };
-      await fs.writeFile(assignPath, JSON.stringify(assignment, null, 2));
-    }
-    // Blind payload — strip oursSide before sending to the client.
-    const items = assignment.items.map((it) => ({ pairId: it.pairId, A: it.A, B: it.B }));
-    res.json({ items });
-  } catch (err) {
-    console.error('[winrate] assign failed:', err);
-    res.status(500).json({ error: 'assign failed' });
-  }
-});
-
-app.post('/api/validation/winrate/response', async (req, res) => {
-  const externalId = safeExternalId(req.body && req.body.externalId);
-  if (!externalId) return res.status(400).json({ error: 'externalId required' });
-  const choices = req.body && req.body.choices;
-  if (!Array.isArray(choices)) return res.status(400).json({ error: 'choices required' });
-  try {
-    const v = await readVerification(externalId);
-    if (!v || v.match !== true) return res.status(403).json({ error: 'not verified' });
-    let assignment;
-    try {
-      assignment = JSON.parse(await fs.readFile(path.join(WINRATE_ASSIGN_DIR, `${externalId}.json`), 'utf-8'));
-    } catch (err) {
-      if (err.code === 'ENOENT') return res.status(400).json({ error: 'no assignment for participant' });
-      throw err;
-    }
-    const bySide = new Map(assignment.items.map((it) => [it.pairId, it.oursSide]));
-    const judgments = [];
-    for (const c of choices) {
-      const pairId = c && c.pairId;
-      const choice = c && (c.choice === 'A' || c.choice === 'B') ? c.choice : null;
-      if (!bySide.has(pairId) || !choice) continue;
-      const oursSide = bySide.get(pairId);
-      judgments.push({ pairId, choice, oursSide, oursWon: choice === oursSide });
-    }
-    const record = {
-      externalId,
-      occupation: v.occupation || null,
-      judgments,
-      oursWins: judgments.filter((j) => j.oursWon).length,
-      n: judgments.length,
-      elapsedMs: Number.isFinite(req.body.elapsedMs) ? req.body.elapsedMs : null,
-      startedAt: req.body.startedAt || null,
-      submittedAt: new Date().toISOString(),
-    };
-    await fs.writeFile(path.join(WINRATE_RESPONSE_DIR, `${externalId}.json`), JSON.stringify(record, null, 2));
-    res.json({ ok: true });
-  } catch (err) {
-    console.error('[winrate] response failed:', err);
-    res.status(500).json({ error: 'response failed' });
   }
 });
 

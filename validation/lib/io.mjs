@@ -59,4 +59,3 @@ async function loadResponses(study) {
 }
 
 export const loadCoverageResponses = () => loadResponses('coverage');
-export const loadWinrateResponses = () => loadResponses('winrate');

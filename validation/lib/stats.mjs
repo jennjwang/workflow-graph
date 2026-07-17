@@ -31,8 +31,8 @@ export function meanCI(values) {
   return { n, mean, lo: mean - m, hi: mean + m, se };
 }
 
-// Wilson score 95% interval for a binomial proportion (kept here for the later
-// win-rate / precision / rubric metrics).
+// Wilson score 95% interval for a binomial proportion (used by the quality and
+// task-quality rubric metrics).
 export function wilsonCI(successes, total) {
   if (total === 0) return { n: 0, p: NaN, lo: NaN, hi: NaN };
   const z = 1.96;
