@@ -1,0 +1,89 @@
+{
+  "occupation": "Computer and Information Research Scientist",
+  "onetCode": "15-1221.00",
+  "_source": "ours=onet-repo partition_gold/tasks.json (26 corroborated); onet=cache/onet_tasks/15-1221.00.json",
+  "methods": {
+    "ours": {
+      "label": "Data-derived inventory",
+      "statements": [
+        "Prepare presentations to communicate research findings or recommendations to collaborators or stakeholders",
+        "Analyze experiment data or results to identify trends or trade-offs",
+        "Evaluate model performance using benchmarks or baselines to validate results",
+        "Meet with stakeholders to discuss project progress or coordinate work",
+        "Review research literature to inform research strategies or justify research directions",
+        "Define experiment plans to guide robotics and training studies",
+        "Review code changes to ensure quality and correctness",
+        "Troubleshoot model issues to resolve errors during training or deployment",
+        "Brainstorm ideas with colleagues to develop research or system improvements",
+        "Document procedures or configurations to ensure reproducibility",
+        "Prepare datasets for model training or benchmark experiments to ensure reproducibility and accuracy",
+        "Revise manuscripts or reports in response to peer-review feedback for resubmission",
+        "Tune model hyperparameters to optimize performance",
+        "Develop prototypes to evaluate human-AI interaction strategies",
+        "Advise students or researchers on research methods or skills to support academic development",
+        "Coordinate with engineers to implement model updates for production evaluation",
+        "Prepare grant proposals to secure funding for research efforts",
+        "Profile system performance to identify bottlenecks or optimize resource use",
+        "Provide feedback on work to improve quality",
+        "Adapt published methods for experiments to enable direct comparison or explore new applications",
+        "Conduct research activities on algorithms and complexity to advance theoretical computer science knowledge",
+        "Define project requirements or milestones with collaborators for research initiatives",
+        "Design algorithms for large-scale data systems to improve performance and efficiency",
+        "Develop mathematical proofs to verify theorem correctness",
+        "Develop model architectures for training experiments",
+        "Develop research methodologies or papers for database or programming language studies to advance system investigations"
+      ]
+    },
+    "onet": {
+      "label": "O*NET task list",
+      "statements": [
+        "Analyze problems to develop solutions involving computer hardware and software.",
+        "Apply theoretical expertise and innovation to create or apply new technology, such as adapting principles for applying computers to new uses.",
+        "Assign or schedule tasks to meet work priorities and goals.",
+        "Meet with managers, vendors, and others to solicit cooperation and resolve problems.",
+        "Design computers and the software that runs them.",
+        "Conduct logical analyses of business, scientific, engineering, and other technical problems, formulating mathematical models of problems for solution by computers.",
+        "Evaluate project plans and proposals to assess feasibility issues.",
+        "Participate in multidisciplinary projects in areas such as virtual reality, human-computer interaction, or robotics.",
+        "Consult with users, management, vendors, and technicians to determine computing needs and system requirements.",
+        "Develop and interpret organizational goals, policies, and procedures.",
+        "Develop performance standards, and evaluate work in light of established standards.",
+        "Maintain network hardware and software, direct network security measures, and monitor networks to ensure availability to system users.",
+        "Direct daily operations of departments, coordinating project activities with other departments.",
+        "Participate in staffing decisions and direct training of subordinates.",
+        "Approve, prepare, monitor, and adjust operational budgets."
+      ]
+    },
+    "llm": {
+      "label": "LLM-generated (no data)",
+      "statements": [
+        "Formulate research questions",
+        "Conduct literature reviews",
+        "Design experiments",
+        "Develop algorithms",
+        "Prove theoretical properties",
+        "Implement prototypes",
+        "Write simulation code",
+        "Collect and annotate datasets",
+        "Curate datasets",
+        "Preprocess data",
+        "Perform statistical analyses",
+        "Evaluate models",
+        "Optimize algorithm performance",
+        "Design benchmarks",
+        "Create reproducible workflows",
+        "Maintain code repositories",
+        "Write technical documentation",
+        "Visualize results",
+        "Draft research papers",
+        "Submit manuscripts",
+        "Respond to peer-review comments",
+        "Present findings",
+        "Prepare grant proposals",
+        "File patent applications",
+        "Collaborate with industry partners",
+        "Supervise students"
+      ]
+    }
+  }
+}

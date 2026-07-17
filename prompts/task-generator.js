@@ -302,12 +302,14 @@ MECE IS THE MASTER CONSTRAINT. The mentioned tasks are evidence to be covered, N
 // SPECIFIC PERSON: both their described work AND their stated background
 // (seniority, domains, portfolio), pitched at their level. Not occupation-wide
 // title-padding. MECE with the already-built list, as specific as the rest.
-// Emitted at LOW confidence, tagged source:'gap'.
+// Emitted last, tagged source:'gap'.
 export function buildGapFillSystemPrompt(count, alreadyTasks = []) {
   const haveBlock = alreadyTasks.length
     ? `\n\nTASKS ALREADY IN THEIR LIST — do NOT repeat, restate, or add a KIND/CASE of any of these:\n${alreadyTasks.map((t) => `- ${t}`).join('\n')}`
     : '';
-  return `You are adding a FEW inferred "you might also do this" tasks to a participant's task list. They have already described their job; the list of tasks they explicitly named is below. Your job: propose up to ${count} ADDITIONAL recurring tasks they very likely do but did NOT mention — and return ONLY the MOST IMPORTANT, mutually exclusive ones.
+  return `You are adding a FEW inferred "you might also do this" tasks to a participant's task list. They have already described their job; the list of tasks they explicitly named is below. Your job: add ONLY the additional recurring tasks they very likely do but did NOT mention, AND that you can tie to something specific they said.
+
+${count} IS A HARD CAP, NOT A QUOTA. Most participants warrant only a FEW such tasks, and often ZERO. Do NOT pad the list to approach ${count} — a short, well-anchored list is the goal, and returning nothing is a valid and common answer. It is far better to return 1–2 tasks you are sure of than to reach ${count} by adding generic role-typical filler.
 
 THE HARD RULE — INFER FROM THIS SPECIFIC PERSON, NOT FROM A GENERIC JOB TITLE. Anchor every task you add in something THIS participant actually told you — and use BOTH:
   (a) their described WORK — the responsibilities, weekly tasks, and activities they named; and
@@ -322,11 +324,10 @@ What to DROP: generic filler whose ONLY justification is "people with this title
 CONSTRAINTS:
 - MUTUALLY EXCLUSIVE — each addition must be a genuinely DISTINCT activity: not a duplicate, restatement, kind/case, or subset of (a) any task already in their list, OR (b) any other task you add here. Tasks serving the SAME underlying activity or objective count as overlapping even when the channel, medium, or occasion differs (e.g. emailing parents vs. meeting parents is ONE task; routine coaching vs. competition-day prep is ONE task). When candidates overlap, keep only the single most important and drop the rest.${haveBlock}
 - SPECIFIC and same shape as the rest: O*NET style, verb-led, 8–18 words, sentence case, terminal period, plain language. Name the actual artifact / audience / output — match the specificity of their other tasks, do NOT go vague.
-- MOST IMPORTANT ONLY — QUALITY OVER QUANTITY. ${count} is a CEILING, not a target. Rank candidates by how central they are to THIS person's role and return only the most important, well-anchored, mutually exclusive ones; if only two qualify, return two. Zero is fine.
+- MOST IMPORTANT ONLY — QUALITY OVER QUANTITY. ${count} is a CEILING, not a target. Rank candidates by how central they are to THIS person's role and return only the most important, well-anchored, mutually exclusive ones; if only two qualify, return two. Zero is fine. Before adding EACH task, ask yourself: can I point to the exact thing this participant said that makes this task likely? If not, DROP it — never include a task just to reach ${count}. The moment you find yourself reaching for generic, role-typical tasks to lengthen the list, STOP and return only what you have.
 
 OUTPUT: one JSON object per line (JSONL), no array, no commentary:
-{"name": "...", "confidence": 0.0-1.0}
-These are INFERRED, so confidence is LOW by definition — use 0.1–0.3, higher only when the implication is very strong.`;
+{"name": "..."}`;
 }
 
 // ── Gap-probe: turn coverage gaps into OPEN interview questions ────────────────

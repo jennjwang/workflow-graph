@@ -1,0 +1,24 @@
+\section{Methodology}
+\subsection{Task Collection}
+\label{sec:method:interview}
+
+We treat this as a \emph{mixed-initiative} process: a language-model planner guides the interview toward broad task coverage, the participant steers the conversation toward the work that they actually do, and the model then turns the interview into a structured task list that the participant reviews.
+
+We build on SparkMe~\cite{sparkme}, which formulates adaptive semi-structured interviewing
+as maximizing an \emph{interview utility}: coverage of a predefined \emph{topic guide} and
+discovery of relevant \emph{emergent themes}, traded off against interview cost measured by
+length. We adopt this formulation and specialize it for eliciting tasks. The topic guide
+becomes a fixed set of task areas the planner must cover, and the \emph{emergent} phase
+surfaces the tasks that lie beyond it.
+
+\paragraph{Topic guide.}
+The guide contains seven topics, covering the participant's role and field, tenure, main responsibilities, the recurring weekly tasks, essential tasks, their work outputs, and the people they work with. Each topic carries a short list of coverage \emph{criteria} that the planner probes until
+they are met or the participant declines the topic.
+
+\paragraph{Emergent tasks.}
+
+The planner surfaces new tasks in two ways. When an activity the participant named is still broad, the planner asks them to name the distinct tasks it covers. When no such activity remains, the planner instead speculates the tasks someone in the participant's role would do, grounded in what they have described, and compares this list against what the interview has already collected. It then asks an open question about the most important task that the comparison turns up that the participant has not mentioned. Because that task is only inferred, the question is anchored to something they already said, but phrased so they describe the work themselves.
+
+\paragraph{Task generation.}
+
+From the transcript, an extractor model produces a structured inventory of distinct, non-overlapping task statements in O*NET style. The inventory is intended to cover the participant's work rather than enumerate the occupation exhaustively. For completeness, the model may also infer additional tasks that are strongly suggested by the participant's responses but were not explicitly mentioned. The participant then reviews the generated inventory, validating, revising, or deleting existing entries and adding any missing tasks.

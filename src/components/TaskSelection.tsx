@@ -47,7 +47,10 @@ const RELEVANCE_OPTIONS: {
 // Ceiling on the generated list. We show ALL the participant's tasks — no
 // artificial max or min — so nothing they described gets dropped; this only
 // bounds pathological runs. The server caps the model at this and emits
-// everything it produces under it.
+// everything it produces under it. Real interviews land at ~3–18 tasks, so this
+// rarely binds; it mainly guards against a runaway/incoherent transcript.
+// KEEP IN SYNC with the server's fallback default in server.js
+// (/api/generate-tasks-from-interview `targetCount`).
 const GENERATION_CEILING = 30;
 
 // Number of cards the participant must rate before the "Finish early" escape
@@ -530,7 +533,10 @@ export function TaskSelection() {
       const nextFails = prolific.attnCheckFails + 1;
       setProlific({ attnCheckFails: nextFails });
       if (nextFails > prolific.attnCheckMaxFails) {
-        setProlific({ screenedOut: true });
+        setProlific({
+          screenedOut: true,
+          screenOutReason: "attention-check-failed",
+        });
         if (prolific.pid) {
           const sid = useWorkflowStore.getState().sessionId;
           recordScreenOut(prolific.pid, sid, "attention-check-failed").catch(

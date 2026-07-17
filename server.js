@@ -477,10 +477,10 @@ app.post('/api/planner-next', async (req, res) => {
 //   1. Normalizes the interview tasks to O*NET task-statement style (rewords
 //      vague/short ones; verb-led, sentence case, ~8-18 words)
 //   2. Deduplicates / rolls up any that describe the same activity (MECE)
-//   3. Scores each with a confidence and streams them ranked most-confident first
+//   3. Streams them in the model's most-central-first order, capped at the burnout budget
 //   4. Adds a few INFERRED gap-fill tasks (PASS 2) — work they likely do but
-//      didn't say, inferred FROM their own answers (not occupation-wide) — at low
-//      confidence, tagged source:'gap'. Disable with GAPFILL_COUNT=0.
+//      didn't say, inferred FROM their own answers (not occupation-wide) —
+//      tagged source:'gap'. Disable with GAPFILL_COUNT=0.
 app.post('/api/generate-tasks-from-interview', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -498,9 +498,11 @@ app.post('/api/generate-tasks-from-interview', async (req, res) => {
   // that the short extracted-task list drops. Empty string if not provided.
   const fullTranscript = Array.isArray(backgroundTranscript) ? transcriptFromTurns(backgroundTranscript) : '';
   // Burnout cap (tracks the picker). We show the participant's OWN tasks only —
-  // the normalized MECE list of what they described — ranked by confidence and
-  // capped at this ceiling.
-  const targetCount = Number.isFinite(+count) && +count > 0 ? Math.round(+count) : 22;
+  // the normalized MECE list of what they described — capped at this ceiling.
+  // The client always sends `count` (GENERATION_CEILING in TaskSelection.tsx);
+  // this fallback is for callers that omit it (eval scripts, direct API use) and
+  // MUST mirror that ceiling so the two never disagree.
+  const targetCount = Number.isFinite(+count) && +count > 0 ? Math.round(+count) : 30;
 
   const interviewBlock = mentionedTasksBlock(interviewTasks);
   const streamingSystem = `${buildAnchoredTaskSystemPrompt(targetCount)}
@@ -512,13 +514,17 @@ WRITE EACH TASK IN O*NET TASK-STATEMENT STYLE. Mirror the shape of real O*NET ta
  - Sentence case, 8–18 words, ending in a period. Not a one-word verb, not a multi-sentence story.
  - You may fold closely related variants into one statement with "such as" or a short list ("...such as tracking inventory or retrieving data."), but only when each item is a KIND or CASE of the same activity.
 
+ONE ACTION PER TASK — NO VERB FUSION (STRICT). Each task names ONE activity with ONE main verb. Do NOT join distinct actions with "and", "or", or a comma-series of verbs — output them as SEPARATE tasks. The following are ALWAYS separate, never one line:
+ - drafting, revising, and submitting a paper → 3 tasks
+ - writing code, debugging code, and reviewing code → 3 tasks
+ - building and maintaining a system → 2 tasks
+ - running experiments and analyzing results → 2 tasks
+ - designing and implementing a feature → 2 tasks
+ - meeting with someone and sending them updates → 2 tasks
+The ONLY things that may share one line: a "such as"/"including" list of KINDS or CASES of the SAME verb, placed in the OBJECT ("Run health screenings, such as vision and hearing."); or two micro-steps that produce ONE output in one sitting ("Calculate and record accruals."). If two verbs have different deliverables, happen at different times, or act on different objects, SPLIT them — even if it makes the list longer. This rule OUTRANKS the count ceiling.
+
 OUTPUT FORMAT: emit one task per line as JSONL. Each line must be a complete JSON object:
-{"name": "...", "confidence": 0.0-1.0}
-"confidence" is HOW SURE YOU ARE that this is a real task the participant actually does, judged ONLY from their own words:
- - HIGH (0.8-1.0): they stated it clearly and explicitly.
- - MEDIUM (0.4-0.7): you had to merge it from several mentions, or normalize/rephrase a loose statement.
- - LOW (0.0-0.3): you INFERRED it — plausible for their role and implied by their answers, but never explicitly said.
-Calibrate honestly and use the full range — do NOT mark everything high.
+{"name": "..."}
 No surrounding array. No markdown. No commentary. Just one JSON object per line.`;
 
   try {
@@ -527,12 +533,14 @@ No surrounding array. No markdown. No commentary. Just one JSON object per line.
     // ── PASS 1: normalize the participant's mentioned tasks (buffered, not emitted
     //    yet — proportional down-sampling may need to trim this group too) ──
     const normalized = [];
-    const pushNorm = (name, confidence) => {
+    const seenNorm = new Set();
+    const pushNorm = (name) => {
       const n = String(name).trim();
       if (!n) return;
-      let c = Number(confidence);
-      if (!Number.isFinite(c)) c = 0.5;           // missing/garbled → neutral, never anchored on
-      normalized.push({ name: n, confidence: Math.min(1, Math.max(0, c)) });
+      const key = n.toLowerCase();
+      if (seenNorm.has(key)) return;              // guard against the model repeating a line
+      seenNorm.add(key);
+      normalized.push(n);
     };
     const stream = await client.chat.completions.create({
       model: MODEL,
@@ -551,29 +559,23 @@ No surrounding array. No markdown. No commentary. Just one JSON object per line.
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) continue;
-        try { const obj = JSON.parse(trimmed); if (obj.name) pushNorm(obj.name, obj.confidence); } catch { /* keep buffering */ }
+        try { const obj = JSON.parse(trimmed); if (obj.name) pushNorm(obj.name); } catch { /* keep buffering */ }
       }
     }
-    if (buffer.trim()) { try { const obj = JSON.parse(buffer.trim()); if (obj.name) pushNorm(obj.name, obj.confidence); } catch { /* ignore */ } }
+    if (buffer.trim()) { try { const obj = JSON.parse(buffer.trim()); if (obj.name) pushNorm(obj.name); } catch { /* ignore */ } }
 
-    // ── COMPOSE: keep the TOP `targetCount` by confidence, so when the model
-    //    emits more tasks than the burnout budget the ones dropped are the
-    //    LEAST-confident overflow — never the participant's clearest tasks.
-    //    Then display them least-confident first, so the extractions most worth
-    //    validating still lead. (When nothing is truncated the output is
-    //    identical to before — only the truncation case changes.) ──
-    const outNorm = [...normalized]
-      .sort((a, b) => b.confidence - a.confidence)    // most-confident first → keep the best
-      .slice(0, Math.max(1, targetCount))             // drop least-confident overflow
-      .sort((a, b) => a.confidence - b.confidence)    // display least-confident first
-      .map((t) => t.name);
+    // ── COMPOSE: the model orders its list most-central first and treats
+    //    `targetCount` as a ceiling, so keep its order and cap at the burnout
+    //    budget as a safety net (rarely triggers — most sessions come in under
+    //    the cap). ──
+    const outNorm = normalized.slice(0, Math.max(1, targetCount));
 
     for (const name of outNorm) sendEvent('task', { name, source: 'interview' });
 
     // ── PASS 2: GAP-FILL — a few INFERRED tasks they likely do but didn't say,
-    //    inferred FROM their own answers (not occupation-wide). Emitted last, at
-    //    low confidence, tagged source:'gap' so they're mixed into the list but
-    //    distinguishable in the data. Fails open — any error just skips them. ──
+    //    inferred FROM their own answers (not occupation-wide). Emitted last,
+    //    tagged source:'gap' so they're mixed into the list but distinguishable
+    //    in the data. Fails open — any error just skips them. ──
     const gapCount = Math.max(0, Number(process.env.GAPFILL_COUNT) || 10);
     const gapNames = [];
     if (gapCount > 0 && outNorm.length > 0) {
@@ -583,7 +585,7 @@ No surrounding array. No markdown. No commentary. Just one JSON object per line.
           temperature: 0.7,
           messages: [
             { role: 'system', content: buildGapFillSystemPrompt(gapCount, outNorm) },
-            { role: 'user', content: `Job: ${jobTitle}${interviewBlock}${fullTranscript ? `\n\nFULL INTERVIEW (their own words — read it for background, seniority, domains, and stakeholders like boards/investors that the task list above drops):\n${fullTranscript}` : ''}\n\nPropose up to ${gapCount} inferred tasks they likely do but did NOT mention, each implied by their described work OR their background above.` },
+            { role: 'user', content: `Job: ${jobTitle}${interviewBlock}${fullTranscript ? `\n\nFULL INTERVIEW (their own words — read it for background, seniority, domains, and stakeholders like boards/investors that the task list above drops):\n${fullTranscript}` : ''}\n\nAdd only the inferred tasks they likely do but did NOT mention that you can tie to something specific above — at most ${gapCount}, but fewer (or none) is expected. Do NOT pad to reach ${gapCount}.` },
           ],
         });
         const seen = new Set(outNorm.map((n) => n.toLowerCase().trim()));
@@ -602,8 +604,7 @@ No surrounding array. No markdown. No commentary. Just one JSON object per line.
       }
     }
 
-    const confDebug = [...normalized].sort((a, b) => a.confidence - b.confidence).map((t) => t.confidence.toFixed(2)).join(',');
-    console.log(`[generate-tasks-from-interview] role=${jobTitle} mentioned=${interviewTasks.length} normalized=${normalized.length}->shown=${outNorm.length} gapfill=${gapNames.length} conf=[${confDebug}]`);
+    console.log(`[generate-tasks-from-interview] role=${jobTitle} mentioned=${interviewTasks.length} normalized=${normalized.length}->shown=${outNorm.length} gapfill=${gapNames.length}`);
     for (const g of gapNames) console.log(`    + (gap) ${g}`);
     sendEvent('done', {});
     res.end();
