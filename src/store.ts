@@ -26,6 +26,7 @@ export interface ProlificContext {
   attnCheckMaxFails: number;
   attnCheckFails: number;
   screenedOut: boolean;
+  screenOutReason: string | null;
 }
 
 interface WorkflowStore {
@@ -242,6 +243,7 @@ const initialProlific: ProlificContext = {
   attnCheckMaxFails: 0,
   attnCheckFails: 0,
   screenedOut: false,
+  screenOutReason: null,
 };
 
 const SESSION_START_MS = Date.now();
