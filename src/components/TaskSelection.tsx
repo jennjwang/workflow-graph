@@ -10,9 +10,10 @@ import { useWorkflowStore } from "../store";
 import { BONUS_ENABLED } from "../lib/bonus";
 import { TaskItem } from "../types";
 
-// Hard cap on the picker list (real tasks + spliced attention checks). Also
-// the progress-bar denominator so the bar reflects actual rating progress.
-const MAX_TASKS = 15;
+// Hard cap on the picker list. With attention checks disabled (see
+// ATTENTION_CHECKS_ENABLED) this is the real-task cap; the progress-bar
+// denominator so the bar reflects actual rating progress.
+const MAX_TASKS = 20;
 
 // Number of tasks the participant must rate before the "Finish early"
 // affordance unlocks. Pinned to MAX_TASKS so the threshold tracks the picker
@@ -21,6 +22,11 @@ const DONE_THRESHOLD = MAX_TASKS;
 
 // One attention check inserted after every N real tasks (positions N, 2N, 3N, …).
 const ATTENTION_CHECK_INTERVAL = 4;
+
+// Master switch for attention checks. Disabled for the onet study: the picker
+// shows only real tasks (so MAX_TASKS is the real-task cap) and no participant
+// is screened out for an attention-check "fail" (none are ever spliced in).
+const ATTENTION_CHECKS_ENABLED = false;
 
 // O*NET-style fallback attention checks. Drawn from clearly unrelated
 // occupations so participants can always answer "I don't do this" honestly.
@@ -293,7 +299,7 @@ export function TaskSelection() {
               { name, originalName: name, status: "unreviewed" },
             ];
             // Splice in an attention check after every Nth real task.
-            if (realCount % ATTENTION_CHECK_INTERVAL === 0) {
+            if (ATTENTION_CHECKS_ENABLED && realCount % ATTENTION_CHECK_INTERVAL === 0) {
               const checkIdx = realCount / ATTENTION_CHECK_INTERVAL - 1;
               if (
                 checkIdx < FALLBACK_ATTENTION_CHECKS.length &&
